@@ -98,8 +98,11 @@ optional and depends only on `hearken-app`'s service traits.
 
 ### hearken-bass-sys
 
-Lucky Break's `bass-sys` (Freight Fate's plus effects and the 3D API) is the
-base. It is renamed because `bass-sys` is taken on crates.io. Changes:
+Lucky Break's `bass-sys` (effects and the 3D API) is the base, plus the
+tracker-music and HLS-tag bindings Lucky Break dropped and Freight Fate still
+uses. The package is `hearken-bass-sys` because `bass-sys` is taken on
+crates.io; its library name stays `bass_sys`, so ported code keeps its
+imports. Changes:
 
 - Drop the `FREIGHT_FATE_BASS_PATH` legacy variable; the path variable
   becomes `HEARKEN_BASS_PATH`, and a game may set its own name for it.
@@ -121,15 +124,18 @@ Freight Fate's speech stack, which is the more complete of the two:
   `poll`) is the interface.
 - A capture sink that records a transcript for tests, and fakes.
 - Both channels log to one transcript log target.
-- A build helper, `hearken_speech::build::delay_load_backends()`, that a
-  game's `build.rs` calls. Linker flags only apply to the crate that sets
-  them, so the game has to delay-load Prism's screen-reader DLLs itself;
-  Freight Fate's `build.rs` does this today.
+- Prism's delay-load list passed on to games: `hearken-speech` has
+  `links = "hearken_speech"` and re-publishes prismer's list, and each game's
+  own `build.rs` (a dozen lines, shipped in the template) turns
+  `DEP_HEARKEN_SPEECH_DELAY_LOAD_DLLS` into `/DELAYLOAD` link arguments.
+  Linker flags only apply to the final link, which is the game's.
 - Toolchain: prismer compiles Prism from source (CMake 3.24+, a C++23
   compiler) unless `PRISM_LIB_DIR` points at a prebuilt library. The template
   README documents both.
 
-The pacer and ladder are tuned for driving today. Their thresholds become
+The ladder, pacer and duck live in Freight Fate's delivery layer, which is
+tied to its context and audio, so they arrive with audio in M2; until then
+`say_event` goes straight to the event voice. The pacer's thresholds become
 configuration with Freight Fate's values as defaults.
 
 ### hearken-audio
@@ -199,8 +205,11 @@ The shell and everything a menu-driven audio game needs:
   applied between frames, so a state never re-enters itself mid-handler.
 - **Context**: `Ctx<G>` holds speech, audio, settings, bindings, the stack
   queue, logging, and `game: G::Data`.
-- **Menus**: Freight Fate's `Menu`, `MenuCore`, `MenuItem`, `Label` and
-  `impl_state_for_menu!`, and its text-entry state.
+- **Menus**: Lucky Break's `Menu`, `MenuCore`, `MenuItem` and `Label`, which
+  are Freight Fate's design with the trucking hooks already removed. Every
+  `Menu` is a `State` through a blanket impl, so no macro is needed. F1 reads
+  the focused row's help, or the menu's own help when the row has none.
+  Freight Fate's text-entry state comes with input in M1b.
 - **Input**: Freight Fate's key bindings (with names for rebinding) and
   controller support, plus held-key tracking.
 - **Built-in screens**: settings (volumes per bus, speech, verbosity, key
@@ -305,7 +314,7 @@ game that:
   runs one live voice from a parameter;
 - has a `sounds.toml` with five recipes and no layers, and plays category
   defaults for any sound it has not defined yet;
-- has a `build.rs` calling `delay_load_backends()`;
+- has the `build.rs` that delay-loads the screen-reader DLLs;
 - has one headless test that walks the menus and asserts the transcript;
 - has CI on pull requests, `v*` tags and manual dispatch, Windows only;
 - has a README for a first-time Rust developer covering the toolchain, BASS
@@ -344,9 +353,13 @@ Carried over from Freight Fate's engineering rules:
 
 Each milestone gets its own implementation plan.
 
-1. **M1 Skeleton.** Workspace, `hearken-bass-sys`, `hearken-speech`,
-   `hearken-app` (shell, stack, menus, input, built-in screens), and a bare
-   template that boots and passes one headless test.
+1. **M1 Skeleton.** Workspace, `hearken-bass-sys` (with callback streams),
+   `hearken-speech`, `hearken-app` (shell, stack, menus, settings, help and
+   pause screens), and a bare template that boots and passes a headless
+   walkthrough.
+   **M1b Input.** Rebindable actions and the rebinding screen, the
+   controller manager, held-key tracking, text entry, the timed message
+   screen.
 2. **M2 Sound.** `hearken-audio` including live voices, `hearken-synth`,
    `hearken-bake` with tiers, providers, credits and `--check`.
 3. **M3 Lucky Break on Hearken.** Lucky Break drops its `prism`, `prism-sys`,
