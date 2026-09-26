@@ -152,6 +152,7 @@ pub struct Api {
 
     pub stream_create_file: FnStreamCreateFile,
     pub stream_create_url: FnStreamCreateURL,
+    pub stream_create: FnStreamCreate,
     pub stream_free: FnStreamFree,
     pub music_load: FnMusicLoad,
     pub music_free: FnMusicFree,
@@ -161,6 +162,7 @@ pub struct Api {
     pub channel_stop: FnChannelStop,
     pub channel_is_active: FnChannelIsActive,
     pub channel_update: FnChannelUpdate,
+    pub channel_get_data: FnChannelGetData,
     pub channel_set_attribute: FnChannelSetAttribute,
     pub channel_get_attribute: FnChannelGetAttribute,
     pub channel_slide_attribute: FnChannelSlideAttribute,
@@ -290,6 +292,7 @@ impl Api {
 
             stream_create_file: sym!("BASS_StreamCreateFile"),
             stream_create_url: sym!("BASS_StreamCreateURL"),
+            stream_create: sym!("BASS_StreamCreate"),
             stream_free: sym!("BASS_StreamFree"),
             music_load: sym!("BASS_MusicLoad"),
             music_free: sym!("BASS_MusicFree"),
@@ -299,6 +302,7 @@ impl Api {
             channel_stop: sym!("BASS_ChannelStop"),
             channel_is_active: sym!("BASS_ChannelIsActive"),
             channel_update: sym!("BASS_ChannelUpdate"),
+            channel_get_data: sym!("BASS_ChannelGetData"),
             channel_set_attribute: sym!("BASS_ChannelSetAttribute"),
             channel_get_attribute: sym!("BASS_ChannelGetAttribute"),
             channel_slide_attribute: sym!("BASS_ChannelSlideAttribute"),

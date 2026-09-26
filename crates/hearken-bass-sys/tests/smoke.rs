@@ -528,3 +528,54 @@ fn bass_fx_biquad_lowpass_attaches_to_a_channel() {
     let err = channel_set_fx(h, BASS_FX_BFX_BQF + 0x1000, 0).unwrap_err();
     eprintln!("unknown BFX type -> {err}");
 }
+
+#[test]
+fn a_callback_stream_is_pulled_and_ends_when_the_callback_says_so() {
+    let Some(_g) = bass() else { return };
+    let mut left = 1000usize;
+    let stream = callback_stream(44100, 1, BASS_STREAM_DECODE, move |out| {
+        let n = out.len().min(left);
+        out[..n].fill(0.5);
+        left -= n;
+        n
+    })
+    .expect("create a decoding callback stream");
+    let mut buf = vec![0.0f32; 4096];
+    let got = channel_get_data_float(stream.handle(), &mut buf).expect("first read");
+    assert_eq!(got, 1000, "exactly what the callback wrote");
+    assert!(buf[..got].iter().all(|&s| s == 0.5));
+    let after = channel_get_data_float(stream.handle(), &mut buf);
+    assert!(
+        matches!(after, Ok(0)) || after.as_ref().is_err_and(|e| e.is(BASS_ERROR_ENDED)),
+        "a stream whose callback ended gives nothing more, got {after:?}"
+    );
+}
+
+#[test]
+fn a_panicking_callback_ends_the_stream_instead_of_unwinding_into_bass() {
+    let Some(_g) = bass() else { return };
+    let stream = callback_stream(44100, 1, BASS_STREAM_DECODE, |_out| panic!("boom"))
+        .expect("create a decoding callback stream");
+    let mut buf = vec![1.0f32; 512];
+    let got = channel_get_data_float(stream.handle(), &mut buf);
+    assert!(
+        matches!(got, Ok(0)) || got.as_ref().is_err_and(|e| e.is(BASS_ERROR_ENDED)),
+        "the stream ends quietly, got {got:?}"
+    );
+}
+
+#[test]
+fn dropping_a_callback_stream_frees_it() {
+    let Some(_g) = bass() else { return };
+    let handle = {
+        let stream =
+            callback_stream(44100, 2, BASS_STREAM_DECODE, |out| out.len()).expect("create");
+        stream.handle()
+    };
+    let mut buf = vec![0.0f32; 64];
+    let after = channel_get_data_float(handle, &mut buf);
+    assert!(
+        after.as_ref().is_err_and(|e| e.is(BASS_ERROR_HANDLE)),
+        "got {after:?}"
+    );
+}

@@ -27,12 +27,14 @@ use std::sync::Arc;
 
 use crate::*;
 
+mod callback;
 mod effects;
 mod stream;
 mod sync;
 mod tags;
 mod three_d;
 
+pub use callback::*;
 pub use effects::*;
 pub use stream::*;
 pub use sync::*;

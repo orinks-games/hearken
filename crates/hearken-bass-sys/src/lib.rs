@@ -549,6 +549,37 @@ pub type SYNCPROC =
 pub type DOWNLOADPROC =
     unsafe extern "system" fn(buffer: *const c_void, length: DWORD, user: *mut c_void);
 
+/// Returned by a `STREAMPROC` (OR-ed with the byte count) when the stream has
+/// ended; BASS plays what was written and then stops the channel.
+pub const BASS_STREAMPROC_END: DWORD = 0x8000_0000;
+/// `BASS_ChannelGetData` flag: `length` is in bytes of 32-bit float samples.
+pub const BASS_DATA_FLOAT: DWORD = 0x4000_0000;
+
+/// `DWORD CALLBACK STREAMPROC(HSTREAM handle, void *buffer, DWORD length, void *user)`.
+///
+/// Called on a BASS thread to fill up to `length` bytes of `buffer`. It must
+/// be quick and must not block on anything the mixer may be waiting for.
+/// Returns the bytes written, OR-ed with `BASS_STREAMPROC_END` at the end.
+pub type STREAMPROC = unsafe extern "system" fn(
+    handle: HSTREAM,
+    buffer: *mut c_void,
+    length: DWORD,
+    user: *mut c_void,
+) -> DWORD;
+
+/// `HSTREAM BASS_StreamCreate(DWORD freq, DWORD chans, DWORD flags, STREAMPROC *proc, void *user)`
+pub type FnStreamCreate = unsafe extern "system" fn(
+    freq: DWORD,
+    chans: DWORD,
+    flags: DWORD,
+    proc_: Option<STREAMPROC>,
+    user: *mut c_void,
+) -> HSTREAM;
+
+/// `DWORD BASS_ChannelGetData(DWORD handle, void *buffer, DWORD length)`
+pub type FnChannelGetData =
+    unsafe extern "system" fn(handle: DWORD, buffer: *mut c_void, length: DWORD) -> DWORD;
+
 // --- Function pointer types, one per symbol the loader resolves -------------------
 
 pub type FnInit = unsafe extern "system" fn(
@@ -788,5 +819,13 @@ mod tests {
         assert_eq!(BASS_MUSIC_RAMPS, 0x400);
         assert_eq!(BASS_MUSIC_SINCINTER, 0x80_0000);
         assert_eq!(BASS_MUSIC_STOPBACK, 0x8_0000);
+    }
+
+    #[test]
+    fn stream_callback_constants_match_bass_h() {
+        assert_eq!(BASS_STREAMPROC_END, 0x8000_0000);
+        assert_eq!(BASS_DATA_FLOAT, 0x4000_0000);
+        assert_eq!(BASS_STREAM_DECODE, 0x20_0000);
+        assert_eq!(BASS_SAMPLE_FLOAT, 256);
     }
 }
