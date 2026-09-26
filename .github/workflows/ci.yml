@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  rust:
+    name: Rust (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      - name: Keep Defender off the build tree
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup" -ErrorAction Stop
+            Write-Host "Defender exclusions added."
+          } catch {
+            Write-Host "Could not add Defender exclusions ($_); building without them."
+          }
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Cache BASS
+        uses: actions/cache@v4
+        with:
+          path: crates/hearken-bass-sys/vendor
+          key: bass-${{ runner.os }}-${{ hashFiles('tools/fetch_bass.py') }}
+
+      - name: Fetch BASS
+        run: python tools/fetch_bass.py
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --locked

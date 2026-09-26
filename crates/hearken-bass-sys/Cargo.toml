@@ -1,0 +1,18 @@
+[package]
+name = "hearken-bass-sys"
+description = "Raw FFI bindings to the BASS audio library, loaded at run time"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build.rs"
+
+[lib]
+# Consumers ported from earlier games keep `use bass_sys::...`.
+name = "bass_sys"
+
+[dependencies]
+libloading.workspace = true
+log.workspace = true
