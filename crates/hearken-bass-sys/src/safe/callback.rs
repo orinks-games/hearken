@@ -73,7 +73,7 @@ pub fn callback_stream(
     // BASS may free a stream asynchronously and call the STREAMPROC once more;
     // free it from a BASS_SYNC_FREE sync if games ever create thousands.
     let slot: *const FillSlot = Box::into_raw(Box::new(std::sync::Mutex::new(Some(fill))));
-    // SAFETY: `fill_trampoline` matches `STREAMPROC`; `slot` is never freed.
+    // SAFETY: `fill_trampoline` matches `STREAMPROC`; `slot` is never freed (see Drop impl).
     let handle = unsafe {
         (a.stream_create)(
             freq,
@@ -84,7 +84,10 @@ pub fn callback_stream(
         )
     };
     if handle == 0 {
-        return Err(BassError::last());
+        let err = BassError::last();
+        // SAFETY: BASS refused the stream, so it never saw the pointer.
+        unsafe { drop(Box::from_raw(slot.cast_mut())) };
+        return Err(err);
     }
     Ok(CallbackStream { handle, slot })
 }

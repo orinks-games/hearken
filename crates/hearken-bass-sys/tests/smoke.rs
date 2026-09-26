@@ -579,3 +579,42 @@ fn dropping_a_callback_stream_frees_it() {
         "got {after:?}"
     );
 }
+
+#[test]
+fn dropping_a_callback_stream_drops_its_closure() {
+    let Some(_g) = bass() else { return };
+    let arc = std::sync::Arc::new(());
+    {
+        let arc_clone = std::sync::Arc::clone(&arc);
+        let _stream = callback_stream(44100, 1, BASS_STREAM_DECODE, move |_out| {
+            drop(arc_clone.clone());
+            0
+        })
+        .expect("create");
+    }
+    assert_eq!(
+        std::sync::Arc::strong_count(&arc),
+        1,
+        "closure was not dropped"
+    );
+}
+
+#[test]
+fn a_refused_stream_drops_its_closure() {
+    let Some(_g) = bass() else { return };
+    let arc = std::sync::Arc::new(());
+    let arc_clone = std::sync::Arc::clone(&arc);
+    let result = callback_stream(44100, 0, BASS_STREAM_DECODE, move |_out| {
+        drop(arc_clone.clone());
+        0
+    });
+    assert!(
+        result.is_err(),
+        "expected chans=0 to be rejected; if not on this platform, try another invalid parameter"
+    );
+    assert_eq!(
+        std::sync::Arc::strong_count(&arc),
+        1,
+        "closure was not dropped on error"
+    );
+}
