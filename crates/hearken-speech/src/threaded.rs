@@ -110,6 +110,10 @@ enum Command {
         interrupt: bool,
         reply: mpsc::Sender<bool>,
     },
+    /// Does nothing but answer, once everything queued before it is done.
+    Flush {
+        done: mpsc::Sender<()>,
+    },
     Shutdown {
         done: mpsc::Sender<()>,
     },
@@ -542,6 +546,9 @@ impl ThreadedSpeech {
                                     call!(inner.say_adjustment_preview(&setting, &text, interrupt));
                                 let _ = reply.send(spoke);
                             }
+                            Command::Flush { done } => {
+                                let _ = done.send(());
+                            }
                             Command::Shutdown { done } => {
                                 call!(inner.shutdown());
                                 let _ = done.send(());
@@ -663,6 +670,18 @@ impl ThreadedSpeech {
             // lines; the periodic snapshot republish squares state back up
             // when it returns.
         }
+    }
+
+    /// Wait, at most `within`, until the worker has handed every line
+    /// queued so far to the voice; `true` when it did. Shutdown skips
+    /// queued lines, so a last line that must be heard is flushed first.
+    /// The voice may still be speaking it when this returns.
+    pub fn flush(&mut self, within: Duration) -> bool {
+        let (done_tx, done_rx) = mpsc::channel();
+        self.commands
+            .try_send(Command::Flush { done: done_tx })
+            .is_ok()
+            && done_rx.recv_timeout(within).is_ok()
     }
 
     fn bounded_reply(&mut self, build: impl FnOnce(mpsc::Sender<bool>) -> Command) -> bool {

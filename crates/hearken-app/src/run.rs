@@ -1,5 +1,7 @@
-//! Boot a game: data folder, log, single instance, settings, speech,
-//! window, then the loop.
+//! Boot a game: data folder, log, single instance, window, settings,
+//! speech, then the loop.
+
+use std::time::Duration;
 
 use hearken_speech::{SpeechEnv, SpeechSink, ThreadedSpeech};
 
@@ -17,8 +19,24 @@ pub fn already_running_line<G: Game>() -> String {
     format!("{} is already running.", G::TITLE)
 }
 
-fn start_speech<G: Game>() -> Box<dyn SpeechSink> {
-    Box::new(ThreadedSpeech::spawn(SpeechEnv::with_prefix(G::ENV_PREFIX)))
+fn start_speech<G: Game>() -> ThreadedSpeech {
+    ThreadedSpeech::spawn(SpeechEnv::with_prefix(G::ENV_PREFIX))
+}
+
+/// Say `line` to a player the game is about to leave with nothing else,
+/// then exit with `code`. The line is flushed to the voice, bounded, and
+/// given time to be spoken before speech shuts down, which would otherwise
+/// skip it.
+fn say_and_exit<G: Game>(line: &str, code: i32) -> i32 {
+    let mut speech = start_speech::<G>();
+    speech.say(line, true);
+    if !speech.flush(Duration::from_secs(3)) {
+        log::warn!("speech did not take the last line in time");
+    }
+    // A software voice is still reading it.
+    std::thread::sleep(Duration::from_millis(1500));
+    speech.shutdown();
+    code
 }
 
 /// Run `G` until the player quits. Returns the process exit code.
@@ -30,25 +48,24 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     if !guard.acquire() {
         let line = already_running_line::<G>();
         log::warn!("{line}");
-        let mut speech = start_speech::<G>();
-        speech.say(&line, true);
-        speech.shutdown();
-        return 0;
+        return say_and_exit::<G>(&line, 0);
     }
 
-    let (settings, notice) = Settings::load(&paths);
-    let mut ctx = Ctx::new(start_speech::<G>(), settings, paths, game);
-    ctx.notices.extend(notice);
-    ctx.apply_speech_settings();
-
+    // The window first, so a failure speaks through one voice started for
+    // that line alone.
     let mut shell = match SdlShell::new(G::TITLE) {
         Ok(shell) => shell,
         Err(e) => {
             log::error!("could not open a window: {e}");
-            ctx.speech.shutdown();
-            return 2;
+            return say_and_exit::<G>("The game window could not be opened.", 2);
         }
     };
+
+    let (settings, notice) = Settings::load(&paths);
+    let mut ctx = Ctx::new(Box::new(start_speech::<G>()), settings, paths, game);
+    ctx.notices.extend(notice);
+    ctx.apply_speech_settings();
+
     let mut app = App::new(ctx, first());
     app.run(&mut shell);
     guard.release();

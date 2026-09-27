@@ -295,6 +295,37 @@ fn shutdown_skips_the_queued_backlog_instead_of_speaking_it() {
     );
 }
 
+/// A last line before quitting (a second copy saying the game is already
+/// running) must be heard. Shutdown skips queued lines, so the caller
+/// flushes first, and that has to cover a voice still being built: Prism
+/// takes a moment to start.
+#[test]
+fn a_flushed_line_reaches_a_slow_starting_voice_before_shutdown() {
+    let calls: CallLog = Arc::default();
+    let log = calls.clone();
+    let mut sink = ThreadedSpeech::spawn_with(move |_| {
+        std::thread::sleep(Duration::from_millis(300));
+        Box::new(StubSink {
+            calls: log.clone(),
+            wedge: Arc::default(),
+            entered_say: Arc::default(),
+            slow: Arc::default(),
+            polls: Arc::default(),
+            available: Arc::default(),
+            enumerations: Arc::default(),
+            renamed: Arc::default(),
+        })
+    });
+    sink.say("Already running.", true);
+    assert!(sink.flush(Duration::from_secs(3)), "the flush timed out");
+    sink.shutdown();
+    let calls = calls.lock().unwrap();
+    assert!(
+        calls.iter().any(|c| c == "say Already running."),
+        "the line never reached the voice: {calls:?}"
+    );
+}
+
 #[test]
 fn says_arrive_on_the_worker_in_send_order() {
     let Rig {
