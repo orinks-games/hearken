@@ -1,5 +1,6 @@
-//! The SDL window: a focus target for the keyboard and a mirror of the
-//! top screen's last line in its title for a sighted helper.
+//! The SDL window: a focus target for the keyboard. Its title is the
+//! game's and never changes, since a screen reader can announce a title
+//! change.
 
 use std::time::{Duration, Instant};
 
@@ -17,7 +18,6 @@ pub struct SdlShell {
     _sdl: sdl2::Sdl,
     canvas: WindowCanvas,
     pump: EventPump,
-    title: String,
     last: Instant,
 }
 
@@ -36,7 +36,6 @@ impl SdlShell {
             _sdl: sdl,
             canvas,
             pump,
-            title: title.to_string(),
             last: Instant::now(),
         })
     }
@@ -47,16 +46,10 @@ impl Shell for SdlShell {
         translate_events(self.pump.poll_iter().collect())
     }
 
-    fn render(&mut self, lines: &[String]) {
+    fn render(&mut self, _lines: &[String]) {
         self.canvas.set_draw_color(Color::RGB(12, 24, 16));
         self.canvas.clear();
         self.canvas.present();
-        if let Some(last) = lines.last() {
-            let _ = self
-                .canvas
-                .window_mut()
-                .set_title(&format!("{} - {last}", self.title));
-        }
     }
 
     fn frame(&mut self) -> f64 {

@@ -159,7 +159,7 @@ impl fmt::Debug for dyn VoiceBackend {
 // -- Prism -------------------------------------------------------------------
 
 /// A live Prism context as a [`VoiceRegistry`]. Confined to the worker that
-/// created it (see the module docs of [`crate::speech`]).
+/// created it (see the [crate docs](crate)).
 pub struct PrismRegistry {
     shared: Rc<PrismShared>,
 }

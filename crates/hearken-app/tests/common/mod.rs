@@ -63,12 +63,14 @@ impl State<TestGame> for Probe {
         ctx.game.log.push(format!("{} resume", self.name));
     }
     fn handle_input(&mut self, ctx: &mut Ctx<TestGame>, event: &InputEvent) {
-        if let Some((key, _, _)) = event.key_down() {
-            ctx.game.log.push(format!("{} key {key:?}", self.name));
-            if key == Key::Return {
-                if let Some(f) = self.on_return.as_mut() {
-                    f(ctx);
-                }
+        let Some((key, _, _)) = event.key_down() else {
+            ctx.game.log.push(format!("{} input {event:?}", self.name));
+            return;
+        };
+        ctx.game.log.push(format!("{} key {key:?}", self.name));
+        if key == Key::Return {
+            if let Some(f) = self.on_return.as_mut() {
+                f(ctx);
             }
         }
     }

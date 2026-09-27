@@ -89,7 +89,7 @@ fn main() {
     // path, which includes the directory it was loaded from.
     let Ok(entries) = fs::read_dir(&vendor_dir) else {
         println!(
-            "cargo:warning=bass-sys: could not read {}",
+            "cargo:warning=hearken-bass-sys: could not read {}",
             vendor_dir.display()
         );
         return;
@@ -109,7 +109,7 @@ fn main() {
         // Copy failures are not fatal: the loader also searches the vendor
         // directory and the system library path.
         if let Err(err) = fs::copy(entry.path(), profile_dir.join(name)) {
-            println!("cargo:warning=bass-sys: could not stage {name}: {err}");
+            println!("cargo:warning=hearken-bass-sys: could not stage {name}: {err}");
         }
     }
 }

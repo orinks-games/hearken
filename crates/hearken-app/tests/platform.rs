@@ -1,6 +1,7 @@
 mod common;
 
 use std::cell::Cell;
+use std::rc::Rc;
 
 use common::TestGame;
 use hearken_app::sdl_shell::translate_events;
@@ -64,7 +65,7 @@ fn window_and_quit_events_translate() {
 
 struct FakeKernel {
     exists: bool,
-    closed: Cell<u32>,
+    closed: Rc<Cell<u32>>,
 }
 
 impl MutexApi for FakeKernel {
@@ -78,23 +79,25 @@ impl MutexApi for FakeKernel {
 
 #[test]
 fn a_second_copy_is_refused_and_closes_its_handle() {
+    let closed = Rc::new(Cell::new(0));
     let mut guard = SingleInstanceGuard::with_api(
         "x",
         FakeKernel {
             exists: true,
-            closed: Cell::new(0),
+            closed: closed.clone(),
         },
         true,
     );
     assert!(!guard.acquire());
     assert!(!guard.acquired());
+    assert_eq!(closed.get(), 1);
 }
 
 #[test]
 fn the_first_copy_holds_the_lock_until_released() {
     let kernel = FakeKernel {
         exists: false,
-        closed: Cell::new(0),
+        closed: Rc::default(),
     };
     let mut guard = SingleInstanceGuard::with_api("x", kernel, true);
     assert!(guard.acquire());

@@ -2,8 +2,8 @@
 
 /// A spoken fragment ending in exactly one sentence mark, never two.
 ///
-/// Menu/list labels are sometimes plain ("Sleep 10 hours") and sometimes
-/// whole sentences that already end in a period (settlement summary lines).
+/// Menu and list labels are sometimes plain ("Play") and sometimes whole
+/// sentences that already end in a period ("The door is locked.").
 /// Appending "." unconditionally produces ".." which a screen reader voices as
 /// "dot dot", so add the period only when one is not already there.
 pub fn end_sentence(text: &str) -> String {

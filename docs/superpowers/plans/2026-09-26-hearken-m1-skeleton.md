@@ -3835,7 +3835,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] **Step 7: The owner's listening pass**
 
-Build it (`cargo build -p hello-hearken`), then ask Josh to run `cargo run -p hello-hearken` with NVDA on and listen for: the title announcement, arrowing through the four rows, F1 on a row, Settings with Left and Right on the speech rate (the voice should speed up and slow down), the help topics, Space in the practice room, the pause menu, and Quit. Recorded speech in tests does not establish how it sounds; only this pass does. Report what he hears; fix anything that is wrong before calling M1 done.
+Build it (`cargo build -p hello-hearken`), then ask Josh to run `cargo run -p hello-hearken` with NVDA on and listen for: the title announcement, arrowing through the four rows, F1 on a row, Settings with Left and Right on the speech rate (the voice should speed up and slow down; if your screen reader cannot change rate, the rate row is hidden; with a separate event voice you hear the new rate on that voice), the help topics, Space in the practice room, the pause menu, and Quit. Recorded speech in tests does not establish how it sounds; only this pass does. Report what he hears; fix anything that is wrong before calling M1 done.
 ```
 
 ## Self-review notes (for the plan author, resolved)

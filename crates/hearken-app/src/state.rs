@@ -22,7 +22,8 @@ pub trait State<G: Game> {
     fn on_event(&mut self, _ctx: &mut Ctx<G>, _event: &G::Event) {}
     /// Once per frame, top screen only.
     fn update(&mut self, _ctx: &mut Ctx<G>, _dt: f64) {}
-    /// What the window shows a sighted helper. The player gets speech.
+    /// The screen as text, for a sighted helper and for tests (the SDL
+    /// window does not draw it). The player gets speech.
     fn lines(&self, _ctx: &Ctx<G>) -> Vec<String> {
         Vec::new()
     }

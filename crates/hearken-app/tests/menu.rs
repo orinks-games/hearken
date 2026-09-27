@@ -217,6 +217,7 @@ fn an_empty_menu_says_so_and_ignores_keys() {
     ] {
         h.press(key);
     }
+    h.send(InputEvent::typed('a'));
     assert!(h.spoken().is_empty());
     h.press(Key::F1);
     assert_eq!(h.spoken(), [DEFAULT_INTRO_HELP]);

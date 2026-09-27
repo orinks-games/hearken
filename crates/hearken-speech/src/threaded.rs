@@ -860,21 +860,25 @@ impl SpeechSink for ThreadedSpeech {
     }
 
     fn shutdown(&mut self) {
+        log::info!("speech shutdown requested");
         // The flag first, then the command: the worker skips every say
         // still queued ahead of it, so the wait below covers one in-flight
         // utterance at most, not the whole backlog.
         self.shutting_down
             .store(true, std::sync::atomic::Ordering::Relaxed);
         let (done_tx, done_rx) = mpsc::channel();
-        if self
-            .commands
-            .try_send(Command::Shutdown { done: done_tx })
-            .is_ok()
-        {
+        match self.commands.try_send(Command::Shutdown { done: done_tx }) {
             // Give the backend a bounded chance to release cleanly; a
             // wedged one is abandoned, which is exactly what quitting a
             // frozen game by hand used to do -- minus freezing the game.
-            let _ = done_rx.recv_timeout(Duration::from_secs(3));
+            Ok(()) => match done_rx.recv_timeout(Duration::from_secs(3)) {
+                Ok(()) => log::info!("speech worker finished"),
+                Err(_) => log::warn!("speech worker did not finish within 3 s; leaving it"),
+            },
+            Err(TrySendError::Full(_)) => {
+                log::warn!("speech queue full at shutdown; leaving the worker")
+            }
+            Err(TrySendError::Disconnected(_)) => log::info!("speech worker already finished"),
         }
     }
 }

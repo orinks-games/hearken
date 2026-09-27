@@ -28,6 +28,16 @@ fn help_sections_split_on_level_two_headings() {
 }
 
 #[test]
+fn smaller_headings_inside_a_section_lose_their_marks() {
+    let s = sections("## Keys\n\n### Moving\n\nUp and Down move.\n####Choosing\nEnter chooses.\n");
+    assert_eq!(s.len(), 1);
+    assert_eq!(
+        s[0].body,
+        "Moving Up and Down move. Choosing Enter chooses."
+    );
+}
+
+#[test]
 fn the_help_screen_lists_topics_and_reads_one_on_enter() {
     let mut h = over_root(HelpScreen::<TestGame>::new(DOC));
     assert_eq!(h.spoken(), ["Help.", "Getting around. 1 of 2."]);

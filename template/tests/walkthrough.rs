@@ -1,11 +1,8 @@
 use hearken_app::{Headless, Key};
 use hello_hearken::{HelloGame, Title};
 
-// `Default::default()` here is `()`, `HelloGame::Data`; clippy reads a unit
-// value passed to a function as likely a mistake.
-#[allow(clippy::unit_arg)]
 fn start() -> Headless<HelloGame> {
-    Headless::new(Default::default(), Title::new())
+    Headless::new((), Title::new())
 }
 
 #[test]

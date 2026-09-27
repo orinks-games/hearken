@@ -1,5 +1,7 @@
 //! Raw FFI types and runtime loader for the BASS audio library (Un4seen).
 //!
+//! Extracted from Lucky Break Casino (commit a101970) and Freight Fate (commit c5d3ef8d).
+//!
 //! BASS ships as a closed C library (`bass.dll` / `libbass.so` /
 //! `libbass.dylib`) plus add-on plugins, so the C ABI is declared by hand here
 //! and the platform binaries are vendored under `vendor/<os>-<arch>/`.

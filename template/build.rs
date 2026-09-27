@@ -10,11 +10,18 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         return;
     }
-    let Ok(dlls) = std::env::var("DEP_HEARKEN_SPEECH_DELAY_LOAD_DLLS") else {
-        return;
-    };
-    for dll in dlls.split(';').filter(|dll| !dll.is_empty()) {
-        println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
+    match std::env::var("DEP_HEARKEN_SPEECH_DELAY_LOAD_DLLS") {
+        Ok(dlls) => {
+            for dll in dlls.split(';').filter(|dll| !dll.is_empty()) {
+                println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
+            }
+        }
+        // Cargo hands a build script this list only from a direct dependency.
+        Err(_) => println!(
+            "cargo:warning=the screen reader DLLs will not be delay-loaded, so the game \
+             will not start on a machine missing one. Fix: add hearken-speech to this \
+             package's [dependencies]."
+        ),
     }
     // Prism's delay-load failure hook must be forced into the link, or a
     // machine missing any screen reader's client DLL crashes the game at

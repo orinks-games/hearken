@@ -1,4 +1,6 @@
 //! The shell of an audio-first, screen-reader-first game.
+//!
+//! Extracted from Lucky Break Casino (commit a101970) and Freight Fate (commit c5d3ef8d).
 
 pub mod app;
 pub mod ctx;

@@ -1,5 +1,7 @@
 //! Screen reader output via Prism.
 //!
+//! Extracted from Freight Fate (commit c5d3ef8d).
+//!
 //! Prism is a screen reader abstraction layer that unifies NVDA, JAWS, SAPI,
 //! VoiceOver, Speech Dispatcher, and many other backends behind one API. This
 //! module wraps it in a small game-friendly interface that:

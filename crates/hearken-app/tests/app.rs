@@ -185,6 +185,15 @@ fn f2_stops_speech_and_the_screen_never_sees_it() {
 }
 
 #[test]
+fn regaining_focus_asks_speech_to_refresh_and_the_screen_still_sees_it() {
+    let mut h = headless(Probe::new("root"));
+    let before = h.speech.borrow().refresh_requests();
+    h.send(InputEvent::WindowFocusGained);
+    assert_eq!(h.speech.borrow().refresh_requests(), before + 1);
+    assert_eq!(take_log(&mut h.app.ctx), ["root input WindowFocusGained"]);
+}
+
+#[test]
 fn f1_speaks_the_top_screen_help_and_the_screen_never_sees_it() {
     let mut h = headless(Probe::new("root"));
     h.clear();

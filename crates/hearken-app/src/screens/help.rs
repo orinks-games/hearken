@@ -12,7 +12,8 @@ pub struct Section {
 }
 
 /// Split a Markdown document on `## ` headings. Anything before the first
-/// one (the document's own title) is not a section.
+/// one (the document's own title) is not a section. Other headings inside
+/// a section keep their words and lose their `#` marks.
 pub fn sections(doc: &str) -> Vec<Section> {
     let mut out: Vec<Section> = Vec::new();
     for line in doc.lines() {
@@ -25,7 +26,7 @@ pub fn sections(doc: &str) -> Vec<Section> {
                 let Some(current) = out.last_mut() else {
                     continue;
                 };
-                let line = line.trim();
+                let line = line.trim().trim_start_matches('#').trim_start();
                 if line.is_empty() {
                     continue;
                 }
