@@ -147,37 +147,42 @@ impl<S, G: Game> Default for MenuCore<S, G> {
 /// A vertically navigated, fully spoken menu. Implement `name`, the two
 /// accessors and `build_items`; everything else has a default the screen
 /// may override.
-pub trait Menu<G: Game>: Sized + 'static {
+pub trait Menu: Sized + 'static {
+    /// The game this menu belongs to. An associated type rather than a
+    /// parameter, so a built-in screen that is not a menu can still be a
+    /// `State` of any game without clashing with the blanket impl below.
+    type Game: Game;
+
     fn name(&self) -> &'static str;
-    fn menu(&self) -> &MenuCore<Self, G>;
-    fn menu_mut(&mut self) -> &mut MenuCore<Self, G>;
-    fn build_items(&mut self, ctx: &mut Ctx<G>) -> Vec<MenuItem<Self, G>>;
+    fn menu(&self) -> &MenuCore<Self, Self::Game>;
+    fn menu_mut(&mut self) -> &mut MenuCore<Self, Self::Game>;
+    fn build_items(&mut self, ctx: &mut Ctx<Self::Game>) -> Vec<MenuItem<Self, Self::Game>>;
 
     // -- State hooks ----------------------------------------------------------
 
-    fn enter(&mut self, ctx: &mut Ctx<G>) {
+    fn enter(&mut self, ctx: &mut Ctx<Self::Game>) {
         self.refresh(ctx, false);
         self.announce(ctx);
     }
 
-    fn exit(&mut self, _ctx: &mut Ctx<G>) {}
+    fn exit(&mut self, _ctx: &mut Ctx<Self::Game>) {}
 
     /// Revealed again: rebuild the rows (a setting may have changed) and
     /// re-announce, keeping the cursor.
-    fn resume(&mut self, ctx: &mut Ctx<G>) {
+    fn resume(&mut self, ctx: &mut Ctx<Self::Game>) {
         self.refresh(ctx, true);
         self.announce(ctx);
     }
 
-    fn handle_input(&mut self, ctx: &mut Ctx<G>, event: &InputEvent) {
+    fn handle_input(&mut self, ctx: &mut Ctx<Self::Game>, event: &InputEvent) {
         menu_input(self, ctx, event)
     }
 
-    fn on_event(&mut self, _ctx: &mut Ctx<G>, _event: &G::Event) {}
+    fn on_event(&mut self, _ctx: &mut Ctx<Self::Game>, _event: &<Self::Game as Game>::Event) {}
 
-    fn update(&mut self, _ctx: &mut Ctx<G>, _dt: f64) {}
+    fn update(&mut self, _ctx: &mut Ctx<Self::Game>, _dt: f64) {}
 
-    fn lines(&self, ctx: &Ctx<G>) -> Vec<String> {
+    fn lines(&self, ctx: &Ctx<Self::Game>) -> Vec<String> {
         let core = self.menu();
         let mut out = vec![core.title.clone()];
         for (i, item) in core.items.iter().enumerate() {
@@ -189,7 +194,7 @@ pub trait Menu<G: Game>: Sized + 'static {
 
     /// F1: the focused row's help, or the menu's own help when the row has
     /// none.
-    fn help(&self, ctx: &Ctx<G>) -> String {
+    fn help(&self, ctx: &Ctx<Self::Game>) -> String {
         self.current_help(ctx)
             .unwrap_or_else(|| self.menu().intro_help.clone())
     }
@@ -197,7 +202,7 @@ pub trait Menu<G: Game>: Sized + 'static {
     /// What Escape does. Closing the screen is the default, so a menu at
     /// the root of the stack must override this: popping the only screen
     /// ends the run.
-    fn on_escape(&mut self, ctx: &mut Ctx<G>) {
+    fn on_escape(&mut self, ctx: &mut Ctx<Self::Game>) {
         ctx.pop()
     }
 
@@ -205,7 +210,7 @@ pub trait Menu<G: Game>: Sized + 'static {
 
     /// Rebuild the rows from `build_items`, keeping the cursor when
     /// `keep_index` is set.
-    fn refresh(&mut self, ctx: &mut Ctx<G>, keep_index: bool) {
+    fn refresh(&mut self, ctx: &mut Ctx<Self::Game>, keep_index: bool) {
         let items = self.build_items(ctx);
         let core = self.menu_mut();
         core.set_items(items);
@@ -216,7 +221,7 @@ pub trait Menu<G: Game>: Sized + 'static {
 
     /// The title as a sentence, then the row under the cursor queued
     /// behind it: `"Title."`, `"Row. 1 of 4."`.
-    fn announce(&mut self, ctx: &mut Ctx<G>) {
+    fn announce(&mut self, ctx: &mut Ctx<Self::Game>) {
         let title = end_sentence(&self.menu().title);
         ctx.say(title);
         let current = self.current_text(ctx);
@@ -225,7 +230,7 @@ pub trait Menu<G: Game>: Sized + 'static {
 
     /// The row under the cursor as a sentence, then where it is when the
     /// player has menu positions on: `"Beta. 2 of 3."`.
-    fn current_text(&self, ctx: &Ctx<G>) -> String {
+    fn current_text(&self, ctx: &Ctx<Self::Game>) -> String {
         let core = self.menu();
         let Some(item) = core.items.get(core.index) else {
             return "No options available.".to_string();
@@ -238,24 +243,24 @@ pub trait Menu<G: Game>: Sized + 'static {
         }
     }
 
-    fn current_help(&self, ctx: &Ctx<G>) -> Option<String> {
+    fn current_help(&self, ctx: &Ctx<Self::Game>) -> Option<String> {
         let core = self.menu();
         core.items.get(core.index)?.help_text(self, ctx)
     }
 
-    fn speak_current(&mut self, ctx: &mut Ctx<G>) {
+    fn speak_current(&mut self, ctx: &mut Ctx<Self::Game>) {
         let text = self.current_text(ctx);
         ctx.say(text);
     }
 
     /// How `adjust` reads a changed row back. A screen that must read some
     /// rows through another voice (a speech-rate preview) overrides this.
-    fn speak_adjusted(&mut self, ctx: &mut Ctx<G>) {
+    fn speak_adjusted(&mut self, ctx: &mut Ctx<Self::Game>) {
         self.speak_current(ctx)
     }
 
     /// Move the cursor by `delta`, wrapping at both ends.
-    fn move_by(&mut self, ctx: &mut Ctx<G>, delta: i32) {
+    fn move_by(&mut self, ctx: &mut Ctx<Self::Game>, delta: i32) {
         let n = self.menu().items.len();
         if n == 0 {
             return;
@@ -265,7 +270,7 @@ pub trait Menu<G: Game>: Sized + 'static {
         self.speak_current(ctx);
     }
 
-    fn jump(&mut self, ctx: &mut Ctx<G>, index: usize) {
+    fn jump(&mut self, ctx: &mut Ctx<Self::Game>, index: usize) {
         let n = self.menu().items.len();
         if n == 0 {
             return;
@@ -276,7 +281,7 @@ pub trait Menu<G: Game>: Sized + 'static {
 
     /// The next row after the cursor whose label starts with `c`, wrapping.
     /// Silent when nothing matches.
-    fn letter_jump(&mut self, ctx: &mut Ctx<G>, c: char) {
+    fn letter_jump(&mut self, ctx: &mut Ctx<Self::Game>, c: char) {
         let n = self.menu().items.len();
         let start = self.menu().index;
         let wanted = c.to_ascii_lowercase();
@@ -295,7 +300,7 @@ pub trait Menu<G: Game>: Sized + 'static {
         }
     }
 
-    fn activate(&mut self, ctx: &mut Ctx<G>) {
+    fn activate(&mut self, ctx: &mut Ctx<Self::Game>) {
         let i = self.menu().index;
         if i >= self.menu().items.len() {
             return;
@@ -312,7 +317,7 @@ pub trait Menu<G: Game>: Sized + 'static {
 
     /// Left and Right: change the row in place and read it back. A row with
     /// no adjuster does and says nothing.
-    fn adjust(&mut self, ctx: &mut Ctx<G>, delta: i32) {
+    fn adjust(&mut self, ctx: &mut Ctx<Self::Game>, delta: i32) {
         let i = self.menu().index;
         if !self
             .menu()
@@ -337,7 +342,7 @@ pub trait Menu<G: Game>: Sized + 'static {
 /// The navigation every menu shares, from the keyboard or a controller. A
 /// screen with extra keys overrides `handle_input` and calls this for
 /// everything it does not claim.
-pub fn menu_input<G: Game, S: Menu<G>>(state: &mut S, ctx: &mut Ctx<G>, event: &InputEvent) {
+pub fn menu_input<S: Menu>(state: &mut S, ctx: &mut Ctx<S::Game>, event: &InputEvent) {
     let Some(key) = event.pressed() else {
         return;
     };
@@ -373,32 +378,32 @@ fn letter_of(key: Key) -> Option<char> {
         .find(|&c| Key::from_char(c) == key)
 }
 
-impl<G: Game, M: Menu<G>> State<G> for M {
+impl<M: Menu> State<M::Game> for M {
     fn name(&self) -> &'static str {
         Menu::name(self)
     }
-    fn enter(&mut self, ctx: &mut Ctx<G>) {
+    fn enter(&mut self, ctx: &mut Ctx<M::Game>) {
         Menu::enter(self, ctx)
     }
-    fn exit(&mut self, ctx: &mut Ctx<G>) {
+    fn exit(&mut self, ctx: &mut Ctx<M::Game>) {
         Menu::exit(self, ctx)
     }
-    fn resume(&mut self, ctx: &mut Ctx<G>) {
+    fn resume(&mut self, ctx: &mut Ctx<M::Game>) {
         Menu::resume(self, ctx)
     }
-    fn handle_input(&mut self, ctx: &mut Ctx<G>, event: &InputEvent) {
+    fn handle_input(&mut self, ctx: &mut Ctx<M::Game>, event: &InputEvent) {
         Menu::handle_input(self, ctx, event)
     }
-    fn on_event(&mut self, ctx: &mut Ctx<G>, event: &G::Event) {
+    fn on_event(&mut self, ctx: &mut Ctx<M::Game>, event: &<M::Game as Game>::Event) {
         Menu::on_event(self, ctx, event)
     }
-    fn update(&mut self, ctx: &mut Ctx<G>, dt: f64) {
+    fn update(&mut self, ctx: &mut Ctx<M::Game>, dt: f64) {
         Menu::update(self, ctx, dt)
     }
-    fn lines(&self, ctx: &Ctx<G>) -> Vec<String> {
+    fn lines(&self, ctx: &Ctx<M::Game>) -> Vec<String> {
         Menu::lines(self, ctx)
     }
-    fn help(&self, ctx: &Ctx<G>) -> String {
+    fn help(&self, ctx: &Ctx<M::Game>) -> String {
         Menu::help(self, ctx)
     }
 }

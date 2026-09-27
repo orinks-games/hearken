@@ -24,7 +24,9 @@ impl<G: Game> PauseScreen<G> {
     }
 }
 
-impl<G: Game> Menu<G> for PauseScreen<G> {
+impl<G: Game> Menu for PauseScreen<G> {
+    type Game = G;
+
     fn name(&self) -> &'static str {
         "pause"
     }

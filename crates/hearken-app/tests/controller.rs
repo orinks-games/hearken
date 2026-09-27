@@ -201,7 +201,9 @@ impl Rows {
     }
 }
 
-impl Menu<TestGame> for Rows {
+impl Menu for Rows {
+    type Game = TestGame;
+
     fn name(&self) -> &'static str {
         "rows"
     }

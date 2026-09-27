@@ -50,7 +50,9 @@ impl<G: Game> Default for SettingsScreen<G> {
     }
 }
 
-impl<G: Game> Menu<G> for SettingsScreen<G> {
+impl<G: Game> Menu for SettingsScreen<G> {
+    type Game = G;
+
     fn name(&self) -> &'static str {
         "settings"
     }

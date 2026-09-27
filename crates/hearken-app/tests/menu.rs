@@ -23,7 +23,9 @@ impl TestMenu {
     }
 }
 
-impl Menu<TestGame> for TestMenu {
+impl Menu for TestMenu {
+    type Game = TestGame;
+
     fn name(&self) -> &'static str {
         "test_menu"
     }
@@ -64,7 +66,9 @@ struct Empty {
     menu: MenuCore<Self, TestGame>,
 }
 
-impl Menu<TestGame> for Empty {
+impl Menu for Empty {
+    type Game = TestGame;
+
     fn name(&self) -> &'static str {
         "empty"
     }

@@ -169,7 +169,9 @@ impl<G: Game> BindingsScreen<G> {
     }
 }
 
-impl<G: Game> Menu<G> for BindingsScreen<G> {
+impl<G: Game> Menu for BindingsScreen<G> {
+    type Game = G;
+
     fn name(&self) -> &'static str {
         "bindings"
     }

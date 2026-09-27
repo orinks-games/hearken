@@ -22,7 +22,9 @@ impl Default for Title {
     }
 }
 
-impl Menu<HelloGame> for Title {
+impl Menu for Title {
+    type Game = HelloGame;
+
     fn name(&self) -> &'static str {
         "title"
     }
