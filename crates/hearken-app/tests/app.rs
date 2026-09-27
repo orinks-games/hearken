@@ -69,6 +69,24 @@ fn reset_exits_every_screen_top_down_then_enters() {
 }
 
 #[test]
+fn popping_then_pushing_in_one_handler_does_not_resume_the_screen_briefly_revealed() {
+    let mut h = headless(Probe::new("root"));
+    h.app.ctx.push(Probe::new("b"));
+    h.app.ctx.push(Probe::new("c").on_return(|ctx| {
+        ctx.pop();
+        ctx.push(Probe::new("d"));
+    }));
+    h.frame(0.0);
+    take_log(&mut h.app.ctx);
+    h.press(Key::Return);
+    assert_eq!(
+        take_log(&mut h.app.ctx),
+        ["c key Return", "c exit", "d enter"]
+    );
+    assert_eq!(h.app.depth(), 3);
+}
+
+#[test]
 fn popping_the_root_and_pushing_in_the_same_handler_keeps_running() {
     let mut h = headless(Probe::new("root").on_return(|ctx| {
         ctx.pop();
