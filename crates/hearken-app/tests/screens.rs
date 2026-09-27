@@ -6,7 +6,7 @@ use std::rc::Rc;
 use common::{Probe, TestData, TestGame};
 use hearken_app::screens::help::sections;
 use hearken_app::screens::{HelpScreen, PauseScreen, SettingsScreen};
-use hearken_app::{App, Ctx, Headless, Key, Paths, Settings};
+use hearken_app::{App, Ctx, Game, Headless, Key, NoAction, Paths, Settings};
 use hearken_speech::{CaptureSpeech, SharedCapture};
 
 const DOC: &str = "# Test Game\n\nIgnored preamble.\n\n## Getting around\n\nUp and Down move.\nEnter chooses.\n\n## Quitting\n\nPick Quit.\n";
@@ -51,7 +51,7 @@ fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
     assert_eq!(
         h.spoken(),
-        ["Settings.", "Speech rate: 50 percent. 1 of 2."]
+        ["Settings.", "Speech rate: 50 percent. 1 of 5."]
     );
     h.press(Key::Right);
     assert_eq!(h.app.ctx.settings.speech.rate, 0.55);
@@ -71,7 +71,7 @@ fn the_new_rate_is_read_back_through_the_voice_it_changed() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
     h.clear();
     h.press(Key::Right);
-    let line = "Speech rate: 55 percent. 1 of 2.";
+    let line = "Speech rate: 55 percent. 1 of 5.";
     assert_eq!(
         h.speech.borrow().previews(),
         [("speech_rate".to_string(), line.to_string(), true)]
@@ -93,7 +93,7 @@ fn without_a_voice_that_can_change_rate_there_is_no_rate_row() {
     let _app = App::new(ctx, Box::new(SettingsScreen::<TestGame>::new()));
     assert_eq!(
         capture.borrow().main_lines(),
-        ["Settings.", "Menu positions: on. 1 of 1."]
+        ["Settings.", "Menu positions: on. 1 of 4."]
     );
 }
 
@@ -112,7 +112,7 @@ fn the_menu_positions_row_toggles_on_enter_left_and_right_and_reads_back_once() 
         h.spoken(),
         [
             "Menu positions: off.",
-            "Menu positions: on. 2 of 2.",
+            "Menu positions: on. 2 of 5.",
             "Menu positions: off."
         ]
     );
@@ -162,4 +162,48 @@ fn pause_lists_its_rows_and_each_one_works() {
     h.press(Key::End);
     h.press(Key::Return);
     assert!(!h.app.ctx.running, "Quit ends the run");
+}
+
+#[test]
+fn settings_open_the_shortcut_screens_and_turn_the_controller_off_and_on() {
+    let mut h = over_root(SettingsScreen::<TestGame>::new());
+    h.press(Key::Down);
+    h.press(Key::Down);
+    h.clear();
+    h.press(Key::Return);
+    assert_eq!(h.spoken(), ["Keyboard shortcuts.", "Jump: Space. 1 of 4."]);
+    h.press(Key::Escape);
+    h.press(Key::Down);
+    h.press(Key::Return);
+    assert_eq!(h.app.top_name(), "bindings");
+    h.press(Key::Escape);
+    h.press(Key::Down);
+    h.clear();
+    h.press(Key::Return);
+    assert_eq!(h.spoken(), ["Controller: off. 5 of 5."]);
+    assert!(!h.app.ctx.settings.controller.enabled);
+    assert!(!h.app.ctx.controller.enabled());
+    h.press(Key::Right);
+    assert!(h.app.ctx.controller.enabled());
+}
+
+struct Bare;
+
+impl Game for Bare {
+    const TITLE: &'static str = "Bare";
+    const DATA_DIR: &'static str = "HearkenBareTest";
+    const ENV_PREFIX: &'static str = "HEARKEN_BARE_TEST";
+    type Event = ();
+    type Data = ();
+    type Settings = ();
+    type Action = NoAction;
+}
+
+#[test]
+fn a_game_with_nothing_to_rebind_gets_no_shortcut_rows() {
+    let h = Headless::<Bare>::new((), SettingsScreen::<Bare>::new());
+    assert_eq!(
+        h.spoken(),
+        ["Settings.", "Speech rate: 50 percent. 1 of 3."]
+    );
 }

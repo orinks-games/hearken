@@ -4,6 +4,7 @@ use common::{Probe, TestAction as T, TestData, TestGame};
 use hearken_app::bindings::{
     key_saved_name, parse_key_name, Chord, KeyBindings, PadChord, Rebind, SavedBindings,
 };
+use hearken_app::screens::{BindingDevice, BindingsScreen};
 use hearken_app::{
     ControllerButton as B, Ctx, Headless, HeldKeys, InputEvent, Key, Mods, Paths, Settings,
 };
@@ -234,4 +235,162 @@ fn bindings_come_back_from_the_settings_file() {
         TestData::default(),
     );
     assert_eq!(ctx.action_for(&InputEvent::key(Key::Z)), Some(T::Jump));
+}
+
+fn shortcuts(device: BindingDevice) -> Headless<TestGame> {
+    let mut h = Headless::new(TestData::default(), Probe::new("root"));
+    h.connect_pad();
+    h.app.ctx.push(BindingsScreen::<TestGame>::new(device));
+    h.frame(0.0);
+    h
+}
+
+#[test]
+fn the_keyboard_screen_lists_each_control_with_its_key() {
+    let h = shortcuts(BindingDevice::Keyboard);
+    assert_eq!(h.spoken(), ["Keyboard shortcuts.", "Jump: Space. 1 of 4."]);
+    assert_eq!(
+        h.app.top_lines(),
+        [
+            "Keyboard shortcuts",
+            "> Jump: Space",
+            "  Duck: C",
+            "  Open the map: Shift M",
+            "  Reset every keyboard shortcut"
+        ]
+    );
+}
+
+#[test]
+fn enter_then_a_key_moves_the_control_and_saves_it_at_once() {
+    let mut h = shortcuts(BindingDevice::Keyboard);
+    h.press(Key::Return);
+    assert_eq!(
+        h.spoken().last().map(String::as_str),
+        Some("Press the new key for Jump. Escape keeps Space.")
+    );
+    h.clear();
+    h.press(Key::Z);
+    assert_eq!(h.spoken(), ["Jump is now Z."]);
+    let saved = std::fs::read_to_string(h.app.ctx.paths.settings_file()).unwrap();
+    assert!(saved.contains("\"jump\": \"z\""), "saved: {saved}");
+    // Back to moving between rows.
+    h.clear();
+    h.press(Key::Down);
+    assert_eq!(h.spoken(), ["Duck: C. 2 of 4."]);
+}
+
+#[test]
+fn a_taken_or_reserved_key_is_refused_and_the_screen_keeps_listening() {
+    let mut h = shortcuts(BindingDevice::Keyboard);
+    h.press(Key::Return);
+    h.clear();
+    h.press(Key::C);
+    h.press(Key::Tab);
+    h.press(Key::Return);
+    assert_eq!(
+        h.spoken(),
+        [
+            "C is already used for Duck. Press another, or keep Space with Escape.",
+            "Tab reads the score. Press another, or keep Space with Escape.",
+            "Enter chooses. Press another, or keep Space with Escape.",
+        ]
+    );
+    h.clear();
+    h.press(Key::Escape);
+    assert_eq!(h.spoken(), ["Kept Space."]);
+    assert_eq!(
+        h.app.top_name(),
+        "bindings",
+        "Escape ended the listening, not the screen"
+    );
+}
+
+#[test]
+fn a_modifier_waits_for_the_key_that_goes_with_it() {
+    let mut h = shortcuts(BindingDevice::Keyboard);
+    h.press(Key::Return);
+    h.clear();
+    h.send(InputEvent::key_mods(Key::LAlt, Mods::ALT));
+    assert!(h.spoken().is_empty());
+    h.send(InputEvent::key_mods(Key::J, Mods::ALT));
+    assert_eq!(h.spoken(), ["Jump is now Alt J."]);
+}
+
+#[test]
+fn f1_while_listening_repeats_what_the_screen_is_waiting_for() {
+    let mut h = shortcuts(BindingDevice::Keyboard);
+    h.press(Key::Return);
+    h.clear();
+    h.press(Key::F1);
+    assert_eq!(
+        h.spoken(),
+        ["Press the new key for Jump. Escape keeps Space."]
+    );
+}
+
+#[test]
+fn reset_puts_every_key_back_and_saves() {
+    let mut h = shortcuts(BindingDevice::Keyboard);
+    h.press(Key::Return);
+    h.press(Key::Z);
+    h.press(Key::End);
+    h.clear();
+    h.press(Key::Return);
+    assert_eq!(
+        h.spoken(),
+        ["Every keyboard shortcut is back to its default."]
+    );
+    assert!(h.app.ctx.bindings.is_default());
+    let saved = std::fs::read_to_string(h.app.ctx.paths.settings_file()).unwrap();
+    assert!(!saved.contains("\"jump\""), "saved: {saved}");
+}
+
+#[test]
+fn the_controller_screen_takes_a_button_and_the_right_bumper_picks_the_second_layer() {
+    let mut h = shortcuts(BindingDevice::Controller);
+    assert_eq!(
+        h.spoken(),
+        ["Controller buttons.", "Jump: the A button. 1 of 4."]
+    );
+    h.send(InputEvent::button(B::A));
+    assert_eq!(
+        h.spoken().last().map(String::as_str),
+        Some(
+            "Press the new button for Jump, with the right bumper held for the second layer. \
+             Press the A button to keep it."
+        )
+    );
+    h.clear();
+    h.press(Key::Z);
+    assert!(h.spoken().is_empty(), "a key is not a button");
+    h.send(InputEvent::button(B::RightShoulder));
+    h.send(InputEvent::button(B::LeftStick));
+    assert_eq!(
+        h.spoken(),
+        ["Jump is now right bumper plus the left stick click."]
+    );
+    assert_eq!(
+        h.app.ctx.bindings.pad_action_for(B::LeftStick, true),
+        Some(T::Jump)
+    );
+}
+
+#[test]
+fn pressing_the_button_a_control_already_has_keeps_it() {
+    let mut h = shortcuts(BindingDevice::Controller);
+    h.send(InputEvent::button(B::A));
+    h.send(InputEvent::button_up(B::A));
+    h.clear();
+    h.send(InputEvent::button(B::A));
+    assert_eq!(h.spoken(), ["Kept the A button."]);
+}
+
+#[test]
+fn escape_on_the_controller_screen_keeps_the_button() {
+    let mut h = shortcuts(BindingDevice::Controller);
+    h.send(InputEvent::button(B::A));
+    h.clear();
+    h.press(Key::Escape);
+    assert_eq!(h.spoken(), ["Kept the A button."]);
 }

@@ -44,7 +44,7 @@ impl Menu<HelloGame> for Title {
             MenuItem::new("Settings", |_s: &mut Self, ctx: &mut Ctx<HelloGame>| {
                 ctx.push(SettingsScreen::<HelloGame>::new())
             })
-            .help("Speech rate."),
+            .help("Speech, the controls, and the controller."),
             MenuItem::new("Help", |_s: &mut Self, ctx: &mut Ctx<HelloGame>| {
                 ctx.push(HelpScreen::<HelloGame>::new(HELP))
             })
