@@ -1,0 +1,16 @@
+[package]
+name = "hello-hearken"
+description = "The smallest complete Hearken game: a title menu, settings, help, and a practice room"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+build = "build.rs"
+
+[dependencies]
+hearken-app.workspace = true
+# A direct dependency, so build.rs sees Prism's delay-load list.
+hearken-speech.workspace = true

@@ -361,7 +361,9 @@ Each milestone gets its own implementation plan.
    controller manager, held-key tracking, text entry, the timed message
    screen.
 2. **M2 Sound.** `hearken-audio` including live voices, `hearken-synth`,
-   `hearken-bake` with tiers, providers, credits and `--check`.
+   `hearken-bake` with tiers, providers, credits and `--check`; menu sounds,
+   volumes in settings and Learn Sounds join `hearken-app`'s built-in
+   screens once audio exists to drive them.
 3. **M3 Lucky Break on Hearken.** Lucky Break drops its `prism`, `prism-sys`,
    `bass-sys` and shell code for Hearken. Its existing Python-rendered WAVs
    enter the manifest as layers, so nothing sounds different on day one;
