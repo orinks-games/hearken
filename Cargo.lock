@@ -348,6 +348,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hearken-audio"
+version = "0.1.0"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "hearken-bass-sys"
 version = "0.1.0"
 dependencies = [
