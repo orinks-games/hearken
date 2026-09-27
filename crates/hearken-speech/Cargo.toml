@@ -1,0 +1,23 @@
+[package]
+name = "hearken-speech"
+description = "Screen reader, braille and text-to-speech output for audio games, through Prism"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Publishes Prism's delay-load list to games (see build.rs).
+links = "hearken_speech"
+build = "build.rs"
+
+[dependencies]
+prismer.workspace = true
+log.workspace = true
+serde.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
