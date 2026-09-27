@@ -1,11 +1,16 @@
 //! Every log record goes to stderr and, when it can be opened, to the log
 //! file (`<env_prefix>_LOG_FILE`, else `paths.log_file()`), so a finished
-//! session leaves its transcript behind. Safe to call twice: the second
-//! call finds a logger already set and changes nothing.
+//! session leaves its transcript behind, and a panic's message and place
+//! are logged before the default hook prints them, so a crash leaves its
+//! reason behind too. Safe to call twice: the second call finds a logger
+//! and the hook already set and changes nothing.
 
 use std::path::PathBuf;
+use std::sync::Once;
 
 use crate::paths::Paths;
+
+static PANIC_HOOK: Once = Once::new();
 
 pub fn init(paths: &Paths, env_prefix: &str) {
     let log_path = std::env::var_os(format!("{env_prefix}_LOG_FILE"))
@@ -47,6 +52,14 @@ pub fn init(paths: &Paths, env_prefix: &str) {
             let _ = log::set_boxed_logger(Box::new(stderr_logger));
         }
     }
+
+    PANIC_HOOK.call_once(|| {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            log::error!("Fatal error: {info}");
+            default_hook(info);
+        }));
+    });
 }
 
 /// Fans one log record out to every sink. `env_logger`'s own `Builder`

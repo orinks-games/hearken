@@ -123,13 +123,23 @@ fn the_already_running_line_names_the_game() {
     );
 }
 
+/// The only test here that sets up logging: the logger and the panic hook
+/// are both process-wide.
 #[test]
-fn the_log_file_goes_to_the_data_folder() {
+fn the_log_file_goes_to_the_data_folder_and_a_panic_is_logged_once() {
     let dir = tempfile::tempdir().unwrap();
     let paths = hearken_app::Paths::at(dir.path());
     hearken_app::logging::init(&paths, "HEARKEN_TEST_PLATFORM");
+    hearken_app::logging::init(&paths, "HEARKEN_TEST_PLATFORM");
     log::info!(target: hearken_app::TRANSCRIPT_TARGET, "a spoken line");
+    let _ = std::panic::catch_unwind(|| panic!("the test panic"));
     log::logger().flush();
     let text = std::fs::read_to_string(paths.log_file()).unwrap();
     assert!(text.contains("a spoken line"), "log: {text}");
+    assert_eq!(
+        text.matches("Fatal error: ").count(),
+        1,
+        "one hook, however often logging starts: {text}"
+    );
+    assert!(text.contains("the test panic"), "log: {text}");
 }
