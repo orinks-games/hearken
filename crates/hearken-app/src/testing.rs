@@ -1,5 +1,6 @@
 //! A headless app for tests: captured speech, a throwaway data folder, no
-//! window.
+//! window. The capture answers like a player with a real voice: a screen
+//! reader that can change rate, and a separate event voice.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,7 +24,7 @@ pub struct Headless<G: Game> {
 impl<G: Game> Headless<G> {
     pub fn new(game: G::Data, first: impl State<G> + 'static) -> Self {
         let dir = tempfile::tempdir().expect("a temporary data folder");
-        let speech = Rc::new(RefCell::new(CaptureSpeech::new()));
+        let speech = Rc::new(RefCell::new(CaptureSpeech::full_voice()));
         let ctx = Ctx::new(
             Box::new(SharedCapture(speech.clone())),
             Settings::default(),

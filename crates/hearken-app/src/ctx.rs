@@ -72,6 +72,20 @@ impl<G: Game> Ctx<G> {
         self.record(format!("[event] {text}"));
     }
 
+    /// Read a settings change back through the voice it changed, so a new
+    /// speech rate is heard at that rate; on the main channel when no voice
+    /// can be adjusted that way. `setting` is a key such as `"speech_rate"`.
+    pub fn say_preview(&mut self, setting: &str, text: impl Into<String>) {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return;
+        }
+        if !self.speech.say_adjustment_preview(setting, &text, true) {
+            self.speech.say(&text, true);
+        }
+        self.record(text);
+    }
+
     fn speak(&mut self, text: String, interrupt: bool) {
         if text.trim().is_empty() {
             return;

@@ -197,6 +197,20 @@ fn speech_is_recorded_in_the_transcript_and_blank_lines_are_dropped() {
 }
 
 #[test]
+fn a_preview_no_voice_can_give_is_said_on_the_main_channel() {
+    let mut h = headless(Probe::new("root"));
+    h.clear();
+    h.app.ctx.say_preview("not_a_voice_setting", "Plain.");
+    h.app.ctx.say_preview("speech_rate", "  ");
+    assert_eq!(h.spoken(), ["Plain."]);
+    assert!(h.speech.borrow().previews().is_empty());
+    assert_eq!(
+        h.app.ctx.transcript.last().map(String::as_str),
+        Some("Plain.")
+    );
+}
+
+#[test]
 fn the_transcript_keeps_the_newest_lines() {
     let mut h = headless(Probe::new("root"));
     for i in 0..(hearken_app::TRANSCRIPT_CAP + 5) {

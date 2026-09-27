@@ -248,6 +248,12 @@ pub trait Menu<G: Game>: Sized + 'static {
         ctx.say(text);
     }
 
+    /// How `adjust` reads a changed row back. A screen that must read some
+    /// rows through another voice (a speech-rate preview) overrides this.
+    fn speak_adjusted(&mut self, ctx: &mut Ctx<G>) {
+        self.speak_current(ctx)
+    }
+
     /// Move the cursor by `delta`, wrapping at both ends.
     fn move_by(&mut self, ctx: &mut Ctx<G>, delta: i32) {
         let n = self.menu().items.len();
@@ -324,7 +330,7 @@ pub trait Menu<G: Game>: Sized + 'static {
         if self.menu().revision == revision {
             self.menu_mut().items = items;
         }
-        self.speak_current(ctx);
+        self.speak_adjusted(ctx);
     }
 }
 

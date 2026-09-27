@@ -1,9 +1,13 @@
 mod common;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use common::{Probe, TestData, TestGame};
 use hearken_app::screens::help::sections;
 use hearken_app::screens::{HelpScreen, PauseScreen, SettingsScreen};
-use hearken_app::{Ctx, Headless, Key};
+use hearken_app::{App, Ctx, Headless, Key, Paths, Settings};
+use hearken_speech::{CaptureSpeech, SharedCapture};
 
 const DOC: &str = "# Test Game\n\nIgnored preamble.\n\n## Getting around\n\nUp and Down move.\nEnter chooses.\n\n## Quitting\n\nPick Quit.\n";
 
@@ -39,9 +43,7 @@ fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
         h.spoken(),
         ["Settings.", "Speech rate: 50 percent. 1 of 2."]
     );
-    h.clear();
     h.press(Key::Right);
-    assert_eq!(h.spoken(), ["Speech rate: 55 percent. 1 of 2."]);
     assert_eq!(h.app.ctx.settings.speech.rate, 0.55);
     assert_eq!(
         h.speech.borrow().configure_calls().last().and_then(|c| c.0),
@@ -52,6 +54,37 @@ fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
         h.press(Key::Left);
     }
     assert_eq!(h.app.ctx.settings.speech.rate, 0.0);
+}
+
+#[test]
+fn the_new_rate_is_read_back_through_the_voice_it_changed() {
+    let mut h = over_root(SettingsScreen::<TestGame>::new());
+    h.clear();
+    h.press(Key::Right);
+    let line = "Speech rate: 55 percent. 1 of 2.";
+    assert_eq!(
+        h.speech.borrow().previews(),
+        [("speech_rate".to_string(), line.to_string(), true)]
+    );
+    assert!(h.spoken().is_empty(), "read once, by the previewing voice");
+    assert_eq!(h.app.ctx.transcript.last().map(String::as_str), Some(line));
+}
+
+#[test]
+fn without_a_voice_that_can_change_rate_there_is_no_rate_row() {
+    let capture = Rc::new(RefCell::new(CaptureSpeech::new()));
+    let dir = tempfile::tempdir().unwrap();
+    let ctx: Ctx<TestGame> = Ctx::new(
+        Box::new(SharedCapture(capture.clone())),
+        Settings::default(),
+        Paths::at(dir.path()),
+        TestData::default(),
+    );
+    let _app = App::new(ctx, Box::new(SettingsScreen::<TestGame>::new()));
+    assert_eq!(
+        capture.borrow().main_lines(),
+        ["Settings.", "Menu positions: on. 1 of 1."]
+    );
 }
 
 #[test]
