@@ -130,6 +130,9 @@ fn the_already_running_line_names_the_game() {
 /// are both process-wide.
 #[test]
 fn the_log_file_goes_to_the_data_folder_and_a_panic_is_logged_once() {
+    // A player's RUST_LOG, set for some other tool, must not cost them the
+    // transcript.
+    std::env::set_var("RUST_LOG", "off");
     let dir = tempfile::tempdir().unwrap();
     let paths = hearken_app::Paths::at(dir.path());
     hearken_app::logging::init(&paths, "HEARKEN_TEST_PLATFORM");
@@ -145,4 +148,18 @@ fn the_log_file_goes_to_the_data_folder_and_a_panic_is_logged_once() {
         "one hook, however often logging starts: {text}"
     );
     assert!(text.contains("the test panic"), "log: {text}");
+}
+
+#[test]
+fn starting_a_session_keeps_the_last_log_as_prev() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = hearken_app::Paths::at(dir.path());
+    hearken_app::logging::rotate(&paths, "HEARKEN_TEST_ROTATE"); // nothing to keep yet
+    std::fs::write(paths.log_file(), "first").unwrap();
+    hearken_app::logging::rotate(&paths, "HEARKEN_TEST_ROTATE");
+    std::fs::write(paths.log_file(), "second").unwrap();
+    hearken_app::logging::rotate(&paths, "HEARKEN_TEST_ROTATE");
+    assert!(!paths.log_file().exists());
+    let prev = std::fs::read_to_string(dir.path().join("session.log.prev")).unwrap();
+    assert_eq!(prev, "second", "the one before is replaced");
 }

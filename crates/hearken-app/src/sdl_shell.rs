@@ -11,17 +11,25 @@ use sdl2::pixels::Color;
 use sdl2::render::WindowCanvas;
 use sdl2::EventPump;
 
+use crate::controller::sdl::sdl_factory;
+use crate::controller::PadSubsystemFactory;
 use crate::input::{ControllerAxis, ControllerButton, InputEvent, Key, Mods};
 use crate::shell::{Shell, FRAME_SECONDS};
 
 pub struct SdlShell {
-    _sdl: sdl2::Sdl,
+    sdl: sdl2::Sdl,
     canvas: WindowCanvas,
     pump: EventPump,
     last: Instant,
 }
 
 impl SdlShell {
+    /// Brings SDL's game controller subsystem up when the controller
+    /// manager asks for it.
+    pub fn controller_factory(&self) -> PadSubsystemFactory {
+        sdl_factory(self.sdl.clone())
+    }
+
     pub fn new(title: &str) -> Result<Self, String> {
         let sdl = sdl2::init()?;
         let video = sdl.video()?;
@@ -33,7 +41,7 @@ impl SdlShell {
         let canvas = window.into_canvas().build().map_err(|e| e.to_string())?;
         let pump = sdl.event_pump()?;
         Ok(SdlShell {
-            _sdl: sdl,
+            sdl,
             canvas,
             pump,
             last: Instant::now(),
@@ -109,6 +117,7 @@ pub fn translate_events(raw: Vec<Event>) -> Vec<InputEvent> {
                 out.push(InputEvent::ControllerButtonDown {
                     button: button_from_sdl(button),
                     instance_id: which,
+                    repeat: false,
                 });
             }
             Event::ControllerButtonUp { which, button, .. } => {

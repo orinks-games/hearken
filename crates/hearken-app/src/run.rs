@@ -6,6 +6,7 @@ use std::time::Duration;
 use hearken_speech::{SpeechEnv, SpeechSink, ThreadedSpeech};
 
 use crate::app::App;
+use crate::controller::ControllerManager;
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::paths::Paths;
@@ -42,10 +43,14 @@ fn say_and_exit<G: Game>(line: &str, code: i32) -> i32 {
 /// Run `G` until the player quits. Returns the process exit code.
 pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) -> i32 {
     let paths = Paths::discover(G::DATA_DIR, G::ENV_PREFIX);
-    crate::logging::init(&paths, G::ENV_PREFIX);
-
     let mut guard = SingleInstanceGuard::new(&mutex_name(G::DATA_DIR));
-    if !guard.acquire() {
+    let first_copy = guard.acquire();
+    // Only the copy holding the lock may move the last session's log aside.
+    if first_copy {
+        crate::logging::rotate(&paths, G::ENV_PREFIX);
+    }
+    crate::logging::init(&paths, G::ENV_PREFIX);
+    if !first_copy {
         let line = already_running_line::<G>();
         log::warn!("{line}");
         return say_and_exit::<G>(&line, 0);
@@ -63,6 +68,10 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
 
     let (settings, notice) = Settings::load(&paths);
     let mut ctx = Ctx::new(Box::new(start_speech::<G>()), settings, paths, game);
+    ctx.controller = ControllerManager::new(
+        ctx.settings.controller.enabled,
+        Some(shell.controller_factory()),
+    );
     ctx.notices.extend(notice);
     ctx.apply_speech_settings();
 

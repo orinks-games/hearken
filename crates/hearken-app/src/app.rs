@@ -1,5 +1,6 @@
 //! The screen stack and the frame loop that drives it.
 
+use crate::controller::CONTROLLER_DISCONNECTED;
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
@@ -34,33 +35,16 @@ impl<G: Game> App<G> {
     /// One frame: input to the top screen, the game's events, the top
     /// screen's update, speech upkeep, and the stack changes asked for.
     pub fn step(&mut self, events: Vec<InputEvent>, dt: f64) {
+        // The clock the held-key pulses run on; see `held_keys`.
+        self.ctx.held.begin_frame(dt);
         for event in events {
-            match &event {
-                InputEvent::Quit => {
-                    self.ctx.running = false;
-                    continue;
-                }
-                // Coming back to the window re-checks which screen reader
-                // is running; the screen still sees the event.
-                InputEvent::WindowFocusGained => self.ctx.speech.request_refresh(),
-                // F2 silences speech everywhere, so no screen can hold it.
-                InputEvent::KeyDown { key: Key::F2, .. } => {
-                    self.ctx.stop_speech();
-                    continue;
-                }
-                // F1 reads the top screen's help.
-                InputEvent::KeyDown { key: Key::F1, .. } => {
-                    let help = self.states.last().map(|top| top.help(&self.ctx));
-                    if let Some(help) = help {
-                        self.ctx.say(help);
-                    }
-                    continue;
-                }
-                _ => {}
+            if self.admit(&event) {
+                self.dispatch(&event);
             }
-            if let Some(top) = self.states.last_mut() {
-                top.handle_input(&mut self.ctx, &event);
-            }
+        }
+        // A held D-pad left or right repeats, for adjusting a setting.
+        for event in self.ctx.controller.tick(dt) {
+            self.dispatch(&event);
         }
         // A screen that pushed or popped from a key must not also get this
         // frame's update.
@@ -82,6 +66,71 @@ impl<G: Game> App<G> {
         self.ctx.clock += dt;
     }
 
+    /// The bookkeeping every event gets before any screen sees it. False
+    /// when no screen should see it at all.
+    fn admit(&mut self, event: &InputEvent) -> bool {
+        match event {
+            InputEvent::Quit => {
+                self.ctx.running = false;
+                return false;
+            }
+            // Coming back to the window re-checks which screen reader is
+            // running and the keyboard's repeat timing, either of which the
+            // player may have changed while away, and nothing held before
+            // they left is held now. The screen still sees the event.
+            InputEvent::WindowFocusGained => {
+                self.ctx.speech.request_refresh();
+                self.ctx.held.refresh_repeat_timing();
+                self.ctx.held.clear_pulses();
+            }
+            InputEvent::WindowFocusLost => {
+                self.ctx.held.clear();
+                self.ctx.controller.release_all();
+            }
+            InputEvent::KeyDown { key, mods, .. } => {
+                self.ctx.held.press(*key, *mods);
+                self.ctx.controller.note_keyboard();
+            }
+            InputEvent::KeyUp { key, mods } => self.ctx.held.release(*key, *mods),
+            // Only the bound pad's presses and releases, and its removal,
+            // reach a screen.
+            e if e.is_controller_event() => {
+                if !self.ctx.controller.process_event(e) {
+                    return false;
+                }
+                if self.ctx.controller.take_disconnect() {
+                    self.ctx.say(CONTROLLER_DISCONNECTED);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// The keys that work on every screen, else the top screen.
+    fn dispatch(&mut self, event: &InputEvent) {
+        match event.pressed() {
+            // F2 silences speech everywhere, so no screen can hold it.
+            Some(Key::F2) => {
+                self.ctx.stop_speech();
+                return;
+            }
+            // F1, or a controller's Back button, reads the top screen's
+            // help.
+            Some(Key::F1) => {
+                let help = self.states.last().map(|top| top.help(&self.ctx));
+                if let Some(help) = help {
+                    self.ctx.say(help);
+                }
+                return;
+            }
+            _ => {}
+        }
+        if let Some(top) = self.states.last_mut() {
+            top.handle_input(&mut self.ctx, event);
+        }
+    }
+
     /// Run until something quits, then let the game finish, save the
     /// settings and shut speech down.
     pub fn run(&mut self, shell: &mut dyn Shell) {
@@ -93,9 +142,8 @@ impl<G: Game> App<G> {
             shell.render(&lines);
         }
         G::on_exit(&mut self.ctx);
-        if let Err(e) = self.ctx.settings.save(&self.ctx.paths) {
-            log::error!("could not save settings: {e}");
-        }
+        self.ctx.controller.shutdown();
+        self.ctx.save_settings();
         self.ctx.speech.shutdown();
     }
 
@@ -115,6 +163,10 @@ impl<G: Game> App<G> {
     }
 
     fn apply_pending(&mut self) {
+        // A new screen never inherits the last one's held keys.
+        if self.ctx.has_pending() {
+            self.ctx.held.clear_pulses();
+        }
         for _ in 0..MAX_STACK_ROUNDS {
             if !self.ctx.has_pending() {
                 break;

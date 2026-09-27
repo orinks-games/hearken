@@ -1,9 +1,11 @@
-//! The engine's settings. Every change is heard at once; Escape saves
-//! `settings.json` and goes back.
+//! The engine's settings, and the way to the rebinding screens. Every
+//! change is heard at once; Escape saves `settings.json` and goes back.
 
+use crate::bindings::Action;
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::menu::{Label, Menu, MenuCore, MenuItem};
+use crate::screens::{BindingDevice, BindingsScreen};
 
 /// A speech-rate step: five percent of the voice's range.
 const RATE_STEP: f64 = 0.05;
@@ -16,6 +18,12 @@ pub fn rate_label(rate: f64) -> String {
 fn toggle_positions<G: Game>(ctx: &mut Ctx<G>) {
     let menus = &mut ctx.settings.menus;
     menus.announce_position = !menus.announce_position;
+}
+
+fn toggle_controller<G: Game>(ctx: &mut Ctx<G>) {
+    let on = !ctx.settings.controller.enabled;
+    ctx.settings.controller.enabled = on;
+    ctx.controller.set_enabled(on);
 }
 
 pub struct SettingsScreen<G: Game> {
@@ -42,7 +50,9 @@ impl<G: Game> Default for SettingsScreen<G> {
     }
 }
 
-impl<G: Game> Menu<G> for SettingsScreen<G> {
+impl<G: Game> Menu for SettingsScreen<G> {
+    type Game = G;
+
     fn name(&self) -> &'static str {
         "settings"
     }
@@ -91,6 +101,46 @@ impl<G: Game> Menu<G> for SettingsScreen<G> {
             )
             .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_positions(ctx)),
         );
+        let actions = <G::Action as Action>::all();
+        if actions
+            .iter()
+            .any(|action| !action.default_keys().is_empty())
+        {
+            items.push(
+                MenuItem::new("Keyboard shortcuts", |_s: &mut Self, ctx: &mut Ctx<G>| {
+                    ctx.push(BindingsScreen::<G>::new(BindingDevice::Keyboard))
+                })
+                .help("Move any control to another key."),
+            );
+        }
+        if actions
+            .iter()
+            .any(|action| !action.default_pad().is_empty())
+        {
+            items.push(
+                MenuItem::new("Controller buttons", |_s: &mut Self, ctx: &mut Ctx<G>| {
+                    ctx.push(BindingsScreen::<G>::new(BindingDevice::Controller))
+                })
+                .help("Move any control to another controller button."),
+            );
+        }
+        items.push(
+            MenuItem::new(
+                Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                    let on = ctx.settings.controller.enabled;
+                    format!("Controller: {}", if on { "on" } else { "off" })
+                }),
+                |s: &mut Self, ctx: &mut Ctx<G>| {
+                    toggle_controller(ctx);
+                    // The rows are lent to this action while it runs; rebuild
+                    // them so the read-back finds this row.
+                    Menu::refresh(s, ctx, true);
+                    s.speak_current(ctx);
+                },
+            )
+            .help("Whether the game listens to a game controller. Enter, Left or Right changes it.")
+            .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_controller(ctx)),
+        );
         items
     }
 
@@ -105,9 +155,7 @@ impl<G: Game> Menu<G> for SettingsScreen<G> {
     }
 
     fn on_escape(&mut self, ctx: &mut Ctx<G>) {
-        if let Err(e) = ctx.settings.save(&ctx.paths) {
-            log::error!("could not save settings: {e}");
-        }
+        ctx.save_settings();
         ctx.pop();
     }
 }

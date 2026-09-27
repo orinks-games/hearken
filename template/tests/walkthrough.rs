@@ -19,7 +19,7 @@ fn settings_open_and_the_title_comes_back_where_it_was() {
     h.press(Key::Return);
     assert_eq!(
         h.spoken(),
-        ["Settings.", "Speech rate: 50 percent. 1 of 2."]
+        ["Settings.", "Speech rate: 50 percent. 1 of 5."]
     );
     h.clear();
     h.press(Key::Escape);
@@ -70,5 +70,31 @@ fn holding_a_key_in_the_practice_room_counts_once() {
             repeat: true,
         });
     }
+    assert_eq!(h.spoken(), ["1"]);
+}
+
+#[test]
+fn count_can_move_to_another_key() {
+    let mut h = start();
+    h.press(Key::Down);
+    h.press(Key::Return); // Settings
+    h.press(Key::Down);
+    h.press(Key::Down);
+    h.press(Key::Return); // Keyboard shortcuts
+    h.press(Key::Return); // Count
+    h.press(Key::C);
+    assert_eq!(
+        h.spoken().last().map(String::as_str),
+        Some("Count is now C.")
+    );
+    h.press(Key::Escape);
+    h.press(Key::Escape);
+    h.press(Key::Home);
+    h.clear();
+    h.press(Key::Return); // Play
+    assert_eq!(h.spoken(), ["The practice room. C counts, Escape pauses."]);
+    h.clear();
+    h.press(Key::C);
+    h.press(Key::Space);
     assert_eq!(h.spoken(), ["1"]);
 }

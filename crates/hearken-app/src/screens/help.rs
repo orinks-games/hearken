@@ -56,7 +56,9 @@ impl<G: Game> HelpScreen<G> {
     }
 }
 
-impl<G: Game> Menu<G> for HelpScreen<G> {
+impl<G: Game> Menu for HelpScreen<G> {
+    type Game = G;
+
     fn name(&self) -> &'static str {
         "help"
     }

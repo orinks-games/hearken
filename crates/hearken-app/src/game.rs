@@ -3,6 +3,7 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use crate::bindings::Action;
 use crate::ctx::Ctx;
 
 pub trait Game: Sized + 'static {
@@ -12,7 +13,7 @@ pub trait Game: Sized + 'static {
     /// settings and the session log. Also names the single-instance lock.
     const DATA_DIR: &'static str;
     /// Prefix of the game's environment overrides: `<PREFIX>_DATA_DIR`,
-    /// `<PREFIX>_LOG_FILE`, `<PREFIX>_NO_SPEECH`, `<PREFIX>_SPEECH_BACKEND`,
+    /// `<PREFIX>_LOG`, `<PREFIX>_LOG_FILE`, `<PREFIX>_NO_SPEECH`, `<PREFIX>_SPEECH_BACKEND`,
     /// `<PREFIX>_STREAM_TRANSCRIPT`.
     const ENV_PREFIX: &'static str;
 
@@ -23,6 +24,9 @@ pub trait Game: Sized + 'static {
     type Data;
     /// The game's settings, saved under `"game"` in `settings.json`.
     type Settings: Serialize + DeserializeOwned + Default + Clone;
+    /// The controls the player can move to other keys and buttons, from
+    /// Settings. `hearken_app::NoAction` when there are none.
+    type Action: Action;
 
     /// The events the game's rules produced this frame. Called once per
     /// frame, after input.

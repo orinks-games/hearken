@@ -26,7 +26,28 @@ fn typed_characters_land_on_their_keys() {
             repeat: false
         }
     );
-    assert!(!InputEvent::key(Key::Down).key_repeat());
+    assert!(!InputEvent::key(Key::Down).is_repeat());
+}
+
+#[test]
+fn a_controller_button_stands_in_for_the_key_a_screen_reads() {
+    use hearken_app::ControllerButton as B;
+    assert_eq!(InputEvent::key(Key::Z).pressed(), Some(Key::Z));
+    assert_eq!(InputEvent::button(B::A).pressed(), Some(Key::Return));
+    assert_eq!(InputEvent::button(B::B).pressed(), Some(Key::Escape));
+    assert_eq!(InputEvent::button(B::Start).pressed(), Some(Key::Escape));
+    assert_eq!(InputEvent::button(B::Back).pressed(), Some(Key::F1));
+    assert_eq!(InputEvent::button(B::DPadLeft).pressed(), Some(Key::Left));
+    assert_eq!(InputEvent::button(B::X).pressed(), None);
+    assert_eq!(InputEvent::key_up(Key::Z).pressed(), None);
+    assert_eq!(InputEvent::button_up(B::A).pressed(), None);
+    let held = InputEvent::ControllerButtonDown {
+        button: B::DPadRight,
+        instance_id: 0,
+        repeat: true,
+    };
+    assert!(held.is_repeat());
+    assert!(!InputEvent::button(B::DPadRight).is_repeat());
 }
 
 #[test]

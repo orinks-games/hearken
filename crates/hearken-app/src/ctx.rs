@@ -2,7 +2,11 @@
 
 use hearken_speech::SpeechSink;
 
+use crate::bindings::KeyBindings;
+use crate::controller::{ControllerManager, InputDevice};
 use crate::game::Game;
+use crate::held_keys::HeldKeys;
+use crate::input::InputEvent;
 use crate::paths::Paths;
 use crate::settings::Settings;
 use crate::state::{StackOp, State};
@@ -19,6 +23,15 @@ pub struct Ctx<G: Game> {
     pub settings: Settings<G::Settings>,
     pub paths: Paths,
     pub game: G::Data,
+    /// Which keys are down now, for a screen that polls instead of reacting
+    /// to presses.
+    pub held: HeldKeys,
+    /// The bound game controller. Headless contexts get one that never
+    /// reaches a real subsystem; `run` swaps in SDL's.
+    pub controller: ControllerManager,
+    /// The game's controls, with the player's changes. Change them through
+    /// `KeyBindings::set_chord` and friends, then `save_bindings`.
+    pub bindings: KeyBindings<G::Action>,
     pub running: bool,
     /// Every line spoken this run, newest last. Event lines start `[event] `.
     pub transcript: Vec<String>,
@@ -37,11 +50,16 @@ impl<G: Game> Ctx<G> {
         paths: Paths,
         game: G::Data,
     ) -> Self {
+        let controller = ControllerManager::detached(settings.controller.enabled);
+        let bindings = KeyBindings::from_saved(&settings.bindings);
         Ctx {
             speech,
             settings,
             paths,
             game,
+            held: HeldKeys::default(),
+            controller,
+            bindings,
             running: true,
             transcript: Vec::new(),
             notices: Vec::new(),
@@ -110,6 +128,53 @@ impl<G: Game> Ctx<G> {
     /// Push the saved speech settings to the voices.
     pub fn apply_speech_settings(&mut self) {
         hearken_speech::apply_speech_settings(self.speech.as_mut(), &mut self.settings.speech);
+    }
+
+    /// Write `settings.json`. A failure is logged: the game plays on with
+    /// the settings it has.
+    pub fn save_settings(&self) {
+        if let Err(e) = self.settings.save(&self.paths) {
+            log::error!("could not save settings: {e}");
+        }
+    }
+
+    /// Keep the player's bindings in the settings and save them.
+    pub fn save_bindings(&mut self) {
+        self.bindings.store(&mut self.settings.bindings);
+        self.save_settings();
+    }
+
+    /// The game action a key press or pad button means, by the player's
+    /// bindings. `None` for anything else, and for a press no action has.
+    pub fn action_for(&self, event: &InputEvent) -> Option<G::Action> {
+        match event {
+            InputEvent::KeyDown { key, mods, .. } => self.bindings.action_for(*key, *mods),
+            InputEvent::ControllerButtonDown { button, .. } => self
+                .bindings
+                .pad_action_for(*button, self.controller.modifier()),
+            _ => None,
+        }
+    }
+
+    /// Whether `action`'s key or pad button is held down right now.
+    pub fn action_held(&self, action: G::Action) -> bool {
+        self.bindings.pressed(&self.held, action)
+            || self.bindings.pad_chords(action).iter().any(|chord| {
+                self.controller.is_down(chord.button)
+                    && (!chord.modified || self.controller.modifier())
+            })
+    }
+
+    /// `action`'s control as a prompt names it: the pad button while the
+    /// player is on a controller and the action has one, else the key.
+    pub fn control_name(&self, action: G::Action) -> String {
+        if self.controller.device() == InputDevice::Controller
+            && !self.bindings.pad_chords(action).is_empty()
+        {
+            self.bindings.pad_spoken(action)
+        } else {
+            self.bindings.spoken(action)
+        }
     }
 
     pub fn push(&mut self, screen: impl State<G> + 'static) {

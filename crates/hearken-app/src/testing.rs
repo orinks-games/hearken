@@ -8,6 +8,7 @@ use std::rc::Rc;
 use hearken_speech::{CaptureSpeech, SharedCapture};
 
 use crate::app::App;
+use crate::controller::fakes::FakePad;
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
@@ -36,6 +37,14 @@ impl<G: Game> Headless<G> {
             speech,
             _dir: dir,
         }
+    }
+
+    /// Bind a fake controller as instance 0, the id `InputEvent::button`
+    /// sends.
+    pub fn connect_pad(&mut self) {
+        let controller = &mut self.app.ctx.controller;
+        controller.bind_device(Box::new(FakePad::new(0)), "test pad");
+        controller.set_id_pending(false);
     }
 
     /// One key press, then the rest of that frame.

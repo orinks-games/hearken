@@ -1,30 +1,21 @@
-//! Delay-load the screen reader DLLs behind Prism's Windows backends.
-//!
-//! Without this every screen reader's client DLL becomes a hard import and
-//! the game will not start on a machine missing any of them. A link flag
-//! only applies to the final link, which is this crate's, so every game
-//! needs this build script.
+//! Link Prism the way it needs, or the game will not start (or will crash)
+//! on a machine missing one of the screen readers' client DLLs.
+//! hearken-speech works out the arguments; a link argument only reaches the
+//! final link, which is this crate's, so every game passes them on here.
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=DEP_HEARKEN_SPEECH_DELAY_LOAD_DLLS");
-    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
-        return;
-    }
-    match std::env::var("DEP_HEARKEN_SPEECH_DELAY_LOAD_DLLS") {
-        Ok(dlls) => {
-            for dll in dlls.split(';').filter(|dll| !dll.is_empty()) {
-                println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
+    println!("cargo:rerun-if-env-changed=DEP_HEARKEN_SPEECH_LINK_ARGS");
+    match std::env::var("DEP_HEARKEN_SPEECH_LINK_ARGS") {
+        Ok(args) => {
+            for arg in args.split(';').filter(|arg| !arg.is_empty()) {
+                println!("cargo:rustc-link-arg={arg}");
             }
         }
         // Cargo hands a build script this list only from a direct dependency.
         Err(_) => println!(
-            "cargo:warning=the screen reader DLLs will not be delay-loaded, so the game \
-             will not start on a machine missing one. Fix: add hearken-speech to this \
+            "cargo:warning=Prism's link arguments are missing, so the game will not start on \
+             a machine missing a screen reader's DLL. Fix: add hearken-speech to this \
              package's [dependencies]."
         ),
     }
-    // Prism's delay-load failure hook must be forced into the link, or a
-    // machine missing any screen reader's client DLL crashes the game at
-    // start.
-    println!("cargo:rustc-link-arg=/INCLUDE:__pfnDliFailureHook2");
 }

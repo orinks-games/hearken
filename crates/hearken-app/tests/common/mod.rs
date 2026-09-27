@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use hearken_app::{Ctx, Game, InputEvent, Key, State};
+use hearken_app::{Action, Chord, ControllerButton, Ctx, Game, InputEvent, Key, PadChord, State};
 
 pub struct TestGame;
 
@@ -17,6 +17,7 @@ impl Game for TestGame {
     type Event = u32;
     type Data = TestData;
     type Settings = ();
+    type Action = TestAction;
 
     fn pump(ctx: &mut Ctx<Self>, _dt: f64) -> Vec<u32> {
         std::mem::take(&mut ctx.game.queued_events)
@@ -24,6 +25,63 @@ impl Game for TestGame {
 
     fn observe(ctx: &mut Ctx<Self>, event: &u32) {
         ctx.game.log.push(format!("observe {event}"));
+    }
+}
+
+/// Jump: Space, pad A. Duck: C or keypad 0, pad X. Open the map: Shift M,
+/// keyboard only. Horn: right bumper plus Y, pad only. Tab is the game's
+/// own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TestAction {
+    Jump,
+    Duck,
+    Map,
+    Horn,
+}
+
+impl Action for TestAction {
+    fn all() -> &'static [Self] {
+        &[
+            TestAction::Jump,
+            TestAction::Duck,
+            TestAction::Map,
+            TestAction::Horn,
+        ]
+    }
+    fn id(self) -> &'static str {
+        match self {
+            TestAction::Jump => "jump",
+            TestAction::Duck => "duck",
+            TestAction::Map => "map",
+            TestAction::Horn => "horn",
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            TestAction::Jump => "Jump",
+            TestAction::Duck => "Duck",
+            TestAction::Map => "Open the map",
+            TestAction::Horn => "Horn",
+        }
+    }
+    fn default_keys(self) -> &'static [Chord] {
+        match self {
+            TestAction::Jump => const { &[Chord::plain(Key::Space)] },
+            TestAction::Duck => const { &[Chord::plain(Key::C), Chord::plain(Key::Kp0)] },
+            TestAction::Map => const { &[Chord::shift(Key::M)] },
+            TestAction::Horn => &[],
+        }
+    }
+    fn default_pad(self) -> &'static [PadChord] {
+        match self {
+            TestAction::Jump => const { &[PadChord::plain(ControllerButton::A)] },
+            TestAction::Duck => const { &[PadChord::plain(ControllerButton::X)] },
+            TestAction::Map => &[],
+            TestAction::Horn => const { &[PadChord::modified(ControllerButton::Y)] },
+        }
+    }
+    fn reserved_key(chord: &Chord) -> Option<&'static str> {
+        (chord.key == Key::Tab).then_some("Tab reads the score")
     }
 }
 
