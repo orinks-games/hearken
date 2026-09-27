@@ -22,7 +22,7 @@ sdl2 = "0.38"
 prismer = { version = "0.1.3", features = ["static"] }
 hearken-speech = { path = "crates/hearken-speech" }
 hearken-app = { path = "crates/hearken-app" }
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [profile.release]
 opt-level = 3
