@@ -1,4 +1,4 @@
-use hearken_app::{Headless, Key};
+use hearken_app::{Headless, InputEvent, Key, Mods};
 use hello_hearken::{HelloGame, Title};
 
 fn start() -> Headless<HelloGame> {
@@ -54,4 +54,21 @@ fn escape_on_the_title_says_how_to_leave_and_quit_leaves() {
     h.press(Key::End);
     h.press(Key::Return);
     assert!(!h.app.ctx.running);
+}
+
+#[test]
+fn holding_a_key_in_the_practice_room_counts_once() {
+    let mut h = start();
+    h.press(Key::Return);
+    h.clear();
+    h.press(Key::Space);
+    for _ in 0..5 {
+        h.send(InputEvent::KeyDown {
+            key: Key::Space,
+            mods: Mods::NONE,
+            text: Some(' '),
+            repeat: true,
+        });
+    }
+    assert_eq!(h.spoken(), ["1"]);
 }

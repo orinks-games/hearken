@@ -38,6 +38,10 @@ impl State<HelloGame> for Practice {
     }
 
     fn handle_input(&mut self, ctx: &mut Ctx<HelloGame>, event: &InputEvent) {
+        // A held key repeats; one press is one count, one pause.
+        if event.key_repeat() {
+            return;
+        }
         let Some((key, _, _)) = event.key_down() else {
             return;
         };
