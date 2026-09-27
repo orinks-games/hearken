@@ -97,3 +97,21 @@ fn an_unreadable_settings_file_is_kept_aside_and_reported() {
     let bad = paths.data_dir.join("settings.json.bad");
     assert_eq!(std::fs::read_to_string(bad).unwrap(), "{ not json");
 }
+
+#[test]
+fn a_settings_file_cut_off_mid_character_is_kept_aside_and_reported() {
+    let (paths, _dir) = temp_paths();
+    std::fs::write(paths.settings_file(), b"{\"speech\": {\"voice\": \"caf\xC3").unwrap();
+    let (s, notice) = Settings::<GameBits>::load(&paths);
+    assert_eq!(s, Settings::default());
+    assert_eq!(notice.as_deref(), Some(UNREADABLE_NOTICE));
+    assert!(
+        !paths.settings_file().exists(),
+        "the bad file is moved, not left to be overwritten"
+    );
+    let bad = paths.data_dir.join("settings.json.bad");
+    assert_eq!(
+        std::fs::read(bad).unwrap(),
+        b"{\"speech\": {\"voice\": \"caf\xC3"
+    );
+}

@@ -26,21 +26,25 @@ pub struct Settings<GS> {
 }
 
 impl<GS: Serialize + DeserializeOwned + Default> Settings<GS> {
-    /// The saved settings. A missing file gives the defaults quietly. A file
-    /// that cannot be read or parsed gives the defaults too, is moved aside
-    /// to `settings.json.bad` so the next save cannot destroy it, and returns
-    /// a notice for the player.
+    /// The saved settings, with graceful fallback on any read or parse failure.
+    ///
+    /// A missing file gives the defaults quietly. A file that is not valid
+    /// settings JSON (including invalid UTF-8 sequences) is moved aside to
+    /// `settings.json.bad` so the next save cannot destroy it, and gives the
+    /// defaults and a notice for the player. A file the game cannot open
+    /// (permissions, lock, etc.) gives the defaults and a notice and is left
+    /// where it is.
     pub fn load(paths: &Paths) -> (Self, Option<String>) {
         let file = paths.settings_file();
-        let text = match std::fs::read_to_string(&file) {
-            Ok(text) => text,
+        let bytes = match std::fs::read(&file) {
+            Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return (Self::default(), None),
             Err(e) => {
                 log::warn!("could not read {}: {e}; using defaults", file.display());
                 return (Self::default(), Some(UNREADABLE_NOTICE.to_string()));
             }
         };
-        match serde_json::from_str(&text) {
+        match serde_json::from_slice(&bytes) {
             Ok(settings) => (settings, None),
             Err(e) => {
                 log::warn!("could not parse {}: {e}; using defaults", file.display());
