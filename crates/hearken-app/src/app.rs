@@ -34,32 +34,11 @@ impl<G: Game> App<G> {
     /// One frame: input to the top screen, the game's events, the top
     /// screen's update, speech upkeep, and the stack changes asked for.
     pub fn step(&mut self, events: Vec<InputEvent>, dt: f64) {
+        // The clock the held-key pulses run on; see `held_keys`.
+        self.ctx.held.begin_frame(dt);
         for event in events {
-            match &event {
-                InputEvent::Quit => {
-                    self.ctx.running = false;
-                    continue;
-                }
-                // Coming back to the window re-checks which screen reader
-                // is running; the screen still sees the event.
-                InputEvent::WindowFocusGained => self.ctx.speech.request_refresh(),
-                // F2 silences speech everywhere, so no screen can hold it.
-                InputEvent::KeyDown { key: Key::F2, .. } => {
-                    self.ctx.stop_speech();
-                    continue;
-                }
-                // F1 reads the top screen's help.
-                InputEvent::KeyDown { key: Key::F1, .. } => {
-                    let help = self.states.last().map(|top| top.help(&self.ctx));
-                    if let Some(help) = help {
-                        self.ctx.say(help);
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            if let Some(top) = self.states.last_mut() {
-                top.handle_input(&mut self.ctx, &event);
+            if self.admit(&event) {
+                self.dispatch(&event);
             }
         }
         // A screen that pushed or popped from a key must not also get this
@@ -80,6 +59,55 @@ impl<G: Game> App<G> {
         self.apply_pending();
         self.ctx.frame += 1;
         self.ctx.clock += dt;
+    }
+
+    /// The bookkeeping every event gets before any screen sees it. False
+    /// when no screen should see it at all.
+    fn admit(&mut self, event: &InputEvent) -> bool {
+        match event {
+            InputEvent::Quit => {
+                self.ctx.running = false;
+                return false;
+            }
+            // Coming back to the window re-checks which screen reader is
+            // running and the keyboard's repeat timing, either of which the
+            // player may have changed while away, and nothing held before
+            // they left is held now. The screen still sees the event.
+            InputEvent::WindowFocusGained => {
+                self.ctx.speech.request_refresh();
+                self.ctx.held.refresh_repeat_timing();
+                self.ctx.held.clear_pulses();
+            }
+            InputEvent::WindowFocusLost => self.ctx.held.clear(),
+            InputEvent::KeyDown { key, mods, .. } => self.ctx.held.press(*key, *mods),
+            InputEvent::KeyUp { key, mods } => self.ctx.held.release(*key, *mods),
+            _ => {}
+        }
+        true
+    }
+
+    /// The keys that work on every screen, else the top screen.
+    fn dispatch(&mut self, event: &InputEvent) {
+        match event.pressed() {
+            // F2 silences speech everywhere, so no screen can hold it.
+            Some(Key::F2) => {
+                self.ctx.stop_speech();
+                return;
+            }
+            // F1, or a controller's Back button, reads the top screen's
+            // help.
+            Some(Key::F1) => {
+                let help = self.states.last().map(|top| top.help(&self.ctx));
+                if let Some(help) = help {
+                    self.ctx.say(help);
+                }
+                return;
+            }
+            _ => {}
+        }
+        if let Some(top) = self.states.last_mut() {
+            top.handle_input(&mut self.ctx, event);
+        }
     }
 
     /// Run until something quits, then let the game finish, save the
@@ -115,6 +143,10 @@ impl<G: Game> App<G> {
     }
 
     fn apply_pending(&mut self) {
+        // A new screen never inherits the last one's held keys.
+        if self.ctx.has_pending() {
+            self.ctx.held.clear_pulses();
+        }
         for _ in 0..MAX_STACK_ROUNDS {
             if !self.ctx.has_pending() {
                 break;

@@ -207,6 +207,9 @@ pub enum InputEvent {
     ControllerButtonDown {
         button: ControllerButton,
         instance_id: u32,
+        /// True for the controller manager's own repeats of a held D-pad
+        /// left or right.
+        repeat: bool,
     },
     ControllerButtonUp {
         button: ControllerButton,
@@ -279,6 +282,7 @@ impl InputEvent {
         InputEvent::ControllerButtonDown {
             button,
             instance_id: 0,
+            repeat: false,
         }
     }
 
@@ -319,9 +323,42 @@ impl InputEvent {
         }
     }
 
-    /// Whether this is an OS auto-repeat `KeyDown` (false for everything else).
-    pub fn key_repeat(&self) -> bool {
-        matches!(self, InputEvent::KeyDown { repeat: true, .. })
+    /// Whether a held key or a held D-pad direction repeated this press,
+    /// rather than a fresh press (false for everything else).
+    pub fn is_repeat(&self) -> bool {
+        matches!(
+            self,
+            InputEvent::KeyDown { repeat: true, .. }
+                | InputEvent::ControllerButtonDown { repeat: true, .. }
+        )
+    }
+
+    /// The key this press stands for: a key press's own key, or the key a
+    /// controller button stands in for (see [`controller_key_map`]), so a
+    /// screen that reads keys works from a controller with no code of its
+    /// own. `None` for anything that is not a press.
+    pub fn pressed(&self) -> Option<Key> {
+        match self {
+            InputEvent::KeyDown { key, .. } => Some(*key),
+            InputEvent::ControllerButtonDown { button, .. } => controller_key_map(*button),
+            _ => None,
+        }
+    }
+}
+
+/// The key a controller button stands in for on a screen that reads keys:
+/// A is Enter, B and Start are Escape, Back is F1 (help), and the D-pad is
+/// the arrow keys.
+pub fn controller_key_map(button: ControllerButton) -> Option<Key> {
+    match button {
+        ControllerButton::A => Some(Key::Return),
+        ControllerButton::B | ControllerButton::Start => Some(Key::Escape),
+        ControllerButton::Back => Some(Key::F1),
+        ControllerButton::DPadUp => Some(Key::Up),
+        ControllerButton::DPadDown => Some(Key::Down),
+        ControllerButton::DPadLeft => Some(Key::Left),
+        ControllerButton::DPadRight => Some(Key::Right),
+        _ => None,
     }
 }
 

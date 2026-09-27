@@ -3,6 +3,7 @@
 use hearken_speech::SpeechSink;
 
 use crate::game::Game;
+use crate::held_keys::HeldKeys;
 use crate::paths::Paths;
 use crate::settings::Settings;
 use crate::state::{StackOp, State};
@@ -19,6 +20,9 @@ pub struct Ctx<G: Game> {
     pub settings: Settings<G::Settings>,
     pub paths: Paths,
     pub game: G::Data,
+    /// Which keys are down now, for a screen that polls instead of reacting
+    /// to presses.
+    pub held: HeldKeys,
     pub running: bool,
     /// Every line spoken this run, newest last. Event lines start `[event] `.
     pub transcript: Vec<String>,
@@ -42,6 +46,7 @@ impl<G: Game> Ctx<G> {
             settings,
             paths,
             game,
+            held: HeldKeys::default(),
             running: true,
             transcript: Vec::new(),
             notices: Vec::new(),

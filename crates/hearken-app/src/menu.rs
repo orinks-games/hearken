@@ -334,12 +334,14 @@ pub trait Menu<G: Game>: Sized + 'static {
     }
 }
 
-/// The navigation every menu shares. A screen with extra keys overrides
-/// `handle_input` and calls this for everything it does not claim.
+/// The navigation every menu shares, from the keyboard or a controller. A
+/// screen with extra keys overrides `handle_input` and calls this for
+/// everything it does not claim.
 pub fn menu_input<G: Game, S: Menu<G>>(state: &mut S, ctx: &mut Ctx<G>, event: &InputEvent) {
-    let InputEvent::KeyDown { key, text, .. } = event else {
+    let Some(key) = event.pressed() else {
         return;
     };
+    let text = event.key_down().and_then(|(_, _, text)| text);
     match key {
         Key::Down => state.move_by(ctx, 1),
         Key::Up => state.move_by(ctx, -1),
@@ -353,9 +355,9 @@ pub fn menu_input<G: Game, S: Menu<G>>(state: &mut S, ctx: &mut Ctx<G>, event: &
         Key::Right => state.adjust(ctx, 1),
         Key::Escape => state.on_escape(ctx),
         other => {
-            let typed = (*text)
+            let typed = text
                 .filter(|c| c.is_alphanumeric())
-                .or_else(|| letter_of(*other));
+                .or_else(|| letter_of(other));
             if let Some(c) = typed {
                 state.letter_jump(ctx, c);
             }

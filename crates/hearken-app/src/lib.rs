@@ -5,6 +5,7 @@
 pub mod app;
 pub mod ctx;
 pub mod game;
+pub mod held_keys;
 pub mod input;
 pub mod logging;
 pub mod menu;
@@ -22,7 +23,8 @@ pub mod text;
 pub use app::App;
 pub use ctx::{Ctx, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
 pub use game::Game;
-pub use input::{ControllerAxis, ControllerButton, InputEvent, Key, Mods};
+pub use held_keys::HeldKeys;
+pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent, Key, Mods};
 pub use paths::Paths;
 pub use run::{already_running_line, run};
 pub use sdl_shell::SdlShell;

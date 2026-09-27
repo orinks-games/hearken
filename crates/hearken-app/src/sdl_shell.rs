@@ -109,6 +109,7 @@ pub fn translate_events(raw: Vec<Event>) -> Vec<InputEvent> {
                 out.push(InputEvent::ControllerButtonDown {
                     button: button_from_sdl(button),
                     instance_id: which,
+                    repeat: false,
                 });
             }
             Event::ControllerButtonUp { which, button, .. } => {
