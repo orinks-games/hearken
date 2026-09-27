@@ -12,6 +12,12 @@
 //! build script only ever reaches its own package's binaries, never a
 //! dependent's, so this has no effect on a game using the passthrough
 //! above).
+//!
+//! A game's build.rs must also add `/INCLUDE:__pfnDliFailureHook2` right
+//! next to its own `/DELAYLOAD:` flags, for the identical reason: without
+//! it, a screen reader missing from the player's machine crashes the game
+//! instead of Prism quietly reporting that backend as unavailable (see
+//! `delay_load_for_own_binaries` below for why).
 
 use std::env;
 use std::fs;
@@ -38,6 +44,15 @@ fn delay_load_for_own_binaries(dlls: &str) {
     for dll in dlls.split(';').filter(|dll| !dll.is_empty()) {
         println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
     }
+    // Prism's own delay-load failure hook (prism-sys's source/delayimp.cpp)
+    // safely substitutes stub functions when a screen-reader client DLL is
+    // missing, instead of MSVC's default of raising an unhandled SEH
+    // exception (0xC06D007E) the first time a delay-loaded call fails.
+    // Nothing else references that translation unit's symbols, so the
+    // static-archive linker drops it unless forced in -- the same problem
+    // Prism's own PrismBackends.cmake already solves for backend
+    // registrars via `/include:`.
+    println!("cargo:rustc-link-arg=/INCLUDE:__pfnDliFailureHook2");
 }
 
 /// Link what Prism's macOS and Linux backends import.
