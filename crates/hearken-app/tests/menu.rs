@@ -88,12 +88,9 @@ fn open() -> Headless<TestGame> {
 }
 
 #[test]
-fn opening_announces_the_title_the_count_and_the_first_row() {
+fn opening_announces_the_title_then_the_first_row_and_where_it_is() {
     let h = open();
-    assert_eq!(
-        h.spoken().last().map(String::as_str),
-        Some("Test menu. 3 items. Alpha")
-    );
+    assert_eq!(h.spoken(), ["Test menu.", "Alpha. 1 of 3."]);
 }
 
 #[test]
@@ -103,7 +100,24 @@ fn up_and_down_speak_the_row_and_wrap() {
     for key in [Key::Down, Key::Down, Key::Down, Key::Up] {
         h.press(key);
     }
-    assert_eq!(h.spoken(), ["Beta", "Gamma", "Alpha", "Gamma"]);
+    assert_eq!(
+        h.spoken(),
+        [
+            "Beta. 2 of 3.",
+            "Gamma. 3 of 3.",
+            "Alpha. 1 of 3.",
+            "Gamma. 3 of 3."
+        ]
+    );
+}
+
+#[test]
+fn with_positions_off_a_row_is_read_without_where_it_is() {
+    let mut h = open();
+    h.app.ctx.settings.menus.announce_position = false;
+    h.clear();
+    h.press(Key::Down);
+    assert_eq!(h.spoken(), ["Beta."]);
 }
 
 #[test]
@@ -112,7 +126,7 @@ fn home_and_end_jump_to_the_edges() {
     h.clear();
     h.press(Key::End);
     h.press(Key::Home);
-    assert_eq!(h.spoken(), ["Gamma", "Alpha"]);
+    assert_eq!(h.spoken(), ["Gamma. 3 of 3.", "Alpha. 1 of 3."]);
 }
 
 #[test]
@@ -128,7 +142,7 @@ fn left_and_right_adjust_and_read_back_and_a_row_without_an_adjuster_is_silent()
     let mut h = open();
     h.clear();
     h.press(Key::Right);
-    assert_eq!(h.spoken(), ["Alpha: 80"]);
+    assert_eq!(h.spoken(), ["Alpha: 80. 1 of 3."]);
     h.press(Key::Down);
     h.clear();
     h.press(Key::Right);
@@ -140,7 +154,7 @@ fn a_letter_jumps_to_the_next_matching_row_and_a_miss_is_silent() {
     let mut h = open();
     h.clear();
     h.send(InputEvent::typed('g'));
-    assert_eq!(h.spoken(), ["Gamma"]);
+    assert_eq!(h.spoken(), ["Gamma. 3 of 3."]);
     h.clear();
     h.send(InputEvent::typed('z'));
     assert!(h.spoken().is_empty());
@@ -173,7 +187,7 @@ fn escape_closes_the_menu_and_the_screen_below_resumes() {
 }
 
 #[test]
-fn coming_back_keeps_the_cursor_and_announces_without_the_count() {
+fn coming_back_keeps_the_cursor() {
     let mut h = open();
     h.press(Key::Down);
     h.app.ctx.push(Probe::new("above"));
@@ -181,7 +195,7 @@ fn coming_back_keeps_the_cursor_and_announces_without_the_count() {
     h.app.ctx.pop();
     h.clear();
     h.frame(0.0);
-    assert_eq!(h.spoken(), ["Test menu. Beta"]);
+    assert_eq!(h.spoken(), ["Test menu.", "Beta. 2 of 3."]);
 }
 
 #[test]
@@ -191,10 +205,7 @@ fn an_empty_menu_says_so_and_ignores_keys() {
         menu: MenuCore::new("Nothing here"),
     });
     h.frame(0.0);
-    assert_eq!(
-        h.spoken().last().map(String::as_str),
-        Some("Nothing here. 0 items. No options")
-    );
+    assert_eq!(h.spoken(), ["Nothing here.", "No options available."]);
     h.clear();
     for key in [
         Key::Down,

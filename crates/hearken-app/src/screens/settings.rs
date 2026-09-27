@@ -13,6 +13,11 @@ pub fn rate_label(rate: f64) -> String {
     format!("Speech rate: {} percent", (rate * 100.0).round() as i64)
 }
 
+fn toggle_positions<G: Game>(ctx: &mut Ctx<G>) {
+    let menus = &mut ctx.settings.menus;
+    menus.announce_position = !menus.announce_position;
+}
+
 pub struct SettingsScreen<G: Game> {
     menu: MenuCore<Self, G>,
 }
@@ -47,16 +52,35 @@ impl<G: Game> Menu<G> for SettingsScreen<G> {
     }
 
     fn build_items(&mut self, _ctx: &mut Ctx<G>) -> Vec<MenuItem<Self, G>> {
-        vec![MenuItem::inert(Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
-            rate_label(ctx.settings.speech.rate)
-        }))
-        .help("Left and Right change how fast the game speaks.")
-        .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| {
-            let next = ctx.settings.speech.rate + f64::from(delta) * RATE_STEP;
-            // Rounded to whole percent so repeated steps never drift.
-            ctx.settings.speech.rate = ((next * 100.0).round() / 100.0).clamp(0.0, 1.0);
-            ctx.apply_speech_settings();
-        })]
+        vec![
+            MenuItem::inert(Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                rate_label(ctx.settings.speech.rate)
+            }))
+            .help("Left and Right change how fast the game speaks.")
+            .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| {
+                let next = ctx.settings.speech.rate + f64::from(delta) * RATE_STEP;
+                // Rounded to whole percent so repeated steps never drift.
+                ctx.settings.speech.rate = ((next * 100.0).round() / 100.0).clamp(0.0, 1.0);
+                ctx.apply_speech_settings();
+            }),
+            MenuItem::new(
+                Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                    let on = ctx.settings.menus.announce_position;
+                    format!("Menu positions: {}", if on { "on" } else { "off" })
+                }),
+                |s: &mut Self, ctx: &mut Ctx<G>| {
+                    toggle_positions(ctx);
+                    // The rows are lent to this action while it runs; rebuild
+                    // them so the read-back finds this row.
+                    Menu::refresh(s, ctx, true);
+                    s.speak_current(ctx);
+                },
+            )
+            .help(
+                "Whether menus say where you are, such as 2 of 4. Enter, Left or Right changes it.",
+            )
+            .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_positions(ctx)),
+        ]
     }
 
     fn on_escape(&mut self, ctx: &mut Ctx<G>) {

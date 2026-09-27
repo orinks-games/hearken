@@ -24,7 +24,7 @@ pub use input::{ControllerAxis, ControllerButton, InputEvent, Key, Mods};
 pub use paths::Paths;
 pub use run::{already_running_line, run};
 pub use sdl_shell::SdlShell;
-pub use settings::Settings;
+pub use settings::{MenuSettings, Settings};
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use state::{StackOp, State};
 pub use testing::Headless;

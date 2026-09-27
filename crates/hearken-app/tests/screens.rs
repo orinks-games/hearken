@@ -26,10 +26,7 @@ fn help_sections_split_on_level_two_headings() {
 #[test]
 fn the_help_screen_lists_topics_and_reads_one_on_enter() {
     let mut h = over_root(HelpScreen::<TestGame>::new(DOC));
-    assert_eq!(
-        h.spoken().last().map(String::as_str),
-        Some("Help. 2 items. Getting around")
-    );
+    assert_eq!(h.spoken(), ["Help.", "Getting around. 1 of 2."]);
     h.clear();
     h.press(Key::Return);
     assert_eq!(h.spoken(), ["Up and Down move. Enter chooses."]);
@@ -39,12 +36,12 @@ fn the_help_screen_lists_topics_and_reads_one_on_enter() {
 fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
     assert_eq!(
-        h.spoken().last().map(String::as_str),
-        Some("Settings. 1 item. Speech rate: 50 percent")
+        h.spoken(),
+        ["Settings.", "Speech rate: 50 percent. 1 of 2."]
     );
     h.clear();
     h.press(Key::Right);
-    assert_eq!(h.spoken(), ["Speech rate: 55 percent"]);
+    assert_eq!(h.spoken(), ["Speech rate: 55 percent. 1 of 2."]);
     assert_eq!(h.app.ctx.settings.speech.rate, 0.55);
     assert_eq!(
         h.speech.borrow().configure_calls().last().and_then(|c| c.0),
@@ -55,6 +52,27 @@ fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
         h.press(Key::Left);
     }
     assert_eq!(h.app.ctx.settings.speech.rate, 0.0);
+}
+
+#[test]
+fn the_menu_positions_row_toggles_on_enter_left_and_right_and_reads_back_once() {
+    let mut h = over_root(SettingsScreen::<TestGame>::new());
+    h.press(Key::Down);
+    h.clear();
+    h.press(Key::Right);
+    assert!(!h.app.ctx.settings.menus.announce_position);
+    h.press(Key::Left);
+    assert!(h.app.ctx.settings.menus.announce_position);
+    h.press(Key::Return);
+    assert!(!h.app.ctx.settings.menus.announce_position);
+    assert_eq!(
+        h.spoken(),
+        [
+            "Menu positions: off.",
+            "Menu positions: on. 2 of 2.",
+            "Menu positions: off."
+        ]
+    );
 }
 
 #[test]
@@ -74,10 +92,7 @@ fn back_to_title(ctx: &mut Ctx<TestGame>) {
 #[test]
 fn pause_lists_its_rows_and_each_one_works() {
     let mut h = over_root(PauseScreen::<TestGame>::new(DOC, back_to_title));
-    assert_eq!(
-        h.spoken().last().map(String::as_str),
-        Some("Paused. 5 items. Resume")
-    );
+    assert_eq!(h.spoken(), ["Paused.", "Resume. 1 of 5."]);
     h.press(Key::Return);
     assert_eq!(h.app.top_name(), "root", "Resume closes the pause menu");
 

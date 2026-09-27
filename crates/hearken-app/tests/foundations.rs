@@ -80,6 +80,7 @@ fn partial_and_unknown_fields_load() {
     assert_eq!(s.speech.rate, 0.3);
     assert_eq!(s.speech.pitch, 0.5);
     assert_eq!(s.game, GameBits::default());
+    assert!(s.menus.announce_position, "a file from before the setting");
     assert_eq!(notice, None);
 }
 

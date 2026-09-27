@@ -22,7 +22,25 @@ pub struct Settings<GS> {
     #[serde(default)]
     pub speech: SpeechSettings,
     #[serde(default)]
+    pub menus: MenuSettings,
+    #[serde(default)]
     pub game: GS,
+}
+
+/// How menus read their rows.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct MenuSettings {
+    /// Follow each row with where it is: "Beta. 2 of 3."
+    pub announce_position: bool,
+}
+
+impl Default for MenuSettings {
+    fn default() -> Self {
+        MenuSettings {
+            announce_position: true,
+        }
+    }
 }
 
 impl<GS: Serialize + DeserializeOwned + Default> Settings<GS> {

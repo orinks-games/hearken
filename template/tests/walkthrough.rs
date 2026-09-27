@@ -11,23 +11,22 @@ fn start() -> Headless<HelloGame> {
 #[test]
 fn the_title_announces_itself() {
     let h = start();
-    assert_eq!(h.spoken(), ["Hello Hearken. 4 items. Play"]);
+    assert_eq!(h.spoken(), ["Hello Hearken.", "Play. 1 of 4."]);
 }
 
 #[test]
 fn settings_open_and_the_title_comes_back_where_it_was() {
     let mut h = start();
     h.press(Key::Down);
+    h.clear();
     h.press(Key::Return);
     assert_eq!(
-        h.spoken().last().map(String::as_str),
-        Some("Settings. 1 item. Speech rate: 50 percent")
+        h.spoken(),
+        ["Settings.", "Speech rate: 50 percent. 1 of 2."]
     );
+    h.clear();
     h.press(Key::Escape);
-    assert_eq!(
-        h.spoken().last().map(String::as_str),
-        Some("Hello Hearken. Settings")
-    );
+    assert_eq!(h.spoken(), ["Hello Hearken.", "Settings. 2 of 4."]);
 }
 
 #[test]

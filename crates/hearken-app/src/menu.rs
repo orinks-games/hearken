@@ -10,6 +10,7 @@ use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
 use crate::state::State;
+use crate::text::end_sentence;
 
 /// A label computed while the menu is open. Rows whose text depends on
 /// state that changes under them must be read through this, never off a
@@ -213,30 +214,27 @@ pub trait Menu<G: Game>: Sized + 'static {
         }
     }
 
-    /// `"Title. N items. First row"` on a fresh open, `"Title. Row"` when
-    /// the cursor is already somewhere.
+    /// The title as a sentence, then the row under the cursor queued
+    /// behind it: `"Title."`, `"Row. 1 of 4."`.
     fn announce(&mut self, ctx: &mut Ctx<G>) {
-        let title = self.menu().title.clone();
-        let n = self.menu().items.len();
-        let label = self.current_text(ctx);
-        let text = if self.menu().index == 0 {
-            let items = if n == 1 {
-                "1 item".to_string()
-            } else {
-                format!("{n} items")
-            };
-            format!("{title}. {items}. {label}")
-        } else {
-            format!("{title}. {label}")
-        };
-        ctx.say(text);
+        let title = end_sentence(&self.menu().title);
+        ctx.say(title);
+        let current = self.current_text(ctx);
+        ctx.say_queued(current);
     }
 
+    /// The row under the cursor as a sentence, then where it is when the
+    /// player has menu positions on: `"Beta. 2 of 3."`.
     fn current_text(&self, ctx: &Ctx<G>) -> String {
         let core = self.menu();
-        match core.items.get(core.index) {
-            Some(item) => item.text(self, ctx),
-            None => "No options".to_string(),
+        let Some(item) = core.items.get(core.index) else {
+            return "No options available.".to_string();
+        };
+        let label = end_sentence(&item.text(self, ctx));
+        if ctx.settings.menus.announce_position {
+            format!("{label} {} of {}.", core.index + 1, core.items.len())
+        } else {
+            label
         }
     }
 
