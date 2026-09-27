@@ -1,6 +1,7 @@
-//! A brief spoken transition that counts down and moves on by itself. Any
-//! key is answered with where it is instead of acted on, so a key still
-//! held from the screen before does nothing.
+//! A brief spoken transition that counts down and moves on by itself.
+//! Enter, Space, Escape and F1 are answered with where it is instead of
+//! acted on, and every other key does nothing, so a key still held from the
+//! screen before cannot act on the next one.
 //!
 //! Extracted from Freight Fate (commit c5d3ef8d), `TimedMessageState`. Its
 //! arrival sound comes with audio in M2.
@@ -71,6 +72,10 @@ impl<G: Game> State<G> for TimedMessage<G> {
     }
 
     fn handle_input(&mut self, ctx: &mut Ctx<G>, event: &InputEvent) {
+        // A held key's repeats would say the same status over and over.
+        if event.is_repeat() {
+            return;
+        }
         if matches!(
             event.pressed(),
             Some(Key::Escape | Key::Return | Key::Space | Key::KpEnter)

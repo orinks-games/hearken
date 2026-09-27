@@ -100,7 +100,9 @@ impl RepeatTimer {
             return 0;
         }
         self.held += dt;
-        self.countdown -= dt;
+        // A stall (the window dragged, a hitch) catches up at most one
+        // repeat delay's worth of repeats, never seconds of them at once.
+        self.countdown = (self.countdown - dt).max(-REPEAT_DELAY_S);
         let mut count = 0;
         while self.countdown <= 0.0 {
             count += 1;

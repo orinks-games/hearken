@@ -270,20 +270,27 @@ impl<A: Action> Default for KeyBindings<A> {
 
 impl<A: Action> KeyBindings<A> {
     /// The table `saved` describes. An entry that does not read (an unknown
-    /// id or key name, or a key for a control the keyboard does not have)
-    /// is skipped, so one bad line never costs the rest.
+    /// id or key name, a key for a control the keyboard does not have, or a
+    /// key the engine or the game keeps for itself) is skipped, so one bad
+    /// line never costs the rest.
     pub fn from_saved(saved: &SavedBindings) -> Self {
         let mut out = Self::default();
         for (id, value) in &saved.keys {
             if let (Some(action), Some(chord)) = (from_id::<A>(id), Chord::parse(value)) {
-                if !action.default_keys().is_empty() {
+                let reserved = reserved_key_reason(&chord)
+                    .or_else(|| A::reserved_key(&chord))
+                    .is_some();
+                if !action.default_keys().is_empty() && !reserved {
                     out.keys.insert(action, chord);
                 }
             }
         }
         for (id, value) in &saved.pad {
             if let (Some(action), Some(chord)) = (from_id::<A>(id), PadChord::parse(value)) {
-                if !action.default_pad().is_empty() {
+                let reserved = reserved_pad_reason(&chord)
+                    .or_else(|| A::reserved_pad(&chord))
+                    .is_some();
+                if !action.default_pad().is_empty() && !reserved {
                     out.pad.insert(action, chord);
                 }
             }

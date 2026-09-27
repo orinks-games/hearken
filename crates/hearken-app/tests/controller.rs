@@ -74,6 +74,18 @@ fn a_held_dpad_side_repeats_after_a_pause_then_faster() {
 }
 
 #[test]
+fn a_stall_catches_up_one_repeat_delay_not_seconds_of_repeats() {
+    let mut t = RepeatTimer::default();
+    t.press(B::DPadRight);
+    t.tick(2.0);
+    let burst = t.tick(3.0);
+    assert!(
+        burst <= 12,
+        "{burst}: a stalled window ran a setting to its end"
+    );
+}
+
+#[test]
 fn only_the_bound_pads_presses_get_through_and_a_doubled_press_counts_once() {
     let mut m = with_pad(3);
     assert_eq!(m.device(), InputDevice::Keyboard);

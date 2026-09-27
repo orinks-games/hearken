@@ -187,6 +187,20 @@ fn saved_bindings_round_trip_and_a_bad_entry_costs_only_itself() {
 }
 
 #[test]
+fn a_saved_binding_on_a_kept_key_falls_back_to_the_default() {
+    let mut saved = SavedBindings::default();
+    saved.keys.insert("jump".to_string(), "escape".to_string());
+    saved.keys.insert("duck".to_string(), "tab".to_string());
+    saved.pad.insert("jump".to_string(), "start".to_string());
+    let loaded = KeyBindings::<T>::from_saved(&saved);
+    assert_eq!(loaded.action_for(Key::Escape, Mods::NONE), None);
+    assert_eq!(loaded.action_for(Key::Space, Mods::NONE), Some(T::Jump));
+    assert_eq!(loaded.action_for(Key::C, Mods::NONE), Some(T::Duck));
+    assert_eq!(loaded.pad_action_for(B::A, false), Some(T::Jump));
+    assert!(loaded.is_default());
+}
+
+#[test]
 fn a_screen_asks_the_context_what_a_press_means_and_whether_a_control_is_held() {
     let mut h = Headless::new(TestData::default(), Probe::new("root"));
     h.app.ctx.held = HeldKeys::with_timing(500, 33);
