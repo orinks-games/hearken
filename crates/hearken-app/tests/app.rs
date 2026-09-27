@@ -86,6 +86,49 @@ fn popping_then_pushing_in_one_handler_does_not_resume_the_screen_briefly_reveal
     assert_eq!(h.app.depth(), 3);
 }
 
+/// Zero-sized screens: every box of one has the same address.
+macro_rules! unit_screen {
+    ($ty:ident, $name:literal) => {
+        struct $ty;
+
+        impl State<TestGame> for $ty {
+            fn name(&self) -> &'static str {
+                $name
+            }
+            fn enter(&mut self, ctx: &mut Ctx<TestGame>) {
+                ctx.game.log.push(concat!($name, " enter").to_string());
+            }
+            fn resume(&mut self, ctx: &mut Ctx<TestGame>) {
+                ctx.game.log.push(concat!($name, " resume").to_string());
+            }
+            fn help(&self, _ctx: &Ctx<TestGame>) -> String {
+                String::new()
+            }
+        }
+    };
+}
+
+unit_screen!(UnitA, "a");
+unit_screen!(UnitC, "c");
+
+#[test]
+fn a_screen_pushed_after_a_pop_is_entered_once_and_never_resumed_even_when_zero_sized() {
+    let mut h = headless(Probe::new("root"));
+    h.app.ctx.push(UnitA);
+    h.app.ctx.push(Probe::new("b").on_return(|ctx| {
+        ctx.pop();
+        ctx.push(UnitC);
+    }));
+    h.frame(0.0);
+    take_log(&mut h.app.ctx);
+    h.press(Key::Return);
+    assert_eq!(
+        take_log(&mut h.app.ctx),
+        ["b key Return", "b exit", "c enter"]
+    );
+    assert_eq!((h.app.top_name(), h.app.depth()), ("c", 3));
+}
+
 #[test]
 fn popping_the_root_and_pushing_in_the_same_handler_keeps_running() {
     let mut h = headless(Probe::new("root").on_return(|ctx| {

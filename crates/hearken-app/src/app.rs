@@ -119,17 +119,18 @@ impl<G: Game> App<G> {
             if !self.ctx.has_pending() {
                 break;
             }
-            // The screen a `Pop` revealed this round, by its thin pointer.
-            // Resuming it is deferred until the round has drained: a `Push`,
-            // `Replace` or `Reset` later in the same round covers or removes
-            // it, so it must never speak an announcement for a screen the
-            // player never actually lands on.
-            let mut revealed: Option<*const ()> = None;
+            // Whether the last change this round was a `Pop`, revealing the
+            // screen now on top. Resuming it is deferred until the round has
+            // drained: a `Push`, `Replace` or `Reset` later in the same round
+            // covers or removes it, so it must never speak an announcement
+            // for a screen the player never actually lands on.
+            let mut resume = false;
             for op in self.ctx.take_pending() {
                 match op {
                     StackOp::Push(mut next) => {
                         next.enter(&mut self.ctx);
                         self.states.push(next);
+                        resume = false;
                     }
                     StackOp::Pop => {
                         if let Some(mut gone) = self.states.pop() {
@@ -138,7 +139,7 @@ impl<G: Game> App<G> {
                         // An empty stack is only judged once the whole queue
                         // has drained: popping the root and pushing its
                         // replacement in one handler is allowed.
-                        revealed = self.states.last().map(|top| Self::thin_ptr(top.as_ref()));
+                        resume = true;
                     }
                     StackOp::Replace(mut next) => {
                         if let Some(mut gone) = self.states.pop() {
@@ -146,6 +147,7 @@ impl<G: Game> App<G> {
                         }
                         next.enter(&mut self.ctx);
                         self.states.push(next);
+                        resume = false;
                     }
                     StackOp::Reset(mut next) => {
                         while let Some(mut gone) = self.states.pop() {
@@ -153,16 +155,13 @@ impl<G: Game> App<G> {
                         }
                         next.enter(&mut self.ctx);
                         self.states.push(next);
+                        resume = false;
                     }
                 }
             }
-            if let Some(ptr) = revealed {
-                let still_on_top =
-                    self.states.last().map(|top| Self::thin_ptr(top.as_ref())) == Some(ptr);
-                if still_on_top {
-                    if let Some(top) = self.states.last_mut() {
-                        top.resume(&mut self.ctx);
-                    }
+            if resume {
+                if let Some(top) = self.states.last_mut() {
+                    top.resume(&mut self.ctx);
                 }
             }
         }
@@ -173,11 +172,5 @@ impl<G: Game> App<G> {
         if self.states.is_empty() {
             self.ctx.running = false;
         }
-    }
-
-    /// The screen's identity, for telling "still the same screen" apart from
-    /// "a different screen that happens to be on top now".
-    fn thin_ptr(screen: &dyn State<G>) -> *const () {
-        screen as *const dyn State<G> as *const ()
     }
 }
