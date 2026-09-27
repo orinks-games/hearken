@@ -27,14 +27,13 @@ of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
 5. `cargo run -p hello-hearken` starts the template game. Turn your screen
    reader on first; without one, Windows' SAPI voices speak instead.
 
-Every game needs a `build.rs` like `template/build.rs`, so the screen reader
-DLLs are delay-loaded and the game still starts on machines that lack some
-of them; it must also force Prism's delay-load failure hook into the link
-(`/INCLUDE:__pfnDliFailureHook2`), or a machine missing any screen reader's
-client DLL crashes the game at start instead of Prism reporting it
-unavailable. The game must list `hearken-speech` as a direct dependency,
-not only through `hearken-app`: Cargo hands a build script the list of
-DLLs to delay-load only from a direct dependency.
+Every game needs a `build.rs` like `template/build.rs`. It passes on the link
+arguments hearken-speech works out for Prism: the screen reader DLLs
+delay-loaded, so the game still starts on a machine that lacks some of them,
+and Prism's delay-load failure hook kept, so a missing DLL is reported
+unavailable instead of crashing the game. The game must list `hearken-speech`
+as a direct dependency, not only through `hearken-app`: Cargo hands a build
+script those arguments only from a direct dependency.
 
 ## Licence
 

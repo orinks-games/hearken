@@ -13,7 +13,7 @@ pub trait Game: Sized + 'static {
     /// settings and the session log. Also names the single-instance lock.
     const DATA_DIR: &'static str;
     /// Prefix of the game's environment overrides: `<PREFIX>_DATA_DIR`,
-    /// `<PREFIX>_LOG_FILE`, `<PREFIX>_NO_SPEECH`, `<PREFIX>_SPEECH_BACKEND`,
+    /// `<PREFIX>_LOG`, `<PREFIX>_LOG_FILE`, `<PREFIX>_NO_SPEECH`, `<PREFIX>_SPEECH_BACKEND`,
     /// `<PREFIX>_STREAM_TRANSCRIPT`.
     const ENV_PREFIX: &'static str;
 

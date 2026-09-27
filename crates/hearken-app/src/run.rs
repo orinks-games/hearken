@@ -43,10 +43,14 @@ fn say_and_exit<G: Game>(line: &str, code: i32) -> i32 {
 /// Run `G` until the player quits. Returns the process exit code.
 pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) -> i32 {
     let paths = Paths::discover(G::DATA_DIR, G::ENV_PREFIX);
-    crate::logging::init(&paths, G::ENV_PREFIX);
-
     let mut guard = SingleInstanceGuard::new(&mutex_name(G::DATA_DIR));
-    if !guard.acquire() {
+    let first_copy = guard.acquire();
+    // Only the copy holding the lock may move the last session's log aside.
+    if first_copy {
+        crate::logging::rotate(&paths, G::ENV_PREFIX);
+    }
+    crate::logging::init(&paths, G::ENV_PREFIX);
+    if !first_copy {
         let line = already_running_line::<G>();
         log::warn!("{line}");
         return say_and_exit::<G>(&line, 0);

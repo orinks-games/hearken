@@ -124,11 +124,12 @@ Freight Fate's speech stack, which is the more complete of the two:
   `poll`) is the interface.
 - A capture sink that records a transcript for tests, and fakes.
 - Both channels log to one transcript log target.
-- Prism's delay-load list passed on to games: `hearken-speech` has
-  `links = "hearken_speech"` and re-publishes prismer's list, and each game's
-  own `build.rs` (a dozen lines, shipped in the template) turns
-  `DEP_HEARKEN_SPEECH_DELAY_LOAD_DLLS` into `/DELAYLOAD` link arguments.
-  Linker flags only apply to the final link, which is the game's.
+- Prism's link arguments passed on to games: `hearken-speech` has
+  `links = "hearken_speech"` and publishes what Prism needs on MSVC (its
+  screen-reader DLLs as `/DELAYLOAD`, and `/INCLUDE:__pfnDliFailureHook2`)
+  as `DEP_HEARKEN_SPEECH_LINK_ARGS`, and each game's own `build.rs` (a few
+  lines, shipped in the template) passes them to its link. Linker flags only
+  apply to the final link, which is the game's.
 - Toolchain: prismer compiles Prism from source (CMake 3.24+, a C++23
   compiler) unless `PRISM_LIB_DIR` points at a prebuilt library. The template
   README documents both.

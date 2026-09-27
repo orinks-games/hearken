@@ -1,12 +1,10 @@
 //! Link settings for this crate's own test binaries, and staging the
 //! vendored SDL2 import library and DLL.
 //!
-//! Prism is linked statically through hearken-speech, and its Windows
-//! screen-reader client DLLs must be delay-loaded, with Prism's failure hook
-//! forced into the link, or a binary will not start (or will die) on a
-//! machine missing one of them. Link arguments only apply to the final link
-//! of the package that emits them, so every package with binaries repeats
-//! this.
+//! Prism is linked statically through hearken-speech, which works out the
+//! link arguments it needs (see its build.rs); link arguments only apply to
+//! the final link of the package that emits them, so this crate passes them
+//! on for its own test binaries, as every game does.
 //!
 //! Put the vendored SDL2 import library on the link path and stage its DLL
 //! beside the build output. macOS and Linux compile SDL2 in statically
@@ -17,22 +15,18 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    delay_load_prism_backends();
+    link_prism();
     stage_vendored_sdl2();
 }
 
-fn delay_load_prism_backends() {
-    println!("cargo:rerun-if-env-changed=DEP_HEARKEN_SPEECH_DELAY_LOAD_DLLS");
-    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
-        return;
+/// Prism's link arguments, worked out by hearken-speech, for this crate's
+/// own test binaries.
+fn link_prism() {
+    println!("cargo:rerun-if-env-changed=DEP_HEARKEN_SPEECH_LINK_ARGS");
+    let args = std::env::var("DEP_HEARKEN_SPEECH_LINK_ARGS").unwrap_or_default();
+    for arg in args.split(';').filter(|arg| !arg.is_empty()) {
+        println!("cargo:rustc-link-arg={arg}");
     }
-    let Ok(dlls) = std::env::var("DEP_HEARKEN_SPEECH_DELAY_LOAD_DLLS") else {
-        return;
-    };
-    for dll in dlls.split(';').filter(|dll| !dll.is_empty()) {
-        println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
-    }
-    println!("cargo:rustc-link-arg=/INCLUDE:__pfnDliFailureHook2");
 }
 
 fn stage_vendored_sdl2() {
