@@ -1,7 +1,7 @@
 # Hearken Engine Design
 
-- Date: 2026-09-26
-- Status: Draft for owner review
+- Date: 2026-09-26; M2 revised 2026-09-27
+- Status: M1 and M1b built from this; the M2 revision is for owner review
 - Repository: `Orinks/hearken` (local only until the owner says to publish)
 - Sources: Freight Fate `c5d3ef8d` (2026-09-25), Lucky Break `a101970` (2026-09-23)
 
@@ -18,6 +18,10 @@ It exists because the next two games (a watersports arcade game and a
 football game) would otherwise copy that shell a third and fourth time. Lucky
 Break's copy has already drifted from Freight Fate's.
 
+It is a general toolkit for audio games in the spirit of NVGT, not a copy of
+either game's shell. The two games are where its code comes from, not the
+shape of its API: a new game should never have to look like Freight Fate.
+
 ## Goals
 
 1. One shared implementation of everything that is not a game's own rules.
@@ -32,6 +36,10 @@ Break's copy has already drifted from Freight Fate's.
    game, not only Freight Fate.
 6. Open source under MIT/Apache-2.0 once Lucky Break runs on it and the
    template builds from a clean clone.
+7. Every built-in is a default made from the same public pieces the engine
+   uses, so a game can tune it, switch it off, or replace it with its own:
+   the audio library, positioning, speech pacing and verbosity, earcons,
+   and the built-in screens.
 
 ## Non-goals (v1)
 
@@ -43,6 +51,12 @@ Break's copy has already drifted from Freight Fate's.
   a game that ships elsewhere follows Freight Fate's nightly recipes
   (SDL2 compiled in with `bundled` + `static-link`, never Homebrew's sdl2).
 - Moving Freight Fate before Career 1.9 ships.
+- Anything to do with where a game's sound files come from. The engine
+  ships no ElevenLabs or other generator or download service, no Faust
+  bridge, and no Python studio tool; the author makes files however they
+  like and the engine takes files.
+- A second built-in audio library. The backend is a public trait, so a game
+  that does not want BASS brings its own.
 
 ## Decisions already made
 
@@ -55,6 +69,16 @@ Break's copy has already drifted from Freight Fate's.
 | Speech uses the `prismer` crate | 2026-09-26 | Lucky Break's in-tree `prism` crates are dropped |
 | Freight Fate moves only after 1.9 ships | 2026-09-26 | |
 | The Python `fate-engine` repo is archived, not reused | 2026-09-26 | It targets the pygame stack Freight Fate left on 2026-08-22 |
+| A general toolkit in the spirit of NVGT, in Rust | 2026-09-27 | The source games supply code, not API shape |
+| Every built-in is a replaceable default | 2026-09-27 | Goal 7 |
+| No sound-source integrations; a layer is a file | 2026-09-27 | Drops ElevenLabs, the provider trait and `generate` layers |
+| No Faust bridge or Python studio tool | 2026-09-27 | Recipes are Rust on fundsp |
+| The audio backend is a public trait; BASS is a default feature | 2026-09-27 | A game may bring its own library, or leave BASS out |
+| The engine does positioning; a backend is handed a mix | 2026-09-27 | Same sound on every library, tested without a device |
+| The audio API is handles and a pool | 2026-09-27 | Like NVGT's `sound_pool` |
+| Positions use NVGT's axes | 2026-09-27 | x east, y north, z up; facing in degrees clockwise from north |
+| M2 splits into M2 (runtime) and M2b (pipeline) | 2026-09-27 | |
+| The speech ladder is generic and comes in M2 | 2026-09-27 | Game-declared categories and levels |
 
 ### Evidence behind the sound decision
 
@@ -72,7 +96,8 @@ The owner's verdict after a loudness-matched listen: recording plus synthesis
 is best for a shipped game, and pure synthesis must still be enough to
 prototype with. All four toolchains (fundsp 0.23, Faust 2.88 to Rust,
 pedalboard 0.9, Surge XT 1.3.4) worked on the owner's machine, and rendering
-every clip took 0.2 seconds.
+every clip took 0.2 seconds. The spike's sources are kept in
+`docs/superpowers/notes/m2-spike/`; M2b ports its recipes to plain fundsp.
 
 ## Crates
 
@@ -81,8 +106,8 @@ hearken/
   crates/
     hearken-bass-sys   BASS C ABI, loaded at run time
     hearken-speech     prismer, speech worker, two channels, capture, fakes
-    hearken-audio      buses, 3D, emitters, beds, music, live voices, null
-    hearken-synth      fundsp + Faust bridge, recipe library, layer helpers
+    hearken-audio      handles and pool, positioning, backends, live voices
+    hearken-synth      fundsp recipes, category defaults, layer helpers
     hearken-app        shell, loop, screen stack, menus, input, settings
     hearken-online     updater, sign-in, keyring, cloud saves, presence
     hearken-playtest   headless harness, scenario runner, agent-server MCP
@@ -134,41 +159,120 @@ Freight Fate's speech stack, which is the more complete of the two:
   compiler) unless `PRISM_LIB_DIR` points at a prebuilt library. The template
   README documents both.
 
-The ladder, pacer and duck live in Freight Fate's delivery layer, which is
-tied to its context and audio, so they arrive with audio in M2; until then
-`say_event` goes straight to the event voice. The pacer's thresholds become
-configuration with Freight Fate's values as defaults.
+Gameplay speech gets three pieces in M2. Until then `say_event` goes
+straight to the event voice.
+
+- **Pacer**, Freight Fate's `EventSpeechPacer` ported whole into
+  `hearken-speech` (it is plain logic, no audio):
+  - It drops a line repeated within 2.5 s.
+  - A keyed standing condition speaks again only when its text changes;
+    `ctx.clear_condition(key)` resets it.
+  - Queued lines that would start too late for their priority are flushed.
+  - An important line an interrupt cut early is put back behind it; one the
+    player had mostly heard is dropped.
+  - Priorities are Ambient (waits up to 3 s), Important (0.8 s; Freight
+    Fate's "Route") and Critical (always interrupts).
+  - Thresholds are a config struct with Freight Fate's values as defaults.
+    The pacer pauses with the game.
+- **Ladder**, generic:
+  - A game declares its event categories as `Game::Category`, the pattern
+    `Game::Action` set; `NoCategory` for none, and Settings then has no
+    verbosity row.
+  - The game names its verbosity levels (for example Full, Quiet, Urgent
+    only), and for each level and category gives one rule:
+    - **Full** speaks the line.
+    - **Terse** speaks the short line the caller gave, or the line itself.
+    - **First time** speaks until `ctx.reset_first_times()`, which a game
+      calls at a new level or leg.
+    - **Earcon** plays a sound key instead.
+    - **Silent.**
+  - The table is plain data in `hearken-speech`, checked at start-up. A
+    category missing from a level is logged once and treated as Full.
+  - Freight Fate's "Transitions" rule is not carried; its notion of a
+    condition worsening belongs to the driving game, and keyed conditions
+    cover most of it.
+- **Duck**, a Settings toggle, off by default as in Freight Fate:
+  - While event speech is talking, and for 0.25 s after a ladder earcon,
+    the game's chosen buses (music and ambience unless it says otherwise)
+    drop to 50%.
+  - It lives in `Ctx`, the one place that joins speech to audio.
+
+The call is `ctx.say_event_with(text, SayEvent::new().priority(..)
+.category(..).key(..).terse(..))`; `ctx.say_event(text)` still works. All
+three pieces are optional: the pacer can be switched off or reconfigured,
+the duck's buses and level are the game's, the raw `ctx.speech` sink stays
+public, and a game can build its own delivery from the public pacer and
+ladder types.
 
 ### hearken-audio
 
-Lucky Break's model with Freight Fate's safety:
+Handles and a pool, like NVGT's `sound_pool`, with Freight Fate's safety.
 
-- A backend trait with BASS and silent (null) implementations. A machine
-  without BASS runs silent.
-- Buses (a game-extensible set: UI, effects, voice, ambience, music), a
-  listener, 3D one-shots, looping emitters, ambience beds, music, occlusion.
-  Nothing game-specific in the trait (Freight Fate's `engine_volume` and
-  `weather_volume` stay in Freight Fate).
-- `missing_clips()` reporting, as Lucky Break has.
-- **Live voices.** `audio.start_voice(id, recipe, params, pos, bus)` runs a
-  `hearken-synth` recipe on a BASS stream channel with 3D positioning.
-  `audio.set_voice_param(id, "throttle", 0.8)` updates a named parameter
-  lock-free (fundsp shared values). Under the null backend the voice is not
-  rendered. This is what drives a jet ski, a boat, wind, or a football crowd
-  that swells with the play.
+- **What a game calls**, `ctx.audio`, one concrete type:
+  - `play(key, bus)`, `play_at(key, pos, bus)`,
+    `start_loop(key, Option<pos>, bus)` and
+    `start_voice(recipe, params, Option<pos>, bus)` each return a `Sound`
+    handle (`Copy`). Ignoring it is fire-and-forget.
+  - On a handle: `stop(h, fade_ms)`, `pause`, `resume`, `set_volume`,
+    `set_pitch`, `set_position`, `set_voice_param(h, "throttle", 0.8)`,
+    `is_playing`. A handle whose sound has ended does nothing.
+  - Slots: `set_bed(Option<key>)` crossfades; `play_music(Option<key>,
+    looping)` does nothing when asked for what is already playing.
+  - `set_listener(pos, facing)`, `set_bus_volume`, `pause_all` and
+    `resume_all`, `missing_clips()`.
+- **Positions** are a `Vec3` in the game's own units on NVGT's axes: x east,
+  y north, z up; facing is degrees clockwise from north.
+- **Buses**: master, UI, effects, ambience, music and voice are built in; a
+  game adds its own by name (an `engine` bus, say). Volumes are saved by
+  name. Nothing game-specific in the API (Freight Fate's `engine_volume`
+  and `weather_volume` stay in Freight Fate).
+- **The engine does the positioning**, not the backend. From the listener
+  and a sound's position it computes distance attenuation, pan, and a cue
+  for a sound behind the listener (a gentle low-pass and a small drop).
+  Occlusion comes from a game hook, `Game::occluded(data, listener, pos) ->
+  bool`, and adds a low-pass and -6 dB, as in Lucky Break. The model's
+  numbers (distances, rolloff, the behind cue, the occlusion drop) are a
+  public config. This is what makes a backend small, keeps the sound the
+  same on any library, and lets the maths be tested without a device.
+- **The backend** is a public `Send` trait: `play(key, source, looping, mix)
+  -> Channel`, `set_mix(channel, mix, ramp_ms)`, `stop(channel, fade_ms)`,
+  `pause(channel, bool)`, `is_playing(channel)`.
+  - A source is a clip's file bytes, which the backend decodes, or a live
+    voice's renderer, which fills f32 buffers.
+  - A mix is gain, pan, pitch, an optional low-pass, and the position
+    relative to the listener for a backend that does its own 3D (HRTF).
+  - A backend never sees handles, buses or fades.
+  - M2 ships BASS (a default Cargo feature), a silent backend, and a
+    recording fake for tests.
+- **Choosing**: the game's own backend if it supplies one, else BASS when
+  the feature is on, else silent. The backend opens off the loop, as Freight
+  Fate's does: the game runs silent for its first frames, then the real
+  backend is swapped in and the music and volumes set meanwhile are
+  replayed. No device means silence and one spoken notice.
+- **Clips** come from a loose sounds folder behind a clip-source trait, so
+  M2b's pack slots in. A clip that is missing or will not decode plays its
+  category default from `hearken-synth` and is listed by `missing_clips()`.
+- **Live voices** run a `hearken-synth` recipe on a callback stream
+  positioned like any sound. `set_voice_param` updates a named parameter
+  lock-free (fundsp shared values). Under the silent backend a voice is not
+  rendered. This is what drives a jet ski, a boat, wind, or a football
+  crowd that swells with the play.
 
 ### hearken-synth
 
-- fundsp for graphs, band-limited oscillators, filters, reverb and noise.
-- A Faust bridge: the small set of types Faust's Rust backend expects (the
-  spike needed about 50 lines), plus a build step that compiles `.dsp` files
-  to Rust when the Faust compiler is present and uses the committed generated
-  code when it is not, so games build without Faust installed.
-- A recipe is a Rust function from parameters to a fundsp node or a rendered
-  buffer. The engine ships the recipes that proved out in the spike: modal
-  impacts (chips, glasses, bells), crowd babble, a pulse-train engine through
-  fixed resonances (the firing rate moves; resonances never do, and loops
-  are never pitch-shifted), water and spray, UI tones.
+- fundsp for graphs, band-limited oscillators, filters, reverb and noise,
+  and no other external tool: no Faust, no Python.
+- A recipe is a Rust function from named parameters to a fundsp node or a
+  rendered buffer.
+- **M2**: the category defaults (a tone for `ui/`, an impact for `sfx/`, a
+  noise bed for `amb/`, a pad for `music/`, a blip for anything else), the
+  UI earcon set (open, move, select, back, tick, error, notify), and the
+  recipe type live voices run.
+- **M2b**: the recipes that proved out in the spike, ported to plain fundsp:
+  modal impacts (chips, glasses, bells; the spike's Faust chip is a bank of
+  resonators), crowd babble, a pulse-train engine through fixed resonances
+  (the firing rate moves; resonances never do, and loops are never
+  pitch-shifted), water and spray.
 - Layer helpers: re-cutting a recording into fresh grains, pitch and level
   variation, so a layered sound never repeats exactly.
 - A measurement module (third-octave band balance, centroid, crest, decay)
@@ -216,7 +320,23 @@ The shell and everything a menu-driven audio game needs:
 - **Built-in screens**: settings (volumes per bus, speech, verbosity, key
   rebinding), help (F1 on every screen reads that screen's help), Learn
   Sounds (built from the sound manifest's descriptions), pause, a timed
-  message screen, and a save notice.
+  message screen, and a save notice. Each is an ordinary screen a game can
+  swap for its own, and Settings lets a game hide built-in rows and add
+  its own.
+- **Sound in the shell** (M2):
+  - Menus, text entry, the shortcuts screen and timed messages play
+    Freight Fate's keys (`ui/menu_open`, `ui/menu_move`, `ui/menu_select`,
+    `ui/menu_back`, `ui/tick`, `ui/error`, `ui/notify`) through a `UiSounds`
+    table on `Ctx`. A game points any entry at its own key or at nothing,
+    and a menu row can override its select sound.
+  - Settings gains a volume row per bus (5% steps, applied live), a
+    verbosity row when the game has categories, and "duck audio for
+    speech", saved as `audio.volumes` by bus name, `audio.duck_for_speech`
+    and `speech.verbosity`.
+  - Pause pauses all sound and the speech pacer, and resumes both.
+  - A silent start (no BASS, no device) is said once through the notices.
+  - `audio.shutdown()` is explicit and bounded; it runs after the game's
+    `on_exit` and before speech shuts down.
 - **Services**: single-instance guard, file logging with a transcript
   target, a data directory named after the game (`<GAME>_DATA_DIR`
   overrides it).
@@ -263,21 +383,16 @@ license = "CC0-1.0"
 attribution = "reg7783"
 gain_db = -6.0
 vary = { pitch_semitones = 1.0 }
-
-[[sound."sfx/crowd_murmur".layer]]
-generate = { provider = "elevenlabs", prompt = "brief swell of casino crowd murmur and a laugh" }
 ```
 
 - **Tiers resolve per sound at bake time.** Layers present means a hybrid;
   none, or none on disk, means the recipe alone. Game code never knows which.
   A project with only recipes has a complete prototype sound set.
-- **Sources are the author's choice.** A layer is a file: their own
-  recordings, royalty-free packs, CC0 downloads, ElevenLabs output. Sources
-  that generate or fetch files are plug-ins behind one trait; the engine
-  ships a folder source and ElevenLabs. A failed or unconfigured provider
-  (bad key, no credits, offline) leaves that layer out and the sound bakes as
-  synthesis, reported per sound, never failing the bake. This is Lucky
-  Break's current fallback, moved into the tool.
+- **Sources are the author's business.** A layer is a file: their own
+  recordings, royalty-free packs, CC0 downloads, the output of whatever
+  generator or synth they use. The engine never generates, fetches or
+  talks to a service; a layer whose file is not on disk is left out and
+  the sound bakes from its recipe, reported per sound.
 - **Licensed layers stay out of the repo.** The layers folder can live
   outside the checkout (`[paths] layers = ...` or `HEARKEN_LAYERS_DIR`), the
   way Freight Fate's `sounds-licensed` overlay works today, so a public repo
@@ -301,9 +416,6 @@ generate = { provider = "elevenlabs", prompt = "brief swell of casino crowd murm
   loose files override the pack.
 - **`--check`** measures every recipe that names a reference and prints its
   band deviation. It informs; the owner's listening pass decides.
-- **Music and jingles** can come from an optional Python studio tool
-  (pedalboard hosting Surge XT or any VST3), rendered to files that enter as
-  layers. No game needs Python to build.
 
 ## Template
 
@@ -341,9 +453,12 @@ Carried over from Freight Fate's engineering rules:
 ## Testing
 
 - Each crate tests headless: speech through the capture sink, audio through
-  the null backend (BASS-backed tests skip themselves without BASS and say
+  the silent backend (BASS-backed tests skip themselves without BASS and say
   so), recipes render and are measured, the manifest parser and tier
   resolution are property-tested.
+- Positioning (pan, gain, the behind cue, occlusion) is plain unit tests;
+  handles, buses, the duck and earcons are asserted through the recording
+  backend. Freight Fate's pacer tests port with the pacer.
 - `hearken-playtest` is itself tested by driving the template.
 - Lucky Break's existing tests are the acceptance test for M3: they must
   pass unchanged on Hearken, apart from import paths.
@@ -361,10 +476,18 @@ Each milestone gets its own implementation plan.
    **M1b Input.** Rebindable actions and the rebinding screen, the
    controller manager, held-key tracking, text entry, the timed message
    screen.
-2. **M2 Sound.** `hearken-audio` including live voices, `hearken-synth`,
-   `hearken-bake` with tiers, providers, credits and `--check`; menu sounds,
-   volumes in settings and Learn Sounds join `hearken-app`'s built-in
-   screens once audio exists to drive them.
+2. **M2 Sound runtime.** `hearken-audio` (handles and pool, engine-side
+   positioning and occlusion, the backend trait with BASS, silent and
+   recording backends, off-loop open, beds, music, live voices, loose
+   clips with category defaults); `hearken-synth`'s category defaults, UI
+   earcons and recipe type; the speech pacer, generic ladder and duck;
+   earcons, volume, verbosity and duck rows in `hearken-app`; the template's
+   circling sound and live voice with its own recipe; the M1 follow-ups
+   that touch audio. At the end a game makes sound with no sound files.
+   **M2b Sound pipeline.** The `sounds.toml` manifest and `hearken-bake`
+   (tiers, file layers with required provenance, generated credits, the
+   pack, `--check`); the spike's recipes, layer helpers and measurement in
+   `hearken-synth`; Learn Sounds.
 3. **M3 Lucky Break on Hearken.** Lucky Break drops its `prism`, `prism-sys`,
    `bass-sys` and shell code for Hearken. Its existing Python-rendered WAVs
    enter the manifest as layers, so nothing sounds different on day one;
@@ -386,8 +509,9 @@ Each milestone gets its own implementation plan.
   from a fetch script, SDL2 vendored for Windows. The template README covers
   all of it on one page.
 - **BASS licence.** Free for non-commercial use only; commercial games need
-  their own licence, and the engine cannot bundle it. A pure-Rust audio
-  backend behind the same trait is possible later and is out of scope for v1.
-- **Provider terms.** Each game's author is responsible for the terms of the
-  sources they use; the manifest's required provenance is what makes that
+  their own licence, and the engine cannot bundle it. BASS is a default
+  Cargo feature, so a game that will not license it turns the feature off
+  and brings another library behind the public backend trait.
+- **Source terms.** Each game's author is responsible for the terms of the
+  sounds they use; the manifest's required provenance is what makes that
   checkable.

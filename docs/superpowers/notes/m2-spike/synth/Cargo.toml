@@ -1,0 +1,8 @@
+[package]
+name = "synth"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fundsp = "0.23.0"
+hound = "3.5.1"
