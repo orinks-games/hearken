@@ -105,9 +105,7 @@ impl<G: Game> Menu<G> for SettingsScreen<G> {
     }
 
     fn on_escape(&mut self, ctx: &mut Ctx<G>) {
-        if let Err(e) = ctx.settings.save(&ctx.paths) {
-            log::error!("could not save settings: {e}");
-        }
+        ctx.save_settings();
         ctx.pop();
     }
 }

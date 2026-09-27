@@ -3,6 +3,7 @@
 //! Extracted from Lucky Break Casino (commit a101970) and Freight Fate (commit c5d3ef8d).
 
 pub mod app;
+pub mod bindings;
 pub mod controller;
 pub mod ctx;
 pub mod game;
@@ -22,6 +23,7 @@ pub mod testing;
 pub mod text;
 
 pub use app::App;
+pub use bindings::{Action, Chord, KeyBindings, NoAction, PadChord};
 pub use controller::{ControllerManager, InputDevice};
 pub use ctx::{Ctx, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
 pub use game::Game;

@@ -3,6 +3,7 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use crate::bindings::Action;
 use crate::ctx::Ctx;
 
 pub trait Game: Sized + 'static {
@@ -23,6 +24,9 @@ pub trait Game: Sized + 'static {
     type Data;
     /// The game's settings, saved under `"game"` in `settings.json`.
     type Settings: Serialize + DeserializeOwned + Default + Clone;
+    /// The controls the player can move to other keys and buttons, from
+    /// Settings. `hearken_app::NoAction` when there are none.
+    type Action: Action;
 
     /// The events the game's rules produced this frame. Called once per
     /// frame, after input.

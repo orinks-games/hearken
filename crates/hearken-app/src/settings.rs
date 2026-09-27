@@ -7,6 +7,7 @@ use hearken_speech::SpeechSettings;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::bindings::SavedBindings;
 use crate::paths::Paths;
 
 /// What the player hears when their settings file could not be read.
@@ -25,6 +26,8 @@ pub struct Settings<GS> {
     pub menus: MenuSettings,
     #[serde(default)]
     pub controller: ControllerSettings,
+    #[serde(default)]
+    pub bindings: SavedBindings,
     #[serde(default)]
     pub game: GS,
 }

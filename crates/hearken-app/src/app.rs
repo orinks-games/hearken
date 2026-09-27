@@ -143,9 +143,7 @@ impl<G: Game> App<G> {
         }
         G::on_exit(&mut self.ctx);
         self.ctx.controller.shutdown();
-        if let Err(e) = self.ctx.settings.save(&self.ctx.paths) {
-            log::error!("could not save settings: {e}");
-        }
+        self.ctx.save_settings();
         self.ctx.speech.shutdown();
     }
 

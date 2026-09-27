@@ -31,3 +31,13 @@ pub fn spoken_char(ch: char) -> String {
     }
     ch.to_string()
 }
+
+/// `phrase` with its first letter capitalised, to open a sentence: "the A
+/// button" becomes "The A button".
+pub fn sentence_start(phrase: &str) -> String {
+    let mut chars = phrase.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
