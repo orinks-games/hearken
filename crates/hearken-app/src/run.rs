@@ -6,6 +6,7 @@ use std::time::Duration;
 use hearken_speech::{SpeechEnv, SpeechSink, ThreadedSpeech};
 
 use crate::app::App;
+use crate::controller::ControllerManager;
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::paths::Paths;
@@ -63,6 +64,10 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
 
     let (settings, notice) = Settings::load(&paths);
     let mut ctx = Ctx::new(Box::new(start_speech::<G>()), settings, paths, game);
+    ctx.controller = ControllerManager::new(
+        ctx.settings.controller.enabled,
+        Some(shell.controller_factory()),
+    );
     ctx.notices.extend(notice);
     ctx.apply_speech_settings();
 

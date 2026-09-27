@@ -3,6 +3,7 @@
 //! Extracted from Lucky Break Casino (commit a101970) and Freight Fate (commit c5d3ef8d).
 
 pub mod app;
+pub mod controller;
 pub mod ctx;
 pub mod game;
 pub mod held_keys;
@@ -21,6 +22,7 @@ pub mod testing;
 pub mod text;
 
 pub use app::App;
+pub use controller::{ControllerManager, InputDevice};
 pub use ctx::{Ctx, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
 pub use game::Game;
 pub use held_keys::HeldKeys;
@@ -28,7 +30,7 @@ pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent
 pub use paths::Paths;
 pub use run::{already_running_line, run};
 pub use sdl_shell::SdlShell;
-pub use settings::{MenuSettings, Settings};
+pub use settings::{ControllerSettings, MenuSettings, Settings};
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use state::{StackOp, State};
 pub use testing::Headless;

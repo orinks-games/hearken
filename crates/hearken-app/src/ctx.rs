@@ -2,6 +2,7 @@
 
 use hearken_speech::SpeechSink;
 
+use crate::controller::ControllerManager;
 use crate::game::Game;
 use crate::held_keys::HeldKeys;
 use crate::paths::Paths;
@@ -23,6 +24,9 @@ pub struct Ctx<G: Game> {
     /// Which keys are down now, for a screen that polls instead of reacting
     /// to presses.
     pub held: HeldKeys,
+    /// The bound game controller. Headless contexts get one that never
+    /// reaches a real subsystem; `run` swaps in SDL's.
+    pub controller: ControllerManager,
     pub running: bool,
     /// Every line spoken this run, newest last. Event lines start `[event] `.
     pub transcript: Vec<String>,
@@ -41,12 +45,14 @@ impl<G: Game> Ctx<G> {
         paths: Paths,
         game: G::Data,
     ) -> Self {
+        let controller = ControllerManager::detached(settings.controller.enabled);
         Ctx {
             speech,
             settings,
             paths,
             game,
             held: HeldKeys::default(),
+            controller,
             running: true,
             transcript: Vec::new(),
             notices: Vec::new(),

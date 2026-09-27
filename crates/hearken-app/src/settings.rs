@@ -24,6 +24,8 @@ pub struct Settings<GS> {
     #[serde(default)]
     pub menus: MenuSettings,
     #[serde(default)]
+    pub controller: ControllerSettings,
+    #[serde(default)]
     pub game: GS,
 }
 
@@ -40,6 +42,19 @@ impl Default for MenuSettings {
         MenuSettings {
             announce_position: true,
         }
+    }
+}
+
+/// Whether the game listens to a game controller.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct ControllerSettings {
+    pub enabled: bool,
+}
+
+impl Default for ControllerSettings {
+    fn default() -> Self {
+        ControllerSettings { enabled: true }
     }
 }
 

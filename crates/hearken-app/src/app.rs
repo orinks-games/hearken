@@ -1,5 +1,6 @@
 //! The screen stack and the frame loop that drives it.
 
+use crate::controller::CONTROLLER_DISCONNECTED;
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
@@ -41,6 +42,10 @@ impl<G: Game> App<G> {
                 self.dispatch(&event);
             }
         }
+        // A held D-pad left or right repeats, for adjusting a setting.
+        for event in self.ctx.controller.tick(dt) {
+            self.dispatch(&event);
+        }
         // A screen that pushed or popped from a key must not also get this
         // frame's update.
         self.apply_pending();
@@ -78,9 +83,25 @@ impl<G: Game> App<G> {
                 self.ctx.held.refresh_repeat_timing();
                 self.ctx.held.clear_pulses();
             }
-            InputEvent::WindowFocusLost => self.ctx.held.clear(),
-            InputEvent::KeyDown { key, mods, .. } => self.ctx.held.press(*key, *mods),
+            InputEvent::WindowFocusLost => {
+                self.ctx.held.clear();
+                self.ctx.controller.release_all();
+            }
+            InputEvent::KeyDown { key, mods, .. } => {
+                self.ctx.held.press(*key, *mods);
+                self.ctx.controller.note_keyboard();
+            }
             InputEvent::KeyUp { key, mods } => self.ctx.held.release(*key, *mods),
+            // Only the bound pad's presses and releases, and its removal,
+            // reach a screen.
+            e if e.is_controller_event() => {
+                if !self.ctx.controller.process_event(e) {
+                    return false;
+                }
+                if self.ctx.controller.take_disconnect() {
+                    self.ctx.say(CONTROLLER_DISCONNECTED);
+                }
+            }
             _ => {}
         }
         true
@@ -121,6 +142,7 @@ impl<G: Game> App<G> {
             shell.render(&lines);
         }
         G::on_exit(&mut self.ctx);
+        self.ctx.controller.shutdown();
         if let Err(e) = self.ctx.settings.save(&self.ctx.paths) {
             log::error!("could not save settings: {e}");
         }
