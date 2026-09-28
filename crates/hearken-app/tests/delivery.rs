@@ -5,6 +5,7 @@ use hearken_app::{
     Ctx, EventPriority, Game, Headless, NoAction, NoCategory, SayEvent, SoundConfig, State,
 };
 use hearken_speech::SpeechChannel;
+use std::sync::Mutex;
 
 fn start() -> Headless<TestGame> {
     Headless::new(TestData::default(), Probe::new("root"))
@@ -16,6 +17,35 @@ fn events(h: &Headless<TestGame>) -> Vec<String> {
 
 fn say(h: &mut Headless<TestGame>, text: &str, opts: SayEvent<TestCategory>) {
     h.app.ctx.say_event_with(text, opts);
+}
+
+/// Long enough that a line queued behind it would start past the ambient
+/// wait budget.
+const LONG: &str = "The harbour bell rings twice and the fog rolls in over the long grey pier.";
+
+/// Records every log line in this test binary; each test looks for its own.
+struct CaptureLog;
+
+static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+impl log::Log for CaptureLog {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        LOGGED.lock().unwrap().push(record.args().to_string());
+    }
+    fn flush(&self) {}
+}
+
+fn capture_log() {
+    static CAPTURE: CaptureLog = CaptureLog;
+    let _ = log::set_logger(&CAPTURE);
+    log::set_max_level(log::LevelFilter::Info);
+}
+
+fn logged(line: &str) -> bool {
+    LOGGED.lock().unwrap().iter().any(|l| l == line)
 }
 
 #[test]
@@ -106,6 +136,33 @@ fn a_first_time_line_waits_for_reset_first_times() {
 }
 
 #[test]
+fn a_first_time_line_the_pacer_dropped_is_said_the_next_time() {
+    let mut h = start();
+    let hint = || SayEvent::new().category(TestCategory::Hint);
+    say(&mut h, LONG, SayEvent::new());
+    say(&mut h, "Press J to jump.", hint());
+    h.frame(10.0);
+    say(&mut h, "Press J to jump.", hint());
+    assert_eq!(events(&h), [LONG, "Press J to jump."]);
+}
+
+#[test]
+fn chatter_that_would_start_after_its_moment_is_dropped_and_logged() {
+    capture_log();
+    let mut h = start();
+    say(&mut h, LONG, SayEvent::new());
+    say(&mut h, "The tide turns.", SayEvent::new());
+    assert_eq!(events(&h), [LONG]);
+    assert!(!h
+        .app
+        .ctx
+        .transcript
+        .iter()
+        .any(|line| line.contains("The tide turns.")));
+    assert!(logged("[pacer] stale ambient dropped: The tide turns."));
+}
+
+#[test]
 fn a_line_the_player_asked_for_skips_the_verbosity_rules() {
     let mut h = start();
     h.app.ctx.settings.speech.verbosity = "quiet".into();
@@ -155,7 +212,6 @@ fn the_duck_lowers_music_while_event_speech_talks_and_lifts_after() {
 #[test]
 fn with_the_duck_off_speech_leaves_the_music_alone() {
     let mut h = start();
-    h.app.ctx.settings.audio.duck_for_speech = false;
     h.app.ctx.audio.play_music(Some("music/x"), true);
     h.sounds.clear();
     say(&mut h, "Hello.", SayEvent::new());

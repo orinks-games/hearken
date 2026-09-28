@@ -169,6 +169,9 @@ impl<G: Game> Ctx<G> {
             valid,
         } = opts;
         let key = key.as_deref();
+        // A first-time line counts as said only once it reaches the voice,
+        // so one the pacer drops can still be said the next time.
+        let mut first_time = None;
         let rule = match category {
             Some(c) if !force => self
                 .delivery
@@ -192,13 +195,11 @@ impl<G: Game> Ctx<G> {
                 return;
             }
             Rule::FirstTime => {
-                if !self
-                    .delivery
-                    .first_times
-                    .insert((key.unwrap_or("").to_string(), text.clone()))
-                {
+                let seen = (key.unwrap_or("").to_string(), text.clone());
+                if self.delivery.first_times.contains(&seen) {
                     return;
                 }
+                first_time = Some(seen);
                 text
             }
             Rule::Terse => terse.unwrap_or(text),
@@ -246,6 +247,9 @@ impl<G: Game> Ctx<G> {
                 ahead = pacer.take_flush_cut();
                 interrupt = true;
             }
+        }
+        if let Some(seen) = first_time {
+            self.delivery.first_times.insert(seen);
         }
         if self.delivery.pacer.is_none() {
             self.speech.say_event(&text, interrupt);

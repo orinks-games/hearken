@@ -67,7 +67,7 @@ impl Default for ControllerSettings {
 
 /// The player's saved audio preferences: per-bus volumes, and whether other
 /// buses duck while speech is talking.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct AudioSettings {
     /// Percent volume (0-100) by bus name (`Bus::name`); a bus with no entry
@@ -81,17 +81,9 @@ pub struct AudioSettings {
     /// in the file being lost.
     #[serde(default, deserialize_with = "deserialize_volumes")]
     pub volumes: BTreeMap<String, u8>,
-    /// Duck the ducked buses while speech is talking.
+    /// Duck the ducked buses while gameplay speech is talking. Off until
+    /// the player turns it on.
     pub duck_for_speech: bool,
-}
-
-impl Default for AudioSettings {
-    fn default() -> Self {
-        AudioSettings {
-            volumes: BTreeMap::new(),
-            duck_for_speech: true,
-        }
-    }
 }
 
 impl AudioSettings {
