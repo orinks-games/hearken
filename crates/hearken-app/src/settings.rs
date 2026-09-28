@@ -1,8 +1,10 @@
 //! The saved settings: the engine's own, and the game's, in one
 //! `settings.json`.
 
+use std::collections::BTreeMap;
 use std::io;
 
+use hearken_audio::Bus;
 use hearken_speech::SpeechSettings;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,8 @@ pub struct Settings<GS> {
     pub controller: ControllerSettings,
     #[serde(default)]
     pub bindings: SavedBindings,
+    #[serde(default)]
+    pub audio: AudioSettings,
     #[serde(default)]
     pub game: GS,
 }
@@ -58,6 +62,55 @@ pub struct ControllerSettings {
 impl Default for ControllerSettings {
     fn default() -> Self {
         ControllerSettings { enabled: true }
+    }
+}
+
+/// The player's saved audio preferences: per-bus volumes, and whether other
+/// buses duck while speech is talking.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct AudioSettings {
+    /// Percent volume (0-100) by bus name (`Bus::name`); a bus with no entry
+    /// uses `default_volume`. Kept as a map, not an array, so a bus a game
+    /// dropped stays in the file instead of being silently lost.
+    pub volumes: BTreeMap<String, u8>,
+    /// Duck the ducked buses while speech is talking.
+    pub duck_for_speech: bool,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        AudioSettings {
+            volumes: BTreeMap::new(),
+            duck_for_speech: true,
+        }
+    }
+}
+
+impl AudioSettings {
+    /// `bus`'s saved volume, capped at 100 (a hand-edited file may have
+    /// more), or `default_volume` when nothing is saved for it.
+    pub fn volume(&self, bus: Bus) -> u8 {
+        self.volumes
+            .get(bus.name())
+            .map(|&v| v.min(100))
+            .unwrap_or_else(|| default_volume(bus))
+    }
+
+    /// Saves `percent` (capped at 100) as `bus`'s volume.
+    pub fn set_volume(&mut self, bus: Bus, percent: u8) {
+        self.volumes
+            .insert(bus.name().to_string(), percent.min(100));
+    }
+}
+
+/// A bus's volume before the player changes it: 100 for `Bus::MASTER`, 80
+/// for every other bus.
+pub fn default_volume(bus: Bus) -> u8 {
+    if bus == Bus::MASTER {
+        100
+    } else {
+        80
     }
 }
 

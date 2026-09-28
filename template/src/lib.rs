@@ -21,6 +21,7 @@ impl hearken_app::Game for HelloGame {
     type Data = ();
     type Settings = ();
     type Action = HelloAction;
+    type Category = hearken_app::NoCategory;
 }
 
 /// The controls the player can move to other keys and buttons.

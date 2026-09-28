@@ -1,5 +1,6 @@
 //! What every screen is handed.
 
+use hearken_audio::{Audio, Bus, Sound};
 use hearken_speech::SpeechSink;
 
 use crate::bindings::KeyBindings;
@@ -9,6 +10,7 @@ use crate::held_keys::HeldKeys;
 use crate::input::InputEvent;
 use crate::paths::Paths;
 use crate::settings::Settings;
+use crate::sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
 use crate::state::{StackOp, State};
 
 /// The `log` target every spoken line is written under, so a session log
@@ -40,6 +42,13 @@ pub struct Ctx<G: Game> {
     pub frame: u64,
     /// Seconds since the run started, the sum of every frame's `dt`.
     pub clock: f64,
+    /// The pool of positioned sounds, buses and live voices.
+    pub audio: Audio,
+    /// Which sound plays for each UI moment; the game's own copy of
+    /// `sound().ui`, so a screen can point an earcon at nothing or a
+    /// different sound at runtime.
+    pub ui_sounds: UiSounds,
+    sound: SoundConfig,
     pending: Vec<StackOp<G>>,
 }
 
@@ -52,7 +61,9 @@ impl<G: Game> Ctx<G> {
     ) -> Self {
         let controller = ControllerManager::detached(settings.controller.enabled);
         let bindings = KeyBindings::from_saved(&settings.bindings);
-        Ctx {
+        let sound = G::sound();
+        let ui_sounds = sound.ui.clone();
+        let mut ctx = Ctx {
             speech,
             settings,
             paths,
@@ -65,7 +76,66 @@ impl<G: Game> Ctx<G> {
             notices: Vec::new(),
             frame: 0,
             clock: 0.0,
+            audio: Audio::silent(),
+            ui_sounds,
+            sound,
             pending: Vec::new(),
+        };
+        // So saved bus volumes are in effect from the very first frame, not
+        // just once the real backend has finished opening.
+        ctx.install_audio(Audio::silent());
+        ctx
+    }
+
+    /// Installs `audio` as the pool the game plays through: applies the
+    /// game's spatial model and duck buses, then the player's saved volumes.
+    pub fn install_audio(&mut self, audio: Audio) {
+        self.audio = audio;
+        self.audio.spatial = self.sound.spatial;
+        let duck_buses = self.sound.duck_buses.clone();
+        self.audio.set_duck_buses(&duck_buses);
+        self.apply_audio_settings();
+    }
+
+    /// Pushes the player's saved per-bus volumes to the audio pool.
+    pub fn apply_audio_settings(&mut self) {
+        for (bus, _) in self.buses() {
+            let percent = self.settings.audio.volume(bus);
+            self.audio.set_bus_volume(bus, percent as f32 / 100.0);
+        }
+    }
+
+    /// Every bus the player can set a volume for: the engine's own six, then
+    /// the game's own.
+    pub fn buses(&self) -> Vec<(Bus, &'static str)> {
+        let mut buses: Vec<(Bus, &'static str)> = BUS_LABELS.to_vec();
+        buses.extend(self.sound.buses.iter().copied());
+        buses
+    }
+
+    /// Plays `sound` on the UI bus; `Sound::NONE` when the game has pointed
+    /// it at nothing.
+    pub fn play_ui(&mut self, sound: UiSound) -> Sound {
+        match self.ui_sounds.get(sound) {
+            Some(key) => self.audio.play(key, Bus::UI),
+            None => Sound::NONE,
+        }
+    }
+
+    /// The game's sound configuration, as `sound()` returned it at startup.
+    pub fn sound_config(&self) -> &SoundConfig {
+        &self.sound
+    }
+
+    /// Per-frame audio upkeep: re-mixes positioned sounds against the
+    /// listener and the game's occlusion hook, and speaks a one-time notice
+    /// (such as "no sound device") once the pool has one.
+    pub(crate) fn update_audio(&mut self) {
+        let listener = self.audio.listener().pos;
+        let game = &self.game;
+        self.audio.update(&|pos| G::occluded(game, listener, pos));
+        if let Some(notice) = self.audio.take_notice() {
+            self.say_queued(notice);
         }
     }
 

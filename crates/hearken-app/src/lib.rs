@@ -18,6 +18,7 @@ pub mod sdl_shell;
 pub mod settings;
 pub mod shell;
 pub mod single_instance;
+pub mod sound;
 pub mod state;
 pub mod testing;
 pub mod text;
@@ -27,12 +28,24 @@ pub use bindings::{Action, Chord, KeyBindings, NoAction, PadChord};
 pub use controller::{ControllerManager, InputDevice};
 pub use ctx::{Ctx, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
 pub use game::Game;
+#[cfg(feature = "bass")]
+pub use hearken_audio::BassBackend;
+pub use hearken_audio::{
+    Audio, Backend, BackendError, Bus, Call, Channel, ClipSource, Fades, Listener, LiveSound,
+    LooseClips, MemoryClips, Mix, Recorder, RecordingBackend, SilentBackend, Sound, Source,
+    SpatialConfig, Vec3,
+};
+pub use hearken_speech::{
+    Category, EventPriority, Level, NoCategory, PacerConfig, Rule, Verbosity,
+};
+pub use hearken_synth as synth;
 pub use held_keys::HeldKeys;
 pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent, Key, Mods};
 pub use paths::Paths;
 pub use run::{already_running_line, run};
 pub use sdl_shell::SdlShell;
-pub use settings::{ControllerSettings, MenuSettings, Settings};
+pub use settings::{default_volume, AudioSettings, ControllerSettings, MenuSettings, Settings};
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
+pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
 pub use state::{StackOp, State};
 pub use testing::Headless;

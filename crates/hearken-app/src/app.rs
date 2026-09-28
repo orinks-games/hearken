@@ -60,6 +60,7 @@ impl<G: Game> App<G> {
             top.update(&mut self.ctx, dt);
         }
         self.ctx.speech.poll(dt);
+        self.ctx.update_audio();
 
         self.apply_pending();
         self.ctx.frame += 1;
@@ -143,6 +144,7 @@ impl<G: Game> App<G> {
         }
         G::on_exit(&mut self.ctx);
         self.ctx.controller.shutdown();
+        self.ctx.audio.shutdown();
         self.ctx.save_settings();
         self.ctx.speech.shutdown();
     }

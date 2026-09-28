@@ -3,6 +3,9 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "bass")]
+use hearken_audio::BassBackend;
+use hearken_audio::{Audio, Backend, LooseClips, SilentBackend};
 use hearken_speech::{SpeechEnv, SpeechSink, ThreadedSpeech};
 
 use crate::app::App;
@@ -40,6 +43,38 @@ fn say_and_exit<G: Game>(line: &str, code: i32) -> i32 {
     code
 }
 
+/// Chooses the backend `run` opens: the silent backend when the game or the
+/// player asked for it, else the game's own backend, else the engine's
+/// default. Runs entirely off the game loop, on `Audio::deferred`'s opener
+/// thread.
+fn open_backend<G: Game>() -> Result<Box<dyn Backend>, String> {
+    let silent_var = format!("{}_AUDIO_BACKEND", G::ENV_PREFIX);
+    let forced_silent = std::env::var(&silent_var).is_ok_and(|v| v.eq_ignore_ascii_case("silent"));
+    let dummy_driver = std::env::var("SDL_AUDIODRIVER").is_ok_and(|v| v == "dummy");
+    if forced_silent || dummy_driver {
+        log::info!("audio: using the silent backend ({silent_var}, or SDL_AUDIODRIVER=dummy)");
+        return Ok(Box::new(SilentBackend::default()));
+    }
+    if let Some(backend) = G::audio_backend() {
+        log::info!("audio: using the game's own backend");
+        return Ok(backend);
+    }
+    default_backend(G::ENV_PREFIX)
+}
+
+#[cfg(feature = "bass")]
+fn default_backend(prefix: &str) -> Result<Box<dyn Backend>, String> {
+    let backend = BassBackend::open(prefix)?;
+    log::info!("audio: using BASS");
+    Ok(Box::new(backend))
+}
+
+#[cfg(not(feature = "bass"))]
+fn default_backend(_prefix: &str) -> Result<Box<dyn Backend>, String> {
+    log::info!("audio: using the silent backend (no backend built in)");
+    Ok(Box::new(SilentBackend::default()))
+}
+
 /// Run `G` until the player quits. Returns the process exit code.
 pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) -> i32 {
     let paths = Paths::discover(G::DATA_DIR, G::ENV_PREFIX);
@@ -68,6 +103,10 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
 
     let (settings, notice) = Settings::load(&paths);
     let mut ctx = Ctx::new(Box::new(start_speech::<G>()), settings, paths, game);
+    ctx.install_audio(Audio::deferred(
+        open_backend::<G>,
+        Box::new(LooseClips::discover(G::ENV_PREFIX)),
+    ));
     ctx.controller = ControllerManager::new(
         ctx.settings.controller.enabled,
         Some(shell.controller_factory()),

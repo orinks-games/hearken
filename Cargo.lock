@@ -338,7 +338,9 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "env_logger",
+ "hearken-audio",
  "hearken-speech",
+ "hearken-synth",
  "log",
  "sdl2",
  "serde",

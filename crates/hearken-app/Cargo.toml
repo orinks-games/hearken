@@ -9,8 +9,14 @@ repository.workspace = true
 authors.workspace = true
 build = "build.rs"
 
+[features]
+default = ["bass"]
+bass = ["hearken-audio/bass"]
+
 [dependencies]
 hearken-speech.workspace = true
+hearken-audio.workspace = true
+hearken-synth.workspace = true
 log.workspace = true
 env_logger.workspace = true
 serde.workspace = true

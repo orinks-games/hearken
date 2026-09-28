@@ -197,6 +197,7 @@ impl Game for Bare {
     type Data = ();
     type Settings = ();
     type Action = NoAction;
+    type Category = hearken_app::NoCategory;
 }
 
 #[test]

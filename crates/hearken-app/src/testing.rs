@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use hearken_audio::{Audio, MemoryClips, Recorder, RecordingBackend};
 use hearken_speech::{CaptureSpeech, SharedCapture};
 
 use crate::app::App;
@@ -19,6 +20,8 @@ use crate::state::State;
 pub struct Headless<G: Game> {
     pub app: App<G>,
     pub speech: Rc<RefCell<CaptureSpeech>>,
+    /// Records every call the pool makes to its backend, for assertions.
+    pub sounds: Recorder,
     _dir: tempfile::TempDir,
 }
 
@@ -26,17 +29,29 @@ impl<G: Game> Headless<G> {
     pub fn new(game: G::Data, first: impl State<G> + 'static) -> Self {
         let dir = tempfile::tempdir().expect("a temporary data folder");
         let speech = Rc::new(RefCell::new(CaptureSpeech::full_voice()));
-        let ctx = Ctx::new(
+        let mut ctx = Ctx::new(
             Box::new(SharedCapture(speech.clone())),
             Settings::default(),
             Paths::at(dir.path()),
             game,
         );
+        let (backend, sounds) = RecordingBackend::new();
+        ctx.install_audio(Audio::new(
+            Box::new(backend),
+            Box::new(MemoryClips::default()),
+        ));
         Headless {
             app: App::new(ctx, Box::new(first)),
             speech,
+            sounds,
             _dir: dir,
         }
+    }
+
+    /// Sound keys played (via `Audio::play`/`play_at`/`start_loop`) since the
+    /// last `clear`.
+    pub fn played(&self) -> Vec<String> {
+        self.sounds.played()
     }
 
     /// Bind a fake controller as instance 0, the id `InputEvent::button`
@@ -67,5 +82,6 @@ impl<G: Game> Headless<G> {
 
     pub fn clear(&mut self) {
         self.speech.borrow_mut().clear();
+        self.sounds.clear();
     }
 }

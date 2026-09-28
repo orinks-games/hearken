@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use hearken_app::{Action, Chord, ControllerButton, Ctx, Game, InputEvent, Key, PadChord, State};
+use hearken_app::{
+    Action, Chord, ControllerButton, Ctx, Game, InputEvent, Key, PadChord, State, Vec3,
+};
 
 pub struct TestGame;
 
@@ -8,6 +10,7 @@ pub struct TestGame;
 pub struct TestData {
     pub log: Vec<String>,
     pub queued_events: Vec<u32>,
+    pub occluded: bool,
 }
 
 impl Game for TestGame {
@@ -18,6 +21,7 @@ impl Game for TestGame {
     type Data = TestData;
     type Settings = ();
     type Action = TestAction;
+    type Category = hearken_app::NoCategory;
 
     fn pump(ctx: &mut Ctx<Self>, _dt: f64) -> Vec<u32> {
         std::mem::take(&mut ctx.game.queued_events)
@@ -25,6 +29,10 @@ impl Game for TestGame {
 
     fn observe(ctx: &mut Ctx<Self>, event: &u32) {
         ctx.game.log.push(format!("observe {event}"));
+    }
+
+    fn occluded(data: &TestData, _listener: Vec3, _pos: Vec3) -> bool {
+        data.occluded
     }
 }
 
