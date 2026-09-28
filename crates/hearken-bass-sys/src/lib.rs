@@ -29,7 +29,7 @@ pub mod fx;
 mod loader;
 pub mod safe;
 
-pub use loader::{library_file_name, Api, LoadError, LIBRARY_PATH_ENV};
+pub use loader::{library_file_name, set_game_library_env, Api, LoadError, LIBRARY_PATH_ENV};
 
 // --- Primitive aliases, matching bass.h -------------------------------------
 

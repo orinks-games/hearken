@@ -107,17 +107,46 @@ impl Drop for CallbackStream {
     }
 }
 
+/// Clamps a sample count to a byte length `BASS_ChannelGetData`'s `length`
+/// parameter can safely carry.
+///
+/// `length` is a plain `DWORD`, but the high bits double as `BASS_DATA_*`
+/// flags -- `BASS_DATA_FLOAT` is `0x4000_0000` -- so a byte count anywhere
+/// near that range would corrupt the flags it gets OR-ed with instead of
+/// just asking for a huge read. `0x0FFF_FFFC` (256 MiB, rounded down to a
+/// multiple of 4) keeps every request well clear of the flag bits and still
+/// four-byte aligned for `f32` samples; a caller asking for more than that in
+/// one call just gets fewer samples back than it asked for, the same way a
+/// short read from any other buffered source would.
+fn float_request_bytes(samples: usize) -> DWORD {
+    const MAX_BYTES: usize = 0x0FFF_FFFC;
+    samples.saturating_mul(4).min(MAX_BYTES) as DWORD
+}
+
 /// `BASS_ChannelGetData(handle, out, bytes | BASS_DATA_FLOAT)` on a decoding
 /// channel: fills `out` with float samples and returns how many were written.
 pub fn channel_get_data_float(handle: u32, out: &mut [f32]) -> Result<usize, BassError> {
     let a = lib()?;
-    let bytes = std::mem::size_of_val(out) as DWORD;
-    // SAFETY: `out` is a writable buffer of exactly `bytes` bytes.
+    let bytes = float_request_bytes(out.len());
+    // SAFETY: `out` is a writable buffer of at least `bytes` bytes -- clamped
+    // by `float_request_bytes` so it can never bleed into the BASS_DATA_*
+    // flag bits above it.
     let got =
         unsafe { (a.channel_get_data)(handle, out.as_mut_ptr().cast(), bytes | BASS_DATA_FLOAT) };
     if got == u32::MAX {
         Err(BassError::last())
     } else {
         Ok(got as usize / std::mem::size_of::<f32>())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_float_read_never_asks_for_more_than_basss_length_field_holds() {
+        assert_eq!(float_request_bytes(10), 40);
+        assert_eq!(float_request_bytes(usize::MAX / 8), 0x0FFF_FFFC);
     }
 }

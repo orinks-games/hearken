@@ -6,6 +6,8 @@
 //! your own — plays them over speakers or a headset.
 
 mod backend;
+#[cfg(feature = "bass")]
+mod bass;
 mod clips;
 mod open;
 mod pool;
@@ -16,6 +18,8 @@ mod spatial;
 mod types;
 
 pub use backend::{Backend, BackendError, Channel, Source};
+#[cfg(feature = "bass")]
+pub use bass::BassBackend;
 pub use clips::{ClipSource, LooseClips, MemoryClips};
 pub use open::{NO_SOUND_NOTICE, SHUTDOWN_WAIT};
 pub use pool::{Audio, Fades, LiveSound, Sound};

@@ -8,14 +8,16 @@
 //!
 //! Discovery order, most specific first:
 //!
-//! 1. [`LIBRARY_PATH_ENV`] -- a file, or a directory containing the
+//! 1. the game's own path variable, if one has been registered with
+//!    [`set_game_library_env`] -- a game built on this crate.
+//! 2. [`LIBRARY_PATH_ENV`] -- a file, or a directory containing the
 //!    library. Set by developers and by playtest tooling.
-//! 2. the executable's directory (a frozen release, or `target/<profile>/`
+//! 3. the executable's directory (a frozen release, or `target/<profile>/`
 //!    where `build.rs` staged the vendored copy), and its parent for test
 //!    binaries living in `target/<profile>/deps/`
-//! 3. the crate's own `vendor/<os>-<arch>/` directory (a dev checkout where
+//! 4. the crate's own `vendor/<os>-<arch>/` directory (a dev checkout where
 //!    nothing has been staged yet)
-//! 4. the bare file name, so the platform loader gets a chance to find a
+//! 5. the bare file name, so the platform loader gets a chance to find a
 //!    system-wide install.
 
 use std::fmt;
@@ -30,6 +32,21 @@ use crate::*;
 /// directory containing it. A game sets it (for example in
 /// `.cargo/config.toml` `[env]`) to wherever it fetched BASS.
 pub const LIBRARY_PATH_ENV: &str = "HEARKEN_BASS_PATH";
+
+/// The game's own BASS path variable name, registered by
+/// [`set_game_library_env`]. Checked before [`LIBRARY_PATH_ENV`] so a game
+/// that ships its own copy of BASS under its own env prefix outranks the
+/// generic one.
+static GAME_ENV: OnceLock<String> = OnceLock::new();
+
+/// Registers `var` as the game's own environment variable naming the BASS
+/// library, searched before [`LIBRARY_PATH_ENV`]. The first call wins --
+/// later calls are ignored -- and once the library has already been loaded
+/// (or has already failed to load; see [`Api::get`]'s caching), this has no
+/// effect at all, since [`search_paths`] is never consulted again.
+pub fn set_game_library_env(var: &str) {
+    let _ = GAME_ENV.set(var.to_string());
+}
 
 /// Shared-library file name for the current platform.
 pub fn library_file_name() -> &'static str {
@@ -59,7 +76,13 @@ fn search_paths() -> Vec<PathBuf> {
     let file_name = library_file_name();
     let mut candidates = Vec::new();
 
-    for var in [LIBRARY_PATH_ENV] {
+    let mut vars: Vec<&str> = Vec::new();
+    if let Some(game_var) = GAME_ENV.get() {
+        vars.push(game_var.as_str());
+    }
+    vars.push(LIBRARY_PATH_ENV);
+
+    for var in vars {
         let Ok(explicit) = std::env::var(var) else {
             continue;
         };
@@ -371,6 +394,24 @@ mod tests {
             Some(&PathBuf::from("/tmp/hearken-bass-lib")),
             "the override outranks every discovered location"
         );
+    }
+
+    #[test]
+    fn a_games_own_path_variable_is_searched_first() {
+        // Shares the lock with the LIBRARY_PATH_ENV tests: both read and
+        // write process-wide env state through `search_paths`, and this one
+        // also cleans its variable back up so it does not permanently shadow
+        // LIBRARY_PATH_ENV for `the_override_env_var_is_searched_first`
+        // (`GAME_ENV` itself is a `OnceLock` and cannot be un-set, but
+        // `search_paths` only adds a candidate for it while the variable it
+        // names is actually set).
+        let _guard = env_lock();
+        let dir = std::env::temp_dir().join("hearken-game-bass-path-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HEARKEN_LOADER_TEST_BASS_PATH", &dir);
+        set_game_library_env("HEARKEN_LOADER_TEST_BASS_PATH");
+        assert_eq!(search_paths()[0], dir.join(library_file_name()));
+        std::env::remove_var("HEARKEN_LOADER_TEST_BASS_PATH");
     }
 
     #[test]

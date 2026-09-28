@@ -8,9 +8,15 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = ["bass"]
+bass = ["dep:hearken-bass-sys"]
+
 [dependencies]
 hearken-synth.workspace = true
+hearken-bass-sys = { workspace = true, optional = true }
 log.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+hearken-bass-sys.workspace = true

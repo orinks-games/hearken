@@ -618,3 +618,32 @@ fn a_refused_stream_drops_its_closure() {
         "closure was not dropped on error"
     );
 }
+
+#[test]
+fn a_playing_callback_stream_dropped_while_bass_pulls_it_frees_cleanly() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(_g) = bass() else { return };
+    let pulls = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = std::sync::Arc::clone(&pulls);
+    let stream = callback_stream(44100, 1, 0, move |out| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        out.fill(0.1);
+        out.len()
+    })
+    .expect("create a playing stream");
+    let handle = stream.handle();
+    channel_play(handle, false).expect("play");
+    channel_update(handle, 0).expect("make BASS pull it now");
+    assert!(
+        pulls.load(Ordering::SeqCst) > 0,
+        "BASS never pulled the stream"
+    );
+    drop(stream);
+    let after = pulls.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(channel_is_active(handle), BASS_ACTIVE_STOPPED);
+    assert!(
+        pulls.load(Ordering::SeqCst) <= after + 1,
+        "at most the pull already in flight"
+    );
+}
