@@ -3,7 +3,7 @@
 //!
 //! Dropped: the `Confirmation` hand-back exception (`SpeechCategory` does not
 //! exist here), and the rest of `tests/settings.rs`, which tested the
-//! driving-speech verbosity ladder -- a per-game concern this crate does not
+//! SpeechCategory/Disposition verbosity ladder -- a per-game concern this crate does not
 //! carry; Task 7 has its own ladder tests. No receipt/delivery tests existed
 //! in the ported file to drop.
 use super::*;
@@ -107,7 +107,7 @@ fn test_projection_expires_with_real_time() {
     let (mut pacer, clock) = make_pacer();
     flush(&mut pacer, LONG_LINE);
     clock.advance(30.0); // the voice long since finished speaking
-    assert!(!flush(&mut pacer, "Exit ahead."));
+    assert!(!flush(&mut pacer, "Goal ahead."));
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn test_reset_clears_the_projection() {
     assert!(!flush(&mut pacer, "At the dock."));
 }
 
-const CHATTER: &str = "Rain easing off, roads still wet."; // ~2.4s estimated
+const CHATTER: &str = "Rain easing off, decks still wet."; // ~2.4s estimated
 
 #[test]
 fn test_would_start_stale_is_a_pure_reading() {
@@ -158,7 +158,7 @@ fn test_many_short_lines_stay_within_budget_then_flush() {
 // condition read out unchanged every few seconds indefinitely. The pacer
 // now knows what the player has already heard.
 
-const SIDESWIPE: &str = "You sideswiped a box truck in the right lane! The truck took damage, now 13 percent. Check your mirrors before moving over.";
+const SIDESWIPE: &str = "You collided with a cargo boat in the harbour lane! The hull took damage, now 13 percent. Check your mirrors before moving.";
 
 #[test]
 fn test_identical_line_inside_the_window_is_a_repeat() {
@@ -258,7 +258,7 @@ fn test_resume_purges_once_then_paces_normally() {
     pacer.resume();
     assert!(flush(&mut pacer, "Rest area in two miles."));
     // The purge is spent; the channel is trusted again from here.
-    assert!(!flush(&mut pacer, "Weigh station ahead."));
+    assert!(!flush(&mut pacer, "Checkpoint is ahead."));
 }
 
 // -- the line the player planned for ---------------------------------------
@@ -269,7 +269,7 @@ fn test_resume_purges_once_then_paces_normally() {
 /// priority the line was submitted with.
 #[test]
 fn test_important_priority_will_not_wait_out_a_backlog_of_chatter() {
-    let stop_line = "Planned stop, Iowa 80 Truckstop at Exit 284 in five miles.";
+    let stop_line = "Planned stop, Bay Harbour Wharf at Gate 284 in five miles.";
 
     let (mut ambient, _) = make_pacer();
     flush(&mut ambient, CHATTER);
@@ -308,7 +308,7 @@ fn test_important_priority_still_queues_behind_a_quiet_channel() {
 // line back so it queues right behind the line that cut it -- the
 // interrupting line first, then the line it stepped on.
 
-const STOP_LINE: &str = "Planned stop, Iowa 80 Truckstop at Exit 284 in five miles.";
+const STOP_LINE: &str = "Planned stop, Bay Harbour Wharf at Gate 284 in five miles.";
 const HAZARD: &str = "Hazard! Stopped traffic ahead.";
 
 #[test]
@@ -436,14 +436,14 @@ fn test_a_line_cut_before_it_started_is_handed_back_whatever_its_age() {
 fn test_a_stale_flush_drops_a_critical_call_in_its_last_words() {
     let clock = FakeClock::at(0.0);
     let mut pacer = EventSpeechPacer::with_clock(PacerConfig::default(), clock.clock());
-    let brake = "Brake now! Stopped traffic ahead in both lanes, and a trooper on the shoulder.";
+    let brake = "Brake now! Stopped traffic ahead in both lanes, and a marshal on the shoulder.";
     pacer.note_interrupt(brake, EventPriority::Critical, None);
     // Chatter queued behind it: a real backlog.
     pacer.note_queued(CHATTER, EventPriority::Ambient, None);
     heard(&pacer, &clock, brake, 0.8);
     assert!(flush_at(
         &mut pacer,
-        "Merge onto US-40 west toward Salt Lake City.",
+        "Merge onto Dock 12 west toward Harbour City.",
         EventPriority::Important
     ));
     assert_eq!(pacer.take_flush_cut(), None);
@@ -460,7 +460,7 @@ fn test_an_important_line_waits_out_the_one_line_still_speaking() {
     for fraction in [0.1, 0.8] {
         let clock = FakeClock::at(0.0);
         let mut pacer = EventSpeechPacer::with_clock(PacerConfig::default(), clock.clock());
-        let take = "Exit speed 49. You take exit 113 for Casa Grande. A quarter mile of ramp, \
+        let take = "Gate speed 49. You take gate 113 for Barrow Bend. A quarter mile of pier, \
                     traffic light at the end.";
         pacer.note_interrupt(take, EventPriority::Critical, None);
         heard(&pacer, &clock, take, fraction);
@@ -582,7 +582,7 @@ fn test_a_stale_flush_never_steps_on_a_critical_call() {
     clock.advance(0.05);
     assert!(flush_at(
         &mut pacer,
-        "Merge onto US-40 west toward Salt Lake City.",
+        "Merge onto Dock 12 west toward Harbour City.",
         EventPriority::Important
     ));
     let cut = pacer.take_flush_cut();
@@ -630,8 +630,8 @@ fn test_a_burst_of_important_lines_in_one_instant_queues_whole() {
     let clock = FakeClock::at(0.0);
     let mut pacer = EventSpeechPacer::with_clock(PacerConfig::default(), clock.clock());
 
-    let briefing = "Off the ramp and onto city streets: start on unnamed \
-                        public road. Then turn right now onto Halleck Street. \
+    let briefing = "Off the pier and onto harbour lanes: start on unnamed \
+                        public dock. Then turn right now onto Harbour Lanes. \
                         1 mile to the facility gate.";
     pacer.note_queued(briefing, EventPriority::Important, None);
     // The next important lines land in the same frame and the one after.
@@ -677,7 +677,7 @@ fn test_a_construction_zone_line_is_rescued_once_like_any_other() {
         "Brake lights ahead!",
         "Cones in your lane!",
         "Flagger stopping traffic!",
-        "Truck merging left!",
+        "Racer merging left!",
         "Barrels in the shoulder!",
     ];
     let (mut pacer, _) = make_pacer();
@@ -723,27 +723,27 @@ fn test_the_merge_taper_line_is_rescued_once_too() {
 /// instruct a maneuver that no longer applies.
 #[test]
 fn test_a_rescued_line_dies_when_its_moment_has_passed() {
-    let exit_line = "Exit 14A, half a mile ahead. Move right for the exit lane.";
+    let gate_line = "Gate 14A, half a mile ahead. Move right for the gate lane.";
     let still_ahead = Rc::new(Cell::new(true));
     let (mut pacer, _) = make_pacer();
-    flush_at(&mut pacer, exit_line, EventPriority::Important);
+    flush_at(&mut pacer, gate_line, EventPriority::Important);
     pacer.track(
-        exit_line,
+        gate_line,
         EventPriority::Important,
         always(Rc::clone(&still_ahead)),
     );
-    // Cut while the exit is still ahead: handed back, as it should be.
+    // Cut while the gate is still ahead: handed back, as it should be.
     assert_eq!(
         interrupt(&mut pacer, "Brake lights ahead!"),
-        cut(exit_line, EventPriority::Important)
+        cut(gate_line, EventPriority::Important)
     );
 
     // Now the moment is past. The same cut must NOT bring it back.
     still_ahead.set(false);
     let (mut pacer2, _) = make_pacer();
-    flush_at(&mut pacer2, exit_line, EventPriority::Important);
+    flush_at(&mut pacer2, gate_line, EventPriority::Important);
     pacer2.track(
-        exit_line,
+        gate_line,
         EventPriority::Important,
         always(Rc::clone(&still_ahead)),
     );
@@ -768,7 +768,7 @@ fn test_a_hazard_call_does_not_come_back_once_the_hazard_is_clear() {
     );
     // Still live: cut by something louder, handed back to finish.
     assert_eq!(
-        interrupt(&mut pacer, "Deer in the road!"),
+        interrupt(&mut pacer, "Deer in the path!"),
         cut(hazard_line, EventPriority::Critical)
     );
 
@@ -781,15 +781,15 @@ fn test_a_hazard_call_does_not_come_back_once_the_hazard_is_clear() {
         EventPriority::Critical,
         always(Rc::clone(&live)),
     );
-    assert_eq!(interrupt(&mut pacer2, "Deer in the road!"), None);
+    assert_eq!(interrupt(&mut pacer2, "Deer in the path!"), None);
 }
 
 /// These carry the heaviest consequence of any line in the source game, so
 /// they are the last ones that should be able to speak out of their moment.
 #[test]
 fn test_an_enforcement_stop_instruction_dies_once_the_player_has_stopped() {
-    let stop_call = "Scale bypass enforcement. Lights and siren behind you: signal with X and brake to a stop on the shoulder.";
-    let final_call = "Final failure-to-stop warning. Brake to a full stop now or troopers will end the stop with spike strips and felony charges.";
+    let stop_call = "Course marshal ahead now. Lights and siren behind you: signal with X and brake to a stop on the shoulder.";
+    let final_call = "Final failure-to-stop warning. Brake to a full stop now or marshals will end the run with tire spikes and disqualification.";
 
     fn rescued(line: &str, stop_live: bool) -> Option<Cut> {
         let (mut pacer, _) = make_pacer();
@@ -799,7 +799,7 @@ fn test_an_enforcement_stop_instruction_dies_once_the_player_has_stopped() {
             EventPriority::Critical,
             Some(Box::new(move || stop_live)),
         );
-        interrupt(&mut pacer, "Deer in the road!")
+        interrupt(&mut pacer, "Deer in the path!")
     }
 
     for line in [stop_call, final_call] {
