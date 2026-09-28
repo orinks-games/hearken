@@ -227,7 +227,10 @@ impl<G: Game> Menu for BindingsScreen<G> {
                 },
                 |s: &mut Self, ctx: &mut Ctx<G>| s.reset_all(ctx),
             )
-            .help("Puts every control on this screen back where it started."),
+            .help("Puts every control on this screen back where it started.")
+            // reset_all plays its own Select once the reset is done; the
+            // menu's own row-activation sound would double it up.
+            .select_sound(None),
         );
         items
     }

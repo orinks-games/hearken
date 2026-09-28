@@ -408,3 +408,44 @@ fn escape_on_the_controller_screen_keeps_the_button() {
     h.press(Key::Escape);
     assert_eq!(h.spoken(), ["Kept the A button."]);
 }
+
+#[test]
+fn activating_a_row_and_a_landed_rebind_each_play_select_once() {
+    let mut h = shortcuts(BindingDevice::Keyboard);
+    h.clear();
+    h.press(Key::Return); // Enter on Jump: starts listening
+    assert_eq!(h.played(), ["ui/menu_select"]);
+    h.clear();
+    h.press(Key::Z); // the new key lands: a separate moment
+    assert_eq!(h.played(), ["ui/menu_select"]);
+}
+
+#[test]
+fn a_taken_key_plays_the_error_sound() {
+    let mut h = shortcuts(BindingDevice::Keyboard);
+    h.press(Key::Return);
+    h.clear();
+    h.press(Key::C); // already Duck's
+    assert_eq!(h.played(), ["ui/error"]);
+}
+
+#[test]
+fn reset_all_plays_its_own_select_sound_once() {
+    let mut h = shortcuts(BindingDevice::Keyboard);
+    h.press(Key::End); // the Reset row
+    h.clear();
+    h.press(Key::Return);
+    assert_eq!(
+        h.played(),
+        ["ui/menu_select"],
+        "the row is silenced so only reset_all's own sound plays"
+    );
+}
+
+#[test]
+fn escape_while_not_listening_plays_the_back_sound() {
+    let mut h = shortcuts(BindingDevice::Keyboard);
+    h.clear();
+    h.press(Key::Escape);
+    assert_eq!(h.played(), ["ui/menu_back"]);
+}
