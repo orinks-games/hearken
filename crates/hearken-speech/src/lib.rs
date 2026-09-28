@@ -65,6 +65,7 @@ pub mod backend;
 pub mod capture;
 pub mod fakes;
 pub mod live;
+pub mod pacer;
 pub mod spoken;
 pub mod threaded;
 
@@ -78,6 +79,9 @@ pub use capture::{
     SpokenEntry,
 };
 pub use live::{Speech, SpeechConfig};
+pub use pacer::{
+    monotonic_seconds, Clock, Cut, EventPriority, EventSpeechPacer, PacerConfig, Valid,
+};
 pub use spoken::{terse_silent, SpokenMessage};
 pub use threaded::ThreadedSpeech;
 
