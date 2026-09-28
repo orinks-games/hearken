@@ -121,6 +121,20 @@ fn bus_gain_of(bus_volumes: &HashMap<Bus, f32>, bus: Bus) -> f32 {
     }
 }
 
+/// Clamps `value` into `min..=max`, or keeps `current` unchanged when
+/// `value` is NaN or infinite. A non-finite position or facing already
+/// cannot reach a backend (Task 2's `place`); this is the same guarantee for
+/// volume, pitch and bus volume, so a bad value from game code cannot poison
+/// a sound (or, on `Bus::MASTER`, every sound) and cannot defeat the
+/// send-only-on-change check below (`NaN != NaN` always).
+fn clamped_or(current: f32, value: f32, min: f32, max: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        current
+    }
+}
+
 fn compute_mix(listener: &Listener, spatial: &SpatialConfig, bus_gain: f32, live: &Live) -> Mix {
     let mut gain = live.volume * bus_gain;
     let (mut pan, mut lowpass_hz, mut relative) = (0.0, None, None);
@@ -211,6 +225,10 @@ impl Audio {
     ) -> Sound {
         let source = match &voice {
             Some((recipe, params)) => Source::Voice(Voice::with_params(*recipe, params.clone())),
+            // Already known bad (missing, or rejected by the backend last
+            // time): go straight to the default without asking the clip
+            // source or the backend for the same failure again.
+            None if self.missing.contains(key) => Source::Clip(builtin_wav(key)),
             None => match self.clips.load(key) {
                 Some(bytes) => Source::Clip(bytes),
                 None => {
@@ -243,8 +261,17 @@ impl Audio {
                 self.alloc(live)
             }
             Err(err) => {
-                log::error!("backend failed to play {key:?}: {err}");
-                self.note_missing(key);
+                if live.voice.is_some() {
+                    // A live voice has no clip to fall back to: falling
+                    // back to the key's default clip would start an
+                    // unrequested, unstoppable loop (nobody holds a handle
+                    // to stop it) named after a key that was never missing.
+                    log::error!("backend failed to play voice {key:?}: {err}");
+                    return Sound::NONE;
+                }
+                if self.note_missing(key) {
+                    log::error!("backend failed to play {key:?}: {err}");
+                }
                 match self
                     .backend
                     .play(key, Source::Clip(builtin_wav(key)), looping, mix)
@@ -296,7 +323,7 @@ impl Audio {
     /// Sets `sound`'s volume, clamped to `0..=1`.
     pub fn set_volume(&mut self, sound: Sound, volume: f32) {
         if let Some(live) = slot_mut(&mut self.slots, sound) {
-            live.volume = volume.clamp(0.0, 1.0);
+            live.volume = clamped_or(live.volume, volume, 0.0, 1.0);
         }
         self.resend(sound, self.fades.move_ms);
     }
@@ -304,7 +331,7 @@ impl Audio {
     /// Sets `sound`'s pitch, clamped to `0.05..=4`.
     pub fn set_pitch(&mut self, sound: Sound, pitch: f32) {
         if let Some(live) = slot_mut(&mut self.slots, sound) {
-            live.pitch = pitch.clamp(0.05, 4.0);
+            live.pitch = clamped_or(live.pitch, pitch, 0.05, 4.0);
         }
         self.resend(sound, self.fades.move_ms);
     }
@@ -343,7 +370,8 @@ impl Audio {
     /// Sets a bus's volume, clamped to `0..=1`; `Bus::MASTER` scales every
     /// bus.
     pub fn set_bus_volume(&mut self, bus: Bus, volume: f32) {
-        self.bus_volumes.insert(bus, volume.clamp(0.0, 1.0));
+        let volume = clamped_or(self.bus_volume(bus), volume, 0.0, 1.0);
+        self.bus_volumes.insert(bus, volume);
         let affected: Vec<Sound> = self
             .slots
             .iter()
@@ -465,10 +493,13 @@ impl Audio {
         self.backend.set_mix(channel, mix, ramp_ms);
     }
 
-    fn note_missing(&mut self, key: &str) {
-        if self.missing.insert(key.to_string()) {
+    /// Records `key` as missing; returns whether this is the first time.
+    fn note_missing(&mut self, key: &str) -> bool {
+        let newly_missing = self.missing.insert(key.to_string());
+        if newly_missing {
             log::warn!("sound {key} is missing; playing its default");
         }
+        newly_missing
     }
 
     fn alloc(&mut self, live: Live) -> Sound {

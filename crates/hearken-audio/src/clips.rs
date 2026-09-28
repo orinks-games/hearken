@@ -30,7 +30,7 @@ pub struct LooseClips {
 }
 
 impl LooseClips {
-    /// Extensions tried, in order, for a key with no extension of its own.
+    /// Extensions appended to every key, in order, when looking for its file.
     pub const EXTENSIONS: [&'static str; 3] = ["ogg", "wav", "mp3"];
 
     /// Loads clips from `root`.
@@ -58,7 +58,14 @@ impl LooseClips {
         let var = format!("{env_prefix}_SOUNDS");
         if let Ok(dir) = std::env::var(&var) {
             if !dir.is_empty() {
-                candidates.push((var, PathBuf::from(dir)));
+                let path = PathBuf::from(&dir);
+                if path.is_dir() {
+                    candidates.push((var, path));
+                } else {
+                    log::warn!(
+                        "sounds: {var} is set to {dir:?} but that is not a directory; ignoring"
+                    );
+                }
             }
         }
         if let Some(dir) = std::env::current_exe()

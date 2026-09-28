@@ -59,6 +59,40 @@ fn a_clip_the_backend_cannot_play_falls_back_to_its_default() {
     assert!(
         matches!(rec.calls().last(), Some(Call::Play { clip: Some(b), .. }) if **b == *default)
     );
+
+    // A key already known bad goes straight to the default: no repeat
+    // attempt with the original (still-cached, still-bad) clip bytes.
+    rec.clear();
+    audio.play("sfx/door", Bus::EFFECTS);
+    let calls = rec.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(matches!(&calls[0], Call::Play { clip: Some(b), .. } if **b == *default));
+}
+
+#[test]
+fn a_refused_voice_returns_none_instead_of_looping_a_fallback_clip() {
+    use hearken_synth::fundsp::prelude32::*;
+    fn hum(p: &hearken_synth::Params) -> Box<dyn AudioUnit> {
+        Box::new(var(&p.get("throttle")))
+    }
+    let (mut audio, rec) = pool();
+    rec.fail_next_play("no voice channels left");
+    let v = audio.start_voice(hum, &[("throttle", 0.0)], None, hearken_audio::Bus::EFFECTS);
+    assert!(!audio.is_playing(v));
+    assert!(audio.missing_clips().is_empty());
+    assert!(rec.calls().is_empty(), "{:?}", rec.calls());
+}
+
+#[test]
+fn a_nan_or_infinite_control_value_leaves_the_previous_one_and_sends_nothing() {
+    let (mut audio, rec) = pool();
+    let s = audio.play("sfx/door", Bus::EFFECTS);
+    rec.clear();
+    audio.set_volume(s, f32::NAN);
+    audio.set_pitch(s, f32::INFINITY);
+    audio.set_bus_volume(Bus::EFFECTS, f32::NAN);
+    assert!(rec.calls().is_empty(), "{:?}", rec.calls());
+    assert_eq!(audio.bus_volume(Bus::EFFECTS), 1.0);
 }
 
 #[test]
