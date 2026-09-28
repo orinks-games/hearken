@@ -1,6 +1,6 @@
 //! The ambience bed and music slots, pause-all/resume-all, and the duck.
 
-use crate::pool::{clamped_or, slot_mut, Audio, Sound};
+use crate::pool::{clamped_or, slot_mut, Audio};
 use crate::types::Bus;
 use std::collections::HashSet;
 
@@ -81,18 +81,7 @@ impl Audio {
     /// Pauses every live sound that is not already paused, remembering that
     /// this call paused it so `resume_all` resumes only that.
     pub fn pause_all(&mut self) {
-        let sounds: Vec<Sound> = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(i, slot)| {
-                let live = slot.live.as_ref()?;
-                (!live.paused).then_some(Sound {
-                    index: i as u32,
-                    generation: slot.generation,
-                })
-            })
-            .collect();
+        let sounds = self.live_sounds(|live| !live.paused);
         for sound in sounds {
             // `pause` clears `paused_by_all` (an explicit pause is never
             // pause_all's doing), so this call sets it back to true right
@@ -106,18 +95,7 @@ impl Audio {
 
     /// Resumes exactly what the last `pause_all` paused.
     pub fn resume_all(&mut self) {
-        let sounds: Vec<Sound> = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(i, slot)| {
-                let live = slot.live.as_ref()?;
-                live.paused_by_all.then_some(Sound {
-                    index: i as u32,
-                    generation: slot.generation,
-                })
-            })
-            .collect();
+        let sounds = self.live_sounds(|live| live.paused_by_all);
         for sound in sounds {
             self.resume(sound);
         }
@@ -139,18 +117,7 @@ impl Audio {
             return;
         }
         let duck_ms = self.fades.duck_ms;
-        let sounds: Vec<Sound> = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(i, slot)| {
-                let live = slot.live.as_ref()?;
-                changed.contains(&live.bus).then_some(Sound {
-                    index: i as u32,
-                    generation: slot.generation,
-                })
-            })
-            .collect();
+        let sounds = self.live_sounds(|live| changed.contains(&live.bus));
         for sound in sounds {
             self.resend(sound, duck_ms);
         }
@@ -161,18 +128,7 @@ impl Audio {
     pub fn set_duck(&mut self, level: f32) {
         self.mixing.duck_level = clamped_or(self.mixing.duck_level, level, 0.0, 1.0);
         let duck_ms = self.fades.duck_ms;
-        let sounds: Vec<Sound> = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(i, slot)| {
-                let live = slot.live.as_ref()?;
-                self.mixing.duck_buses.contains(&live.bus).then_some(Sound {
-                    index: i as u32,
-                    generation: slot.generation,
-                })
-            })
-            .collect();
+        let sounds = self.live_sounds(|live| self.mixing.duck_buses.contains(&live.bus));
         for sound in sounds {
             self.resend(sound, duck_ms);
         }

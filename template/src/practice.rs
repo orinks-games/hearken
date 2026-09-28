@@ -7,6 +7,9 @@ use hearken_app::{Bus, Ctx, InputEvent, Key, Sound, State, Vec3};
 use crate::sound::engine;
 use crate::{HelloAction, HelloGame, Title, HELP};
 
+/// How often the beacon pings. A game would reasonably tune this.
+const PING_SECONDS: f64 = 0.8;
+
 /// A room with two things to do: count out loud, and listen to an engine
 /// idle while a beacon circles you.
 pub struct Practice {
@@ -24,7 +27,7 @@ impl Practice {
             engine: Sound::NONE,
             throttle: 0.0,
             beacon_angle: 0.0,
-            ping_in: 0.8,
+            ping_in: PING_SECONDS,
         }
     }
 }
@@ -53,7 +56,7 @@ impl State<HelloGame> for Practice {
         self.engine = ctx
             .audio
             .start_voice(engine, &[("throttle", 0.0)], None, Bus::EFFECTS);
-        self.ping_in = 0.8;
+        self.ping_in = PING_SECONDS;
         let count = count_control(ctx);
         let throttle = ctx.control_name(HelloAction::Throttle);
         ctx.say(format!(
@@ -98,7 +101,7 @@ impl State<HelloGame> for Practice {
 
         self.ping_in -= dt;
         if self.ping_in <= 0.0 {
-            self.ping_in += 0.8;
+            self.ping_in += PING_SECONDS;
             let a = self.beacon_angle;
             ctx.audio.play_at(
                 "sfx/beacon",

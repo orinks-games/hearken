@@ -70,6 +70,16 @@ fn play_move_on<G: Game>(ctx: &mut Ctx<G>, bus: Bus) {
     }
 }
 
+/// The body every toggle row on this screen shares: run the toggle (`f`),
+/// then rebuild the rows and read the current one back. The rows are lent to
+/// the row's action while it runs, so they must be rebuilt for the read-back
+/// to find this row.
+fn toggle_row<G: Game>(s: &mut SettingsScreen<G>, ctx: &mut Ctx<G>, f: impl FnOnce(&mut Ctx<G>)) {
+    f(ctx);
+    Menu::refresh(s, ctx, true);
+    s.speak_current(ctx);
+}
+
 /// One row of the Settings screen, tagged with a stable id so a game's
 /// [`Game::settings_rows`] can find, reorder, drop or add to the built-in
 /// rows.
@@ -155,11 +165,7 @@ impl<G: Game> Menu for SettingsScreen<G> {
                         format!("Speech detail: {label}")
                     }),
                     |s: &mut Self, ctx: &mut Ctx<G>| {
-                        step_verbosity(ctx, 1);
-                        // The rows are lent to this action while it runs; rebuild
-                        // them so the read-back finds this row.
-                        Menu::refresh(s, ctx, true);
-                        s.speak_current(ctx);
+                        toggle_row(s, ctx, |ctx| step_verbosity(ctx, 1))
                     },
                 )
                 .help("How much the game says while you play. Left and Right change it.")
@@ -177,13 +183,7 @@ impl<G: Game> Menu for SettingsScreen<G> {
                         if on { "on" } else { "off" }
                     )
                 }),
-                |s: &mut Self, ctx: &mut Ctx<G>| {
-                    toggle_duck(ctx);
-                    // The rows are lent to this action while it runs; rebuild
-                    // them so the read-back finds this row.
-                    Menu::refresh(s, ctx, true);
-                    s.speak_current(ctx);
-                },
+                |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, toggle_duck),
             )
             .help(
                 "Whether music and background sound get quieter while the game speaks. \
@@ -196,10 +196,7 @@ impl<G: Game> Menu for SettingsScreen<G> {
             let help = if bus == Bus::MASTER {
                 "Left and Right change how loud the whole game is.".to_string()
             } else {
-                format!(
-                    "Left and Right change the {} volume.",
-                    label.to_lowercase()
-                )
+                format!("Left and Right change the {} volume.", label.to_lowercase())
             };
             rows.push(SettingsRow::new(
                 format!("volume.{}", bus.name()),
@@ -222,13 +219,7 @@ impl<G: Game> Menu for SettingsScreen<G> {
                     let on = ctx.settings.menus.announce_position;
                     format!("Menu positions: {}", if on { "on" } else { "off" })
                 }),
-                |s: &mut Self, ctx: &mut Ctx<G>| {
-                    toggle_positions(ctx);
-                    // The rows are lent to this action while it runs; rebuild
-                    // them so the read-back finds this row.
-                    Menu::refresh(s, ctx, true);
-                    s.speak_current(ctx);
-                },
+                |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, toggle_positions),
             )
             .help(
                 "Whether menus say where you are, such as 2 of 4. Enter, Left or Right changes it.",
@@ -267,13 +258,7 @@ impl<G: Game> Menu for SettingsScreen<G> {
                     let on = ctx.settings.controller.enabled;
                     format!("Controller: {}", if on { "on" } else { "off" })
                 }),
-                |s: &mut Self, ctx: &mut Ctx<G>| {
-                    toggle_controller(ctx);
-                    // The rows are lent to this action while it runs; rebuild
-                    // them so the read-back finds this row.
-                    Menu::refresh(s, ctx, true);
-                    s.speak_current(ctx);
-                },
+                |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, toggle_controller),
             )
             .help("Whether the game listens to a game controller. Enter, Left or Right changes it.")
             .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_controller(ctx)),

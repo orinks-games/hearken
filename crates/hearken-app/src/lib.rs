@@ -29,6 +29,7 @@ pub use bindings::{Action, Chord, KeyBindings, NoAction, PadChord};
 pub use controller::{ControllerManager, InputDevice};
 pub use ctx::{Ctx, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
 pub use game::Game;
+pub use hearken_audio as audio;
 #[cfg(feature = "bass")]
 pub use hearken_audio::BassBackend;
 pub use hearken_audio::{
@@ -36,7 +37,6 @@ pub use hearken_audio::{
     LooseClips, MemoryClips, Mix, Recorder, RecordingBackend, SilentBackend, Sound, Source,
     SpatialConfig, Vec3,
 };
-pub use hearken_audio as audio;
 pub use hearken_speech::{
     Category, EventPriority, Level, NoCategory, PacerConfig, Rule, Verbosity,
 };

@@ -453,21 +453,26 @@ impl Audio {
     pub fn set_bus_volume(&mut self, bus: Bus, volume: f32) {
         let volume = clamped_or(self.bus_volume(bus), volume, 0.0, 1.0);
         self.mixing.bus_volumes.insert(bus, volume);
-        let affected: Vec<Sound> = self
-            .slots
+        let affected = self.live_sounds(|live| bus == Bus::MASTER || live.bus == bus);
+        for sound in affected {
+            self.resend(sound, self.fades.volume_ms);
+        }
+    }
+
+    /// Every live sound whose [`Live`] satisfies `pred`, snapshotted as
+    /// handles before the caller mutates the pool through them.
+    pub(crate) fn live_sounds(&self, pred: impl Fn(&Live) -> bool) -> Vec<Sound> {
+        self.slots
             .iter()
             .enumerate()
             .filter_map(|(i, slot)| {
                 let live = slot.live.as_ref()?;
-                (bus == Bus::MASTER || live.bus == bus).then_some(Sound {
+                pred(live).then_some(Sound {
                     index: i as u32,
                     generation: slot.generation,
                 })
             })
-            .collect();
-        for sound in affected {
-            self.resend(sound, self.fades.volume_ms);
-        }
+            .collect()
     }
 
     /// A bus's volume; `1.0` until set.
