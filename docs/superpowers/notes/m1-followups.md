@@ -6,8 +6,13 @@ Each is small; pick them up in whichever milestone touches the code first.
 ## Carry into M2b
 
 - Occlusion is answered one frame late, so a very short one-shot behind a wall
-  starts unoccluded.
+  starts unoccluded, and the attack of a short occluded one-shot carries its
+  direction.
 - A pacer-less game's speech duck length uses `PacerConfig`'s default numbers.
+- Leaving a paused game with "Return to the title" briefly resumes its sounds
+  (pause's exit resumes everything before the game screen stops its own); fix
+  by resuming only when leaving pause by Resume or Escape, without stranding
+  a paused bed the next screen asks for again.
 
 ## Carry into M4 (playtest)
 

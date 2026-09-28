@@ -50,5 +50,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Build without BASS
+        run: cargo check -p hearken-app --no-default-features --locked
+
       - name: Tests
         run: cargo test --workspace --locked
