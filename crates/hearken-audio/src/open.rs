@@ -145,7 +145,14 @@ impl Audio {
             return;
         }
         self.shut_down = true;
-        log::info!("audio: shutting down");
+        // An idle placeholder pool -- nothing opening, nothing ever played --
+        // has nothing worth a log line; `install_audio` shuts one of these
+        // down every time it swaps a pool in, which would otherwise write two
+        // lines to every session log before the game had made a sound.
+        let had_work = self.opening.is_some() || self.slots.iter().any(|s| s.live.is_some());
+        if had_work {
+            log::info!("audio: shutting down");
+        }
         if let Some(rx) = self.opening.take() {
             match rx.recv_timeout(SHUTDOWN_WAIT) {
                 Ok(Ok(mut backend)) => {
@@ -183,6 +190,8 @@ impl Audio {
         }
         self.backend.shutdown();
         self.backend = Box::new(SilentBackend::default());
-        log::info!("audio: shut down");
+        if had_work {
+            log::info!("audio: shut down");
+        }
     }
 }

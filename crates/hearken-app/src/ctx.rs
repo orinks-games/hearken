@@ -93,12 +93,13 @@ impl<G: Game> Ctx<G> {
 
     /// Installs `audio` as the pool the game plays through: shuts down the
     /// pool it replaces (a harmless no-op the first time, since that one
-    /// never played anything), then applies the game's spatial model and
-    /// duck buses, then the player's saved volumes.
+    /// never played anything), then applies the game's spatial model, fades
+    /// and duck buses, then the player's saved volumes.
     pub fn install_audio(&mut self, audio: Audio) {
         self.audio.shutdown();
         self.audio = audio;
         self.audio.spatial = self.sound.spatial;
+        self.audio.fades = self.sound.fades;
         let duck_buses = self.sound.duck_buses.clone();
         self.audio.set_duck_buses(&duck_buses);
         self.apply_audio_settings();

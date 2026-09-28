@@ -40,7 +40,7 @@ fn the_sound_rows_come_after_speech_and_include_the_games_own_bus() {
             "Effects volume: 80 percent",
             "Ambience volume: 80 percent",
             "Music volume: 80 percent",
-            "Voices volume: 80 percent",
+            "Character voices volume: 80 percent",
             "Engine volume: 80 percent",
         ]
     );

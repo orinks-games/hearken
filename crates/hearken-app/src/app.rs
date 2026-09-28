@@ -147,8 +147,11 @@ impl<G: Game> App<G> {
         }
         G::on_exit(&mut self.ctx);
         self.ctx.controller.shutdown();
-        self.ctx.audio.shutdown();
+        // Saved before the audio shutdown, which can wait up to
+        // `SHUTDOWN_WAIT` for a hung driver: a force-close during that wait
+        // must not cost the player their settings.
         self.ctx.save_settings();
+        self.ctx.audio.shutdown();
         self.ctx.speech.shutdown();
     }
 

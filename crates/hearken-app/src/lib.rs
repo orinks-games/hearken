@@ -36,6 +36,7 @@ pub use hearken_audio::{
     LooseClips, MemoryClips, Mix, Recorder, RecordingBackend, SilentBackend, Sound, Source,
     SpatialConfig, Vec3,
 };
+pub use hearken_audio as audio;
 pub use hearken_speech::{
     Category, EventPriority, Level, NoCategory, PacerConfig, Rule, Verbosity,
 };
@@ -44,6 +45,7 @@ pub use held_keys::HeldKeys;
 pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent, Key, Mods};
 pub use paths::Paths;
 pub use run::{already_running_line, run};
+pub use screens::SettingsRow;
 pub use sdl_shell::SdlShell;
 pub use settings::{default_volume, AudioSettings, ControllerSettings, MenuSettings, Settings};
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};

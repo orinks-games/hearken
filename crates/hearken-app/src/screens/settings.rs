@@ -197,7 +197,7 @@ impl<G: Game> Menu for SettingsScreen<G> {
                 "Left and Right change how loud the whole game is.".to_string()
             } else {
                 format!(
-                    "Left and Right change how loud {} sounds are.",
+                    "Left and Right change the {} volume.",
                     label.to_lowercase()
                 )
             };

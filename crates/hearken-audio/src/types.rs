@@ -45,11 +45,17 @@ impl Sub for Vec3 {
 pub struct Bus(pub &'static str);
 
 impl Bus {
+    /// Every bus at once: the player's overall volume.
     pub const MASTER: Bus = Bus("master");
+    /// Menu and interface earcons.
     pub const UI: Bus = Bus("ui");
+    /// One-shot and looping sound effects.
     pub const EFFECTS: Bus = Bus("effects");
+    /// Ambience beds.
     pub const AMBIENCE: Bus = Bus("ambience");
+    /// Music.
     pub const MUSIC: Bus = Bus("music");
+    /// Recorded character dialogue, not synth voices or the game's own speech.
     pub const VOICE: Bus = Bus("voice");
 
     pub const BUILT_IN: [Bus; 6] = [

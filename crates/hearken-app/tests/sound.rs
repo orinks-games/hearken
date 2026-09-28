@@ -104,6 +104,53 @@ fn a_games_own_default_volume_applies_without_saving_anything() {
     assert!(h.app.ctx.settings.audio.volumes.is_empty());
 }
 
+/// A game that tunes its own fades, so the built-in defaults are a value a
+/// game can change, not a private constant.
+struct FadesGame;
+
+struct FadesBlank;
+
+impl State<FadesGame> for FadesBlank {
+    fn name(&self) -> &'static str {
+        "blank"
+    }
+    fn help(&self, _ctx: &Ctx<FadesGame>) -> String {
+        String::new()
+    }
+}
+
+impl Game for FadesGame {
+    const TITLE: &'static str = "Fades Test";
+    const DATA_DIR: &'static str = "HearkenFadesTest";
+    const ENV_PREFIX: &'static str = "HEARKEN_FADES_TEST";
+    type Event = ();
+    type Data = ();
+    type Settings = ();
+    type Action = NoAction;
+    type Category = NoCategory;
+
+    fn sound() -> SoundConfig {
+        SoundConfig {
+            fades: hearken_app::Fades {
+                bed_ms: 10,
+                ..hearken_app::Fades::default()
+            },
+            ..SoundConfig::default()
+        }
+    }
+}
+
+#[test]
+fn a_games_own_fades_reach_the_pool() {
+    let h = Headless::<FadesGame>::new((), FadesBlank);
+    assert_eq!(h.app.ctx.audio.fades.bed_ms, 10);
+    assert_eq!(
+        h.app.ctx.audio.fades.music_ms,
+        hearken_app::Fades::default().music_ms,
+        "everything else keeps the built-in default"
+    );
+}
+
 #[test]
 fn ending_the_run_stops_every_sound() {
     let mut h = start();

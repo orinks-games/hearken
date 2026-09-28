@@ -1,7 +1,7 @@
 //! What a game hands the engine about its own sound: the earcons for common
 //! UI moments, its own buses, and the spatial and ducking defaults.
 
-use hearken_audio::{Bus, SpatialConfig};
+use hearken_audio::{Bus, Fades, SpatialConfig};
 use hearken_speech::PacerConfig;
 
 use crate::settings::default_volume;
@@ -56,7 +56,7 @@ pub const BUS_LABELS: [(Bus, &str); 6] = [
     (Bus::EFFECTS, "Effects"),
     (Bus::AMBIENCE, "Ambience"),
     (Bus::MUSIC, "Music"),
-    (Bus::VOICE, "Voices"),
+    (Bus::VOICE, "Character voices"),
 ];
 
 /// A game's own sound configuration: its buses, ducking, spatial model and UI
@@ -75,6 +75,8 @@ pub struct SoundConfig {
     pub pacer: Option<PacerConfig>,
     /// The spatial positioning model's tuning.
     pub spatial: SpatialConfig,
+    /// How long a change ramps before it reaches the backend.
+    pub fades: Fades,
     /// Which sound plays for each UI moment.
     pub ui: UiSounds,
     /// A bus's volume before the player changes it, for a bus with nothing
@@ -94,6 +96,7 @@ impl Default for SoundConfig {
             earcon_duck_s: 0.25,
             pacer: Some(PacerConfig::default()),
             spatial: SpatialConfig::default(),
+            fades: Fades::default(),
             ui: UiSounds::default(),
             default_volume,
         }
