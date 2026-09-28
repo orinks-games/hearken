@@ -117,8 +117,11 @@ fn a_hand_edited_file_with_odd_sound_values_loads_quietly_and_keeps_what_it_does
     );
 }
 
-/// A game whose `settings_rows` drops the built-in `menu_positions` row and
-/// appends its own, and that has no verbosity categories of its own.
+/// A game whose `settings_rows` drops the built-in `menu_positions` row,
+/// appends its own `difficulty` row, and moves `speech_rate` to the very
+/// end (after `difficulty`) -- so it is no longer row 0, and a test can
+/// tell the id-based lookup in `speak_adjusted` apart from a hard-coded
+/// "row 0" check. Has no verbosity categories of its own.
 struct CustomGame;
 
 impl Game for CustomGame {
@@ -136,10 +139,15 @@ impl Game for CustomGame {
             .into_iter()
             .filter(|r| r.id != "menu_positions")
             .collect();
+        let rate_row = rows
+            .iter()
+            .position(|r| r.id == "speech_rate")
+            .map(|i| rows.remove(i));
         rows.push(SettingsRow::new(
             "difficulty",
             MenuItem::inert("Difficulty: normal"),
         ));
+        rows.extend(rate_row);
         rows
     }
 }
@@ -156,21 +164,32 @@ fn a_games_settings_rows_hook_hides_and_adds_rows_and_speech_rate_is_still_found
     let mut h = custom_settings();
     let rows = row_labels(&h);
     assert!(!rows.iter().any(|r| r.starts_with("Menu positions")));
-    assert_eq!(rows.last().map(String::as_str), Some("Difficulty: normal"));
+    assert!(rows.iter().any(|r| r.as_str() == "Difficulty: normal"));
 
-    // Moving from the last row (the game's own) wraps back around to speech
-    // rate, still the first row; it must still be previewed through the
-    // voice, so the check is by id, not by a hard-coded position.
-    h.press(Key::End); // Difficulty: normal
-    h.press(Key::Down); // wraps to Speech rate
+    // The game's settings_rows moved Speech rate to the very end, after its
+    // own Difficulty row, so it is no longer row 0. It must still be read
+    // back through the previewing voice, found by id rather than position.
+    assert_eq!(
+        rows.last().map(String::as_str),
+        Some("Speech rate: 50 percent")
+    );
+    h.press(Key::End); // Speech rate, now the last row
+    h.clear();
     h.press(Key::Right);
+    assert_eq!(h.app.ctx.settings.speech.rate, 0.55);
     assert!(
         h.speech
             .borrow()
             .previews()
             .iter()
-            .any(|(setting, _, _)| setting.as_str() == "speech_rate"),
-        "the speech-rate row is still previewed by id"
+            .any(|(setting, text, _)| {
+                setting.as_str() == "speech_rate" && text.starts_with("Speech rate: 55 percent")
+            }),
+        "the speech-rate row is still previewed by id, not by position"
+    );
+    assert!(
+        h.spoken().is_empty(),
+        "read once, by the previewing voice, not the main channel"
     );
 }
 
