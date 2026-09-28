@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use hearken_app::{
-    Action, Chord, ControllerButton, Ctx, Game, InputEvent, Key, PadChord, State, Vec3,
+    Action, Category, Chord, ControllerButton, Ctx, Game, InputEvent, Key, Level, PadChord, Rule,
+    State, Vec3, Verbosity,
 };
 
 pub struct TestGame;
@@ -21,7 +22,7 @@ impl Game for TestGame {
     type Data = TestData;
     type Settings = ();
     type Action = TestAction;
-    type Category = hearken_app::NoCategory;
+    type Category = TestCategory;
 
     fn pump(ctx: &mut Ctx<Self>, _dt: f64) -> Vec<u32> {
         std::mem::take(&mut ctx.game.queued_events)
@@ -34,7 +35,67 @@ impl Game for TestGame {
     fn occluded(data: &TestData, _listener: Vec3, _pos: Vec3) -> bool {
         data.occluded
     }
+
+    fn verbosity() -> Verbosity<TestCategory> {
+        Verbosity {
+            levels: &TEST_LEVELS,
+        }
+    }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TestCategory {
+    Safety,
+    Chatter,
+    Hint,
+}
+
+impl Category for TestCategory {
+    fn all() -> &'static [Self] {
+        &[
+            TestCategory::Safety,
+            TestCategory::Chatter,
+            TestCategory::Hint,
+        ]
+    }
+    fn id(self) -> &'static str {
+        match self {
+            TestCategory::Safety => "safety",
+            TestCategory::Chatter => "chatter",
+            TestCategory::Hint => "hint",
+        }
+    }
+}
+
+pub static TEST_LEVELS: [Level<TestCategory>; 3] = [
+    Level {
+        id: "full",
+        label: "Full",
+        rules: &[
+            (TestCategory::Safety, Rule::Full),
+            (TestCategory::Chatter, Rule::Full),
+            (TestCategory::Hint, Rule::FirstTime),
+        ],
+    },
+    Level {
+        id: "quiet",
+        label: "Quiet",
+        rules: &[
+            (TestCategory::Safety, Rule::Full),
+            (TestCategory::Chatter, Rule::Earcon("ui/tick")),
+            (TestCategory::Hint, Rule::Silent),
+        ],
+    },
+    Level {
+        id: "minimal",
+        label: "Minimal",
+        rules: &[
+            (TestCategory::Safety, Rule::Terse),
+            (TestCategory::Chatter, Rule::Silent),
+            (TestCategory::Hint, Rule::Silent),
+        ],
+    },
+];
 
 /// Jump: Space, pad A. Duck: C or keypad 0, pad X. Open the map: Shift M,
 /// keyboard only. Horn: right bumper plus Y, pad only. Tab is the game's

@@ -11,6 +11,7 @@ use crate::input::InputEvent;
 use crate::paths::Paths;
 use crate::settings::Settings;
 use crate::sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
+use crate::speech_delivery::Delivery;
 use crate::state::{StackOp, State};
 
 /// The `log` target every spoken line is written under, so a session log
@@ -49,6 +50,7 @@ pub struct Ctx<G: Game> {
     /// different sound at runtime.
     pub ui_sounds: UiSounds,
     sound: SoundConfig,
+    pub(crate) delivery: Delivery<G::Category>,
     pending: Vec<StackOp<G>>,
 }
 
@@ -63,6 +65,7 @@ impl<G: Game> Ctx<G> {
         let bindings = KeyBindings::from_saved(&settings.bindings);
         let sound = G::sound();
         let ui_sounds = sound.ui.clone();
+        let delivery = Delivery::new(sound.pacer, G::verbosity());
         let mut ctx = Ctx {
             speech,
             settings,
@@ -79,6 +82,7 @@ impl<G: Game> Ctx<G> {
             audio: Audio::silent(),
             ui_sounds,
             sound,
+            delivery,
             pending: Vec::new(),
         };
         // So saved bus volumes are in effect from the very first frame, not
@@ -163,17 +167,6 @@ impl<G: Game> Ctx<G> {
         self.speak(text.into(), false);
     }
 
-    /// Speak on the gameplay-event channel, which a separate voice can carry
-    /// so the screen reader never talks over it.
-    pub fn say_event(&mut self, text: impl Into<String>, interrupt: bool) {
-        let text = text.into();
-        if text.trim().is_empty() {
-            return;
-        }
-        self.speech.say_event(&text, interrupt);
-        self.record(format!("[event] {text}"));
-    }
-
     /// Read a settings change back through the voice it changed, so a new
     /// speech rate is heard at that rate; on the main channel when no voice
     /// can be adjusted that way. `setting` is a key such as `"speech_rate"`.
@@ -196,7 +189,7 @@ impl<G: Game> Ctx<G> {
         self.record(text);
     }
 
-    fn record(&mut self, line: String) {
+    pub(crate) fn record(&mut self, line: String) {
         log::info!(target: TRANSCRIPT_TARGET, "{line}");
         self.transcript.push(line);
         if self.transcript.len() > TRANSCRIPT_CAP {
@@ -205,8 +198,13 @@ impl<G: Game> Ctx<G> {
         }
     }
 
+    /// Silence both voices, and drop the event backlog the pacer was
+    /// projecting.
     pub fn stop_speech(&mut self) {
         self.speech.stop();
+        if let Some(pacer) = self.delivery.pacer.as_mut() {
+            pacer.reset();
+        }
     }
 
     /// Push the saved speech settings to the voices.

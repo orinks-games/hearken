@@ -33,7 +33,8 @@ impl<G: Game> App<G> {
     }
 
     /// One frame: input to the top screen, the game's events, the top
-    /// screen's update, speech upkeep, and the stack changes asked for.
+    /// screen's update, speech and audio upkeep (the duck lifts once the
+    /// event voice is done), and the stack changes asked for.
     pub fn step(&mut self, events: Vec<InputEvent>, dt: f64) {
         // The clock the held-key pulses run on; see `held_keys`.
         self.ctx.held.begin_frame(dt);
@@ -61,10 +62,12 @@ impl<G: Game> App<G> {
         }
         self.ctx.speech.poll(dt);
         self.ctx.update_audio();
+        self.ctx.update_duck();
 
         self.apply_pending();
         self.ctx.frame += 1;
         self.ctx.clock += dt;
+        self.ctx.sync_pacer_clock();
     }
 
     /// The bookkeeping every event gets before any screen sees it. False
