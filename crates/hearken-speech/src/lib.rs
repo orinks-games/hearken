@@ -68,6 +68,7 @@ pub mod live;
 pub mod pacer;
 pub mod spoken;
 pub mod threaded;
+pub mod verbosity;
 
 pub use backend::{
     narrator_running, pick_backend, pick_backend_gated, pick_event_backend,
@@ -84,6 +85,7 @@ pub use pacer::{
 };
 pub use spoken::{terse_silent, SpokenMessage};
 pub use threaded::ThreadedSpeech;
+pub use verbosity::{Category, Level, NoCategory, Rule, Verbosity};
 
 /// Seconds between runtime health checks of the speech backend. Short enough
 /// that a player who switches screen readers hears the game again within a few
@@ -305,6 +307,8 @@ pub struct SpeechSettings {
     pub voice: String,
     /// Send every line to the braille display and speak nothing.
     pub braille_only: bool,
+    /// The verbosity level's id; empty for the game's first level.
+    pub verbosity: String,
 }
 
 impl Default for SpeechSettings {
@@ -317,6 +321,7 @@ impl Default for SpeechSettings {
             volume: 1.0,
             voice: String::new(),
             braille_only: false,
+            verbosity: String::new(),
         }
     }
 }
