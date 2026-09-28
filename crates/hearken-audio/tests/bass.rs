@@ -35,6 +35,10 @@ fn a_one_shot_plays_and_is_reaped_after_it_ends() {
     std::thread::sleep(Duration::from_millis(400));
     b.update();
     assert!(!b.is_playing(ch));
+    assert!(
+        channel_get_attribute(ch as u32, BASS_ATTRIB_VOL).is_err(),
+        "the stream was freed"
+    );
     b.shutdown();
 }
 

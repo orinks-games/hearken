@@ -14,21 +14,15 @@
 //!
 //! # Dropping without shutting down
 //!
-//! `BassBackend` has no `Drop` impl. If it is ever dropped without a call to
-//! [`Backend::shutdown`] first -- the case carried over from Task 4's
-//! review: the game quits while the device is still opening, the pool
-//! abandons the open, and the `BassBackend` that finishes building on the
-//! detached `audio-open` thread is simply dropped there -- every open
-//! [`Stream`]/[`CallbackStream`] still frees its own handle (a quick,
-//! non-blocking FFI call that is safe on any thread), but `BASS_Free` is
-//! never called. The constraints forbid anything in `Drop` that can block or
-//! join a thread, and freeing the whole device is exactly the kind of thing
-//! that belongs to an explicit, bounded `shutdown`, not an implicit one run
-//! from whatever thread happens to drop the value. So a `BassBackend`
-//! dropped without `shutdown` leaves BASS initialised for the rest of the
-//! process: the device sits open and idle -- no channels, no memory pinned
-//! by them -- until the process exits, rather than either leaking channels
-//! or blocking the thread that dropped it.
+//! `BassBackend` has no `Drop` impl. Dropping one without first calling
+//! [`Backend::shutdown`] -- for instance because the game quit while the
+//! device was still opening -- still frees every open channel: each
+//! [`Stream`]/[`CallbackStream`] frees its own BASS handle on drop, a quick,
+//! non-blocking call that is safe from any thread. `BASS_Free` itself,
+//! though, only ever runs from `shutdown`, so a `BassBackend` dropped
+//! without one leaves BASS initialised, with no channels open, for the rest
+//! of the process -- the device sits idle rather than leaking memory, and
+//! goes away when the process exits.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -85,6 +79,9 @@ pub struct BassBackend {
     /// is due to be reaped.
     fading: Vec<(Channel, Instant)>,
     bass_fx_loaded: bool,
+    /// Set by the first [`Backend::shutdown`] call, so a second one is a
+    /// silent no-op instead of a `BASS_Free` on an already-freed device.
+    shut_down: bool,
 }
 
 impl BassBackend {
@@ -117,6 +114,7 @@ impl BassBackend {
             channels: HashMap::new(),
             fading: Vec::new(),
             bass_fx_loaded,
+            shut_down: false,
         })
     }
 
@@ -184,7 +182,7 @@ impl BassBackend {
                 };
                 let params = BASS_BFX_BQF {
                     l_filter: BASS_BFX_BQF_LOWPASS,
-                    f_center: hz.clamp(20.0, 20_000.0),
+                    f_center: lowpass_cutoff(hz, entry.base_freq),
                     f_gain: 0.0,
                     f_bandwidth: 0.0,
                     f_q: 0.707,
@@ -204,16 +202,33 @@ impl BassBackend {
     }
 }
 
-/// Sets or slides one channel attribute, ignoring the error a stale handle
-/// (already reaped, or freed by BASS itself) would report -- the same
-/// "calls on an old handle do nothing" contract the rest of the crate keeps.
+/// Clamps a requested low-pass cutoff to what `bass_fx`'s biquad filter will
+/// accept for a channel whose native rate is `native_rate`: `bass_fx`
+/// refuses a centre frequency at or past the channel's Nyquist limit
+/// (`native_rate / 2`), so the ceiling here stays 1 Hz under that. The
+/// ceiling is never let below the 20 Hz floor either -- on a very low native
+/// rate that would invert the range, which would make `f32::clamp` panic --
+/// so the floor wins there instead.
+fn lowpass_cutoff(hz: f32, native_rate: f32) -> f32 {
+    const FLOOR: f32 = 20.0;
+    const CEILING: f32 = 20_000.0;
+    let ceiling = CEILING.min((native_rate / 2.0 - 1.0).max(FLOOR));
+    hz.clamp(FLOOR, ceiling)
+}
+
+/// Sets or slides one channel attribute. The handle always comes from a live
+/// [`Entry`], so a failure here is not a stale handle -- it is BASS itself
+/// refusing the value. Logged at debug for diagnostics; there is nothing to
+/// recover, so the mix just carries on with whatever BASS already had.
 fn set_attr(handle: u32, attrib: u32, value: f32, ramp_ms: u32) {
     let result = if ramp_ms == 0 {
         channel_set_attribute(handle, attrib, value)
     } else {
         channel_slide_attribute(handle, attrib, value, ramp_ms)
     };
-    let _ = result;
+    if let Err(e) = result {
+        log::debug!("bass: could not set attribute {attrib}: {e}");
+    }
 }
 
 impl Backend for BassBackend {
@@ -276,12 +291,14 @@ impl Backend for BassBackend {
             return;
         };
         let handle = entry.stream.handle();
-        let result = if paused {
-            channel_pause(handle)
-        } else {
-            channel_play(handle, false)
-        };
-        let _ = result;
+        if paused {
+            let _ = channel_pause(handle);
+        } else if channel_is_active(handle) != BASS_ACTIVE_STOPPED {
+            // A channel that has already ended (a one-shot that finished
+            // while paused) must stay ended: BASS_ChannelPlay would restart
+            // it from the top instead of resuming nothing.
+            let _ = channel_play(handle, false);
+        }
     }
 
     fn is_playing(&mut self, channel: Channel) -> bool {
@@ -319,6 +336,10 @@ impl Backend for BassBackend {
     }
 
     fn shutdown(&mut self) {
+        if self.shut_down {
+            return;
+        }
+        self.shut_down = true;
         let dropped = self.channels.len();
         self.channels.clear();
         self.fading.clear();
@@ -327,5 +348,24 @@ impl Backend for BassBackend {
             Ok(()) => log::info!("bass: device freed"),
             Err(e) => log::warn!("bass: BASS_Free failed: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lowpass_cutoff_stays_under_the_channels_nyquist_limit() {
+        // 22.05 kHz native rate: bass_fx's own Nyquist check refuses a 15 kHz
+        // request, so it is pulled down to 1 Hz under half the native rate.
+        assert_eq!(lowpass_cutoff(15_000.0, 22_050.0), 11_024.0);
+        // 44.1 kHz native rate: 20 kHz is already under Nyquist, so it is
+        // left alone.
+        assert_eq!(lowpass_cutoff(20_000.0, 44_100.0), 20_000.0);
+        // A native rate so low that "1 Hz under Nyquist" would fall under
+        // the 20 Hz floor and invert the clamp's range -- the floor wins
+        // instead of panicking.
+        assert_eq!(lowpass_cutoff(15_000.0, 30.0), 20.0);
     }
 }
