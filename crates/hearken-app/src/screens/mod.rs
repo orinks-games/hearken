@@ -10,6 +10,6 @@ pub mod timed_message;
 pub use bindings::{BindingDevice, BindingsScreen};
 pub use help::HelpScreen;
 pub use pause::PauseScreen;
-pub use settings::SettingsScreen;
+pub use settings::{SettingsRow, SettingsScreen};
 pub use text_entry::TextEntryScreen;
 pub use timed_message::TimedMessage;

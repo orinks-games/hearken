@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::bindings::Action;
 use crate::ctx::Ctx;
+use crate::screens::settings::SettingsRow;
 use crate::sound::SoundConfig;
 
 pub trait Game: Sized + 'static {
@@ -71,5 +72,11 @@ pub trait Game: Sized + 'static {
     /// muffle it. Asked every frame for every positioned sound.
     fn occluded(_data: &Self::Data, _listener: Vec3, _pos: Vec3) -> bool {
         false
+    }
+
+    /// The Settings screen's rows, built-in ones first: a chance to hide,
+    /// reorder or add to them. The default keeps every built-in row as is.
+    fn settings_rows(_ctx: &Ctx<Self>, rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {
+        rows
     }
 }

@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use hearken_app::{
-    Action, Category, Chord, ControllerButton, Ctx, Game, InputEvent, Key, Level, PadChord, Rule,
-    State, Vec3, Verbosity,
+    Action, Bus, Category, Chord, ControllerButton, Ctx, Game, InputEvent, Key, Level, PadChord,
+    Rule, SoundConfig, State, Vec3, Verbosity,
 };
 
 pub struct TestGame;
@@ -39,6 +39,13 @@ impl Game for TestGame {
     fn verbosity() -> Verbosity<TestCategory> {
         Verbosity {
             levels: &TEST_LEVELS,
+        }
+    }
+
+    fn sound() -> SoundConfig {
+        SoundConfig {
+            buses: vec![(Bus("engine"), "Engine")],
+            ..SoundConfig::default()
         }
     }
 }

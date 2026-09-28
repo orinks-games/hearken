@@ -1,0 +1,182 @@
+mod common;
+
+use common::*;
+use hearken_app::menu::MenuItem;
+use hearken_app::screens::{SettingsRow, SettingsScreen};
+use hearken_app::{Bus, Ctx, Game, Headless, Key, NoAction, NoCategory, Settings};
+
+fn settings() -> Headless<TestGame> {
+    let mut h = Headless::new(TestData::default(), Probe::new("root"));
+    h.app.ctx.push(SettingsScreen::<TestGame>::new());
+    h.frame(0.0);
+    h.clear();
+    h
+}
+
+fn row_labels<G: Game>(h: &Headless<G>) -> Vec<String> {
+    h.app
+        .top_lines()
+        .into_iter()
+        .skip(1)
+        .map(|l| l[2..].to_string())
+        .collect()
+}
+
+#[test]
+fn the_sound_rows_come_after_speech_and_include_the_games_own_bus() {
+    let h = settings();
+    let rows = row_labels(&h);
+    let start = rows
+        .iter()
+        .position(|r| r.starts_with("Speech detail"))
+        .expect("a verbosity row");
+    assert_eq!(
+        &rows[start..start + 9],
+        [
+            "Speech detail: Full",
+            "Lower game sound under speech: off",
+            "Master volume: 100 percent",
+            "Interface volume: 80 percent",
+            "Effects volume: 80 percent",
+            "Ambience volume: 80 percent",
+            "Music volume: 80 percent",
+            "Voices volume: 80 percent",
+            "Engine volume: 80 percent",
+        ]
+    );
+}
+
+#[test]
+fn a_volume_row_moves_by_five_clamps_and_is_heard_on_its_own_bus() {
+    let mut h = settings();
+    h.press(Key::M); // Master volume
+    h.press(Key::M); // Music volume
+    h.clear();
+    h.press(Key::Right);
+    assert_eq!(h.app.ctx.settings.audio.volume(Bus::MUSIC), 85);
+    assert!((h.app.ctx.audio.bus_volume(Bus::MUSIC) - 0.85).abs() < 1e-4);
+    assert_eq!(h.played(), ["ui/menu_move"]);
+    let ch = h.sounds.channel_of("ui/menu_move").unwrap();
+    assert!(
+        (h.sounds.last_mix(ch).unwrap().gain - 0.85).abs() < 1e-4,
+        "played through the music bus"
+    );
+    assert!(h.spoken()[0].starts_with("Music volume: 85 percent."));
+    for _ in 0..5 {
+        h.press(Key::Right);
+    }
+    assert_eq!(h.app.ctx.settings.audio.volume(Bus::MUSIC), 100);
+}
+
+#[test]
+fn the_verbosity_row_steps_through_the_games_levels_and_wraps() {
+    let mut h = settings();
+    h.press(Key::S); // from Speech rate, the first row, to Speech detail
+    assert!(h
+        .spoken()
+        .last()
+        .unwrap()
+        .starts_with("Speech detail: Full"));
+    h.press(Key::Right);
+    assert_eq!(h.app.ctx.settings.speech.verbosity, "quiet");
+    h.press(Key::Left);
+    h.press(Key::Left);
+    assert_eq!(h.app.ctx.settings.speech.verbosity, "minimal");
+}
+
+#[test]
+fn the_duck_row_toggles() {
+    let mut h = settings();
+    h.press(Key::L);
+    h.press(Key::Return);
+    assert!(h.app.ctx.settings.audio.duck_for_speech);
+    assert!(h
+        .spoken()
+        .last()
+        .unwrap()
+        .starts_with("Lower game sound under speech: on"));
+}
+
+#[test]
+fn a_hand_edited_file_with_odd_sound_values_loads_quietly_and_keeps_what_it_does_not_know() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = hearken_app::Paths::at(dir.path());
+    std::fs::write(
+        paths.settings_file(),
+        r#"{"audio": {"volumes": {"music": 250, "gone": 30}}, "speech": {"verbosity": "gone"}}"#,
+    )
+    .unwrap();
+    let (loaded, notice) = Settings::<()>::load(&paths);
+    assert_eq!(notice, None);
+    assert_eq!(loaded.audio.volume(Bus::MUSIC), 100);
+    loaded.save(&paths).unwrap();
+    let text = std::fs::read_to_string(paths.settings_file()).unwrap();
+    assert!(
+        text.contains("\"gone\": 30"),
+        "a bus the game dropped stays in the file"
+    );
+}
+
+/// A game whose `settings_rows` drops the built-in `menu_positions` row and
+/// appends its own, and that has no verbosity categories of its own.
+struct CustomGame;
+
+impl Game for CustomGame {
+    const TITLE: &'static str = "Custom Settings Test";
+    const DATA_DIR: &'static str = "HearkenCustomSettingsTest";
+    const ENV_PREFIX: &'static str = "HEARKEN_CUSTOM_SETTINGS_TEST";
+    type Event = ();
+    type Data = ();
+    type Settings = ();
+    type Action = NoAction;
+    type Category = NoCategory;
+
+    fn settings_rows(_ctx: &Ctx<Self>, rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {
+        let mut rows: Vec<_> = rows
+            .into_iter()
+            .filter(|r| r.id != "menu_positions")
+            .collect();
+        rows.push(SettingsRow::new(
+            "difficulty",
+            MenuItem::inert("Difficulty: normal"),
+        ));
+        rows
+    }
+}
+
+fn custom_settings() -> Headless<CustomGame> {
+    let mut h = Headless::new((), SettingsScreen::<CustomGame>::new());
+    h.frame(0.0);
+    h.clear();
+    h
+}
+
+#[test]
+fn a_games_settings_rows_hook_hides_and_adds_rows_and_speech_rate_is_still_found_by_id() {
+    let mut h = custom_settings();
+    let rows = row_labels(&h);
+    assert!(!rows.iter().any(|r| r.starts_with("Menu positions")));
+    assert_eq!(rows.last().map(String::as_str), Some("Difficulty: normal"));
+
+    // Moving from the last row (the game's own) wraps back around to speech
+    // rate, still the first row; it must still be previewed through the
+    // voice, so the check is by id, not by a hard-coded position.
+    h.press(Key::End); // Difficulty: normal
+    h.press(Key::Down); // wraps to Speech rate
+    h.press(Key::Right);
+    assert!(
+        h.speech
+            .borrow()
+            .previews()
+            .iter()
+            .any(|(setting, _, _)| setting.as_str() == "speech_rate"),
+        "the speech-rate row is still previewed by id"
+    );
+}
+
+#[test]
+fn a_game_with_no_categories_shows_no_speech_detail_row() {
+    let h = custom_settings();
+    let rows = row_labels(&h);
+    assert!(!rows.iter().any(|r| r.starts_with("Speech detail")));
+}
