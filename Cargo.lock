@@ -351,7 +351,9 @@ dependencies = [
 name = "hearken-audio"
 version = "0.1.0"
 dependencies = [
+ "hearken-synth",
  "log",
+ "tempfile",
 ]
 
 [[package]]
