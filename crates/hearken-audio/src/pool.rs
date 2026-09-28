@@ -286,6 +286,45 @@ impl Audio {
         }
     }
 
+    /// Plays `source` on the backend, falling back to `key`'s built-in
+    /// default clip (and noting `key` missing) if the backend refuses it --
+    /// unless `source` is already a live voice, which has no clip to fall
+    /// back to: retrying would start an unrequested, unstoppable loop
+    /// (nobody holds a handle to stop it) named after a key that was never
+    /// missing. Shared by `start` and, for the replay after a deferred
+    /// backend opens, `open`'s `swap_backend`.
+    pub(crate) fn play_with_fallback(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+    ) -> Option<Channel> {
+        let is_voice = matches!(source, Source::Voice(_));
+        match self.backend.play(key, source, looping, mix) {
+            Ok(channel) => Some(channel),
+            Err(err) => {
+                if is_voice {
+                    log::error!("backend failed to play voice {key:?}: {err}");
+                    return None;
+                }
+                if self.note_missing(key) {
+                    log::error!("backend failed to play {key:?}: {err}");
+                }
+                match self
+                    .backend
+                    .play(key, Source::Clip(builtin_wav(key)), looping, mix)
+                {
+                    Ok(channel) => Some(channel),
+                    Err(err) => {
+                        log::error!("backend failed to play {key:?}'s default too: {err}");
+                        None
+                    }
+                }
+            }
+        }
+    }
+
     fn start(
         &mut self,
         key: &str,
@@ -316,39 +355,13 @@ impl Audio {
         };
         let mix = self.mix_of(&live);
 
-        match self.backend.play(key, source, looping, mix) {
-            Ok(channel) => {
+        match self.play_with_fallback(key, source, looping, mix) {
+            Some(channel) => {
                 live.channel = channel;
                 live.sent = mix;
                 self.alloc(live)
             }
-            Err(err) => {
-                if live.voice.is_some() {
-                    // A live voice has no clip to fall back to: falling
-                    // back to the key's default clip would start an
-                    // unrequested, unstoppable loop (nobody holds a handle
-                    // to stop it) named after a key that was never missing.
-                    log::error!("backend failed to play voice {key:?}: {err}");
-                    return Sound::NONE;
-                }
-                if self.note_missing(key) {
-                    log::error!("backend failed to play {key:?}: {err}");
-                }
-                match self
-                    .backend
-                    .play(key, Source::Clip(builtin_wav(key)), looping, mix)
-                {
-                    Ok(channel) => {
-                        live.channel = channel;
-                        live.sent = mix;
-                        self.alloc(live)
-                    }
-                    Err(err) => {
-                        log::error!("backend failed to play {key:?}'s default too: {err}");
-                        Sound::NONE
-                    }
-                }
-            }
+            None => Sound::NONE,
         }
     }
 
@@ -362,22 +375,28 @@ impl Audio {
         self.free_slot(sound.index);
     }
 
-    /// Pauses `sound`.
+    /// Pauses `sound`. Clears `paused_by_all`: an explicit pause is the
+    /// game's own doing, not `pause_all`'s, so a later `resume_all` must not
+    /// touch it. `pause_all` itself restores the flag right after calling
+    /// this.
     pub fn pause(&mut self, sound: Sound) {
         let Some(live) = slot_mut(&mut self.slots, sound) else {
             return;
         };
         live.paused = true;
+        live.paused_by_all = false;
         let channel = live.channel;
         self.backend.pause(channel, true);
     }
 
-    /// Resumes a paused `sound`.
+    /// Resumes a paused `sound`, and clears `paused_by_all` the same way
+    /// `pause` does.
     pub fn resume(&mut self, sound: Sound) {
         let Some(live) = slot_mut(&mut self.slots, sound) else {
             return;
         };
         live.paused = false;
+        live.paused_by_all = false;
         let channel = live.channel;
         self.backend.pause(channel, false);
     }

@@ -76,3 +76,106 @@ fn quitting_while_the_device_is_still_opening_is_bounded() {
     assert!(started.elapsed() < SHUTDOWN_WAIT + Duration::from_millis(500));
     audio.shutdown(); // idempotent
 }
+
+fn opened(rec_backend: RecordingBackend) -> (Audio, std::sync::mpsc::Sender<()>) {
+    let (go, wait) = mpsc::channel::<()>();
+    let audio = Audio::deferred(
+        move || {
+            wait.recv().ok();
+            Ok(Box::new(rec_backend) as Box<dyn Backend>)
+        },
+        Box::new(MemoryClips::default()),
+    );
+    (audio, go)
+}
+
+fn wait_for_open(audio: &mut Audio) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while audio.opening() && Instant::now() < deadline {
+        audio.update(&none);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!audio.opening());
+}
+
+#[test]
+fn a_paused_loop_stays_paused_after_the_device_opens() {
+    let (backend, rec) = RecordingBackend::new();
+    let (mut audio, go) = opened(backend);
+    let manual = audio.start_loop("sfx/manual", None, Bus::EFFECTS);
+    audio.pause(manual);
+    audio.start_loop("sfx/all_paused", None, Bus::EFFECTS);
+    audio.pause_all();
+    go.send(()).unwrap();
+    wait_for_open(&mut audio);
+
+    let manual_ch = rec.channel_of("sfx/manual").unwrap();
+    let all_paused_ch = rec.channel_of("sfx/all_paused").unwrap();
+    assert!(rec.calls().contains(&Call::Pause {
+        channel: manual_ch,
+        paused: true
+    }));
+    assert!(rec.calls().contains(&Call::Pause {
+        channel: all_paused_ch,
+        paused: true
+    }));
+}
+
+#[test]
+fn a_loop_the_opened_backend_refuses_falls_back_to_its_default_and_is_noted_missing() {
+    let (backend, rec) = RecordingBackend::new();
+    let (go, wait) = mpsc::channel::<()>();
+    let clips = MemoryClips::default().with("sfx/hum", &b"hum"[..]);
+    let mut audio = Audio::deferred(
+        move || {
+            wait.recv().ok();
+            Ok(Box::new(backend) as Box<dyn Backend>)
+        },
+        Box::new(clips),
+    );
+    let hum = audio.start_loop("sfx/hum", None, Bus::EFFECTS);
+    assert!(
+        audio.missing_clips().is_empty(),
+        "the clip exists; not missing yet"
+    );
+    rec.fail_next_play("no voice channels left");
+    go.send(()).unwrap();
+    wait_for_open(&mut audio);
+
+    assert!(
+        audio.is_playing(hum),
+        "falls back to the default clip instead of being dropped"
+    );
+    assert_eq!(audio.missing_clips(), ["sfx/hum"]);
+    let default = hearken_synth::builtin_wav("sfx/hum");
+    assert!(
+        matches!(rec.calls().last(), Some(Call::Play { clip: Some(b), .. }) if **b == *default)
+    );
+}
+
+#[test]
+fn a_voice_started_while_opening_is_replayed_and_keeps_its_parameters() {
+    use hearken_synth::fundsp::prelude32::*;
+    fn hum(p: &hearken_synth::Params) -> Box<dyn AudioUnit> {
+        Box::new(var(&p.get("throttle")))
+    }
+    let (backend, rec) = RecordingBackend::new();
+    let (mut audio, go) = opened(backend);
+    let v = audio.start_voice(hum, &[("throttle", 0.0)], None, hearken_audio::Bus::EFFECTS);
+    assert!(audio.set_voice_param(v, "throttle", 0.8));
+    go.send(()).unwrap();
+    wait_for_open(&mut audio);
+
+    assert_eq!(
+        rec.played(),
+        ["voice"],
+        "the voice is replayed once, onto the opened backend"
+    );
+    assert!(audio.is_playing(v), "the handle survives the swap");
+    let live = audio.live();
+    let entry = live
+        .iter()
+        .find(|l| l.sound == v)
+        .expect("the voice is still live");
+    assert_eq!(entry.params.as_ref().unwrap().value("throttle"), Some(0.8));
+}

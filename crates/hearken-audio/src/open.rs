@@ -1,7 +1,7 @@
 //! Opening the backend off the game loop, the player-facing notice when that
 //! fails, and a bounded shutdown.
 
-use std::sync::mpsc::{self, TryRecvError};
+use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
 use crate::backend::{Backend, Source};
@@ -21,20 +21,28 @@ pub const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 impl Audio {
     /// Starts silent and opens `open` on its own thread, so a slow or hung
     /// driver never blocks the game loop; `update` swaps the real backend in
-    /// once it is ready. The thread is detached: nothing ever joins it.
+    /// once it is ready. The thread is detached: nothing ever joins it. If
+    /// the thread itself cannot be spawned (a resource failure, not an
+    /// invariant), this stays silent and behaves as if the device could not
+    /// be opened, the same as `open` returning `Err`.
     pub fn deferred(
         open: impl FnOnce() -> Result<Box<dyn Backend>, String> + Send + 'static,
         clips: Box<dyn ClipSource>,
     ) -> Audio {
+        let mut audio = Audio::new(Box::new(SilentBackend::default()), clips);
         let (tx, rx) = mpsc::sync_channel(1);
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("audio-open".to_string())
             .spawn(move || {
                 let _ = tx.send(open());
-            })
-            .expect("failed to spawn the audio-open thread");
-        let mut audio = Audio::new(Box::new(SilentBackend::default()), clips);
-        audio.opening = Some(rx);
+            });
+        match spawned {
+            Ok(_handle) => audio.opening = Some(rx),
+            Err(err) => {
+                log::error!("audio: could not spawn the audio-open thread: {err}");
+                audio.notice = Some(NO_SOUND_NOTICE.to_string());
+            }
+        }
         audio
     }
 
@@ -76,12 +84,18 @@ impl Audio {
     }
 
     /// Replays every looping slot (clip or voice) on `backend` with its
-    /// current mix, keeping its slot and generation so handles stay valid;
-    /// frees every one-shot slot, since a one-shot played while silent was
-    /// never meant to be heard again. The silent backend it replaces is
-    /// dropped.
-    fn swap_backend(&mut self, mut backend: Box<dyn Backend>) {
+    /// current mix, keeping its slot and generation so handles stay valid,
+    /// re-applying `paused` and falling back to a default clip the same way
+    /// `start` would if the new backend refuses one; frees every one-shot
+    /// slot, since a one-shot played while silent was never meant to be
+    /// heard again. The silent backend it replaces is dropped.
+    fn swap_backend(&mut self, backend: Box<dyn Backend>) {
         log::info!("audio: opened backend {}", backend.name());
+        // Assigned up front so the replays below (through
+        // `play_with_fallback`, which plays on `self.backend`) land on the
+        // new backend, not the silent one it replaces -- which is dropped
+        // right here.
+        self.backend = backend;
         let mut one_shots = Vec::new();
         let mut loops = Vec::new();
         for (i, slot) in self.slots.iter().enumerate() {
@@ -99,26 +113,28 @@ impl Audio {
             let Some(live) = self.slots[index as usize].live.as_ref() else {
                 continue;
             };
-            let (key, mix, voice) = (live.key.clone(), live.sent, live.voice.clone());
+            let (key, mix, voice, paused) =
+                (live.key.clone(), live.sent, live.voice.clone(), live.paused);
             let source = match &voice {
                 Some((recipe, params)) => {
                     Source::Voice(Voice::with_params(*recipe, params.clone()))
                 }
                 None => Source::Clip(self.clip_or_default(&key)),
             };
-            match backend.play(&key, source, true, mix) {
-                Ok(channel) => {
+            match self.play_with_fallback(&key, source, true, mix) {
+                Some(channel) => {
+                    if paused {
+                        self.backend.pause(channel, true);
+                    }
                     if let Some(live) = self.slots[index as usize].live.as_mut() {
                         live.channel = channel;
                     }
                 }
-                Err(err) => {
-                    log::error!("audio: could not replay {key:?} on the opened backend: {err}");
+                None => {
                     self.free_slot(index);
                 }
             }
         }
-        self.backend = backend;
     }
 
     /// Explicit, idempotent, bounded teardown: never waits longer than
@@ -132,11 +148,21 @@ impl Audio {
         log::info!("audio: shutting down");
         if let Some(rx) = self.opening.take() {
             match rx.recv_timeout(SHUTDOWN_WAIT) {
-                Ok(Ok(mut backend)) => backend.shutdown(),
+                Ok(Ok(mut backend)) => {
+                    log::info!(
+                        "audio: the device finished opening during shutdown; closing it too"
+                    );
+                    backend.shutdown();
+                }
                 Ok(Err(reason)) => {
                     log::info!("audio: the pending open had already failed ({reason}); nothing to shut down");
                 }
-                Err(_) => {
+                Err(RecvTimeoutError::Disconnected) => {
+                    log::info!(
+                        "audio: the audio-open thread ended without a result; nothing to shut down"
+                    );
+                }
+                Err(RecvTimeoutError::Timeout) => {
                     log::info!(
                         "audio: gave up waiting for the device to open after {SHUTDOWN_WAIT:?}; abandoning it"
                     );
