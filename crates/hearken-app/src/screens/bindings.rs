@@ -17,6 +17,7 @@ use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{ControllerButton, InputEvent, Key, Mods};
 use crate::menu::{menu_input, Label, Menu, MenuCore, MenuItem};
+use crate::sound::UiSound;
 use crate::text::sentence_start;
 
 /// Which set of bindings a [`BindingsScreen`] moves.
@@ -110,11 +111,13 @@ impl<G: Game> BindingsScreen<G> {
             Rebind::Done => {
                 self.capturing = None;
                 ctx.save_bindings();
+                ctx.play_ui(UiSound::Select);
                 let now = self.current_name(ctx, action);
                 ctx.say(format!("{} is now {now}.", action.label()));
             }
             Rebind::Unchanged => self.keep(ctx, action),
             Rebind::Taken(other) => {
+                ctx.play_ui(UiSound::Error);
                 let hint = self.keep_hint(&self.current_name(ctx, action));
                 ctx.say(format!(
                     "{} is already used for {}. {hint}",
@@ -123,6 +126,7 @@ impl<G: Game> BindingsScreen<G> {
                 ));
             }
             Rebind::Reserved(reason) => {
+                ctx.play_ui(UiSound::Error);
                 let hint = self.keep_hint(&self.current_name(ctx, action));
                 ctx.say(format!("{}. {hint}", sentence_start(reason)));
             }
@@ -165,6 +169,7 @@ impl<G: Game> BindingsScreen<G> {
             }
         };
         ctx.save_bindings();
+        ctx.play_ui(UiSound::Select);
         ctx.say(line);
     }
 }

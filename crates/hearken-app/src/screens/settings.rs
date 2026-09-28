@@ -6,6 +6,7 @@ use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::menu::{Label, Menu, MenuCore, MenuItem};
 use crate::screens::{BindingDevice, BindingsScreen};
+use crate::sound::UiSound;
 
 /// A speech-rate step: five percent of the voice's range.
 const RATE_STEP: f64 = 0.05;
@@ -156,6 +157,7 @@ impl<G: Game> Menu for SettingsScreen<G> {
 
     fn on_escape(&mut self, ctx: &mut Ctx<G>) {
         ctx.save_settings();
+        ctx.play_ui(UiSound::Back);
         ctx.pop();
     }
 }

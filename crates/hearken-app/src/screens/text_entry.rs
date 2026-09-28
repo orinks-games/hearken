@@ -15,6 +15,7 @@
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
+use crate::sound::UiSound;
 use crate::state::State;
 use crate::text::{end_sentence, spoken_char};
 
@@ -87,16 +88,19 @@ impl<G: Game> TextEntryScreen<G> {
 
     fn insert(&mut self, ctx: &mut Ctx<G>, ch: char) {
         if self.chars.len() >= self.max_len {
+            ctx.play_ui(UiSound::Error);
             ctx.say("The field is full.");
             return;
         }
         self.chars.insert(self.cursor, ch);
         self.cursor += 1;
+        ctx.play_ui(UiSound::Tick);
         ctx.say(spoken_char(ch));
     }
 
     fn backspace(&mut self, ctx: &mut Ctx<G>) {
         if self.cursor == 0 {
+            ctx.play_ui(UiSound::Error);
             return;
         }
         let removed = self.chars.remove(self.cursor - 1);
@@ -110,6 +114,7 @@ impl<G: Game> TextEntryScreen<G> {
     fn move_cursor(&mut self, ctx: &mut Ctx<G>, delta: i64) {
         let next = self.cursor as i64 + delta;
         if next < 0 || next > self.chars.len() as i64 {
+            ctx.play_ui(UiSound::Error);
             return;
         }
         let next = next as usize;
@@ -120,6 +125,7 @@ impl<G: Game> TextEntryScreen<G> {
 
     fn jump_cursor(&mut self, ctx: &mut Ctx<G>, target: usize, label: &str) {
         if self.cursor == target {
+            ctx.play_ui(UiSound::Error);
             return;
         }
         self.cursor = target;
@@ -165,7 +171,10 @@ impl<G: Game> State<G> for TextEntryScreen<G> {
             return;
         };
         match key {
-            Key::Escape => ctx.pop(),
+            Key::Escape => {
+                ctx.play_ui(UiSound::Back);
+                ctx.pop();
+            }
             Key::Return | Key::KpEnter => {
                 let text = self.text();
                 (self.on_confirm)(ctx, &text);

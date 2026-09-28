@@ -2,7 +2,7 @@
 
 use crate::ctx::Ctx;
 use crate::game::Game;
-use crate::menu::{Menu, MenuCore, MenuItem};
+use crate::menu::{menu_enter, Menu, MenuCore, MenuItem};
 use crate::screens::{HelpScreen, SettingsScreen};
 
 pub struct PauseScreen<G: Game> {
@@ -29,6 +29,20 @@ impl<G: Game> Menu for PauseScreen<G> {
 
     fn name(&self) -> &'static str {
         "pause"
+    }
+
+    /// Holds the game's own sound and event speech while paused, so nothing
+    /// keeps playing behind the menu.
+    fn enter(&mut self, ctx: &mut Ctx<G>) {
+        ctx.audio.pause_all();
+        ctx.pause_event_speech();
+        menu_enter(self, ctx);
+    }
+
+    /// Brings the game's sound and event speech back once the player leaves.
+    fn exit(&mut self, ctx: &mut Ctx<G>) {
+        ctx.audio.resume_all();
+        ctx.resume_event_speech();
     }
 
     fn menu(&self) -> &MenuCore<Self, G> {

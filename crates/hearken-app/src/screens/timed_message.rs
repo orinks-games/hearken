@@ -3,12 +3,12 @@
 //! acted on, and every other key does nothing, so a key still held from the
 //! screen before cannot act on the next one.
 //!
-//! Extracted from Freight Fate (commit c5d3ef8d), `TimedMessageState`. Its
-//! arrival sound comes with audio in M2.
+//! Extracted from Freight Fate (commit c5d3ef8d), `TimedMessageState`.
 
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
+use crate::sound::UiSound;
 use crate::state::State;
 
 /// What a [`TimedMessage`] does when its countdown ends.
@@ -68,6 +68,7 @@ impl<G: Game> State<G> for TimedMessage<G> {
     }
 
     fn enter(&mut self, ctx: &mut Ctx<G>) {
+        ctx.play_ui(UiSound::Notify);
         ctx.say(self.message.clone());
     }
 

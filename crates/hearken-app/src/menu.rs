@@ -6,9 +6,12 @@
 //! A screen embeds a [`MenuCore`] and implements [`Menu`]; every `Menu` is a
 //! [`State`] through the blanket impl at the bottom of this file.
 
+use hearken_audio::Bus;
+
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
+use crate::sound::UiSound;
 use crate::state::State;
 use crate::text::end_sentence;
 
@@ -59,6 +62,12 @@ pub struct MenuItem<S, G: Game> {
     action: MenuAction<S, G>,
     /// Set when Left and Right change this row instead of doing nothing.
     pub adjust: Option<MenuAdjust<S, G>>,
+    /// The row's own select sound: outer `None` plays the menu's `UiSound::Select`
+    /// default; `Some(None)` plays nothing; `Some(Some(key))` plays `key`.
+    select: Option<Option<&'static str>>,
+    /// Whether Left and Right play `UiSound::Move` on this row. `silent_adjust`
+    /// turns it off for a row that plays its own sound.
+    adjust_sound: bool,
 }
 
 impl<S: 'static, G: Game> MenuItem<S, G> {
@@ -71,6 +80,8 @@ impl<S: 'static, G: Game> MenuItem<S, G> {
             help: None,
             action: Box::new(action),
             adjust: None,
+            select: None,
+            adjust_sound: true,
         }
     }
 
@@ -87,6 +98,19 @@ impl<S: 'static, G: Game> MenuItem<S, G> {
     /// Give the row a Left/Right adjuster.
     pub fn adjustable(mut self, f: impl FnMut(&mut S, &mut Ctx<G>, i32) + 'static) -> Self {
         self.adjust = Some(Box::new(f));
+        self
+    }
+
+    /// Override the row's select sound: `Some(key)` plays `key` instead of
+    /// the menu's default, `None` silences it.
+    pub fn select_sound(mut self, key: Option<&'static str>) -> Self {
+        self.select = Some(key);
+        self
+    }
+
+    /// Left and Right play nothing for this row; it plays its own sound.
+    pub fn silent_adjust(mut self) -> Self {
+        self.adjust_sound = false;
         self
     }
 
@@ -161,8 +185,7 @@ pub trait Menu: Sized + 'static {
     // -- State hooks ----------------------------------------------------------
 
     fn enter(&mut self, ctx: &mut Ctx<Self::Game>) {
-        self.refresh(ctx, false);
-        self.announce(ctx);
+        menu_enter(self, ctx);
     }
 
     fn exit(&mut self, _ctx: &mut Ctx<Self::Game>) {}
@@ -203,6 +226,7 @@ pub trait Menu: Sized + 'static {
     /// the root of the stack must override this: popping the only screen
     /// ends the run.
     fn on_escape(&mut self, ctx: &mut Ctx<Self::Game>) {
+        ctx.play_ui(UiSound::Back);
         ctx.pop()
     }
 
@@ -267,6 +291,7 @@ pub trait Menu: Sized + 'static {
         }
         let here = self.menu().index as i32;
         self.menu_mut().index = (here + delta).rem_euclid(n as i32) as usize;
+        ctx.play_ui(UiSound::Move);
         self.speak_current(ctx);
     }
 
@@ -276,6 +301,7 @@ pub trait Menu: Sized + 'static {
             return;
         }
         self.menu_mut().index = index.min(n - 1);
+        ctx.play_ui(UiSound::Move);
         self.speak_current(ctx);
     }
 
@@ -294,6 +320,7 @@ pub trait Menu: Sized + 'static {
                 .is_some_and(|f| f.to_ascii_lowercase() == wanted)
             {
                 self.menu_mut().index = i;
+                ctx.play_ui(UiSound::Move);
                 self.speak_current(ctx);
                 return;
             }
@@ -309,6 +336,15 @@ pub trait Menu: Sized + 'static {
         // back afterwards -- unless the action installed rows of its own.
         let revision = self.menu().revision;
         let mut items = std::mem::take(&mut self.menu_mut().items);
+        match items[i].select {
+            Some(Some(key)) => {
+                ctx.audio.play(key, Bus::UI);
+            }
+            Some(None) => {}
+            None => {
+                ctx.play_ui(UiSound::Select);
+            }
+        }
         (items[i].action)(self, ctx);
         if self.menu().revision == revision {
             self.menu_mut().items = items;
@@ -319,13 +355,14 @@ pub trait Menu: Sized + 'static {
     /// no adjuster does and says nothing.
     fn adjust(&mut self, ctx: &mut Ctx<Self::Game>, delta: i32) {
         let i = self.menu().index;
-        if !self
-            .menu()
-            .items
-            .get(i)
-            .is_some_and(|item| item.adjust.is_some())
-        {
+        let Some(item) = self.menu().items.get(i) else {
             return;
+        };
+        if item.adjust.is_none() {
+            return;
+        }
+        if item.adjust_sound {
+            ctx.play_ui(UiSound::Move);
         }
         let revision = self.menu().revision;
         let mut items = std::mem::take(&mut self.menu_mut().items);
@@ -337,6 +374,16 @@ pub trait Menu: Sized + 'static {
         }
         self.speak_adjusted(ctx);
     }
+}
+
+/// `Menu::enter`'s default body: `UiSound::Open`, then the rows are built
+/// and the title and first row are announced. A screen that must act before
+/// or after arriving (the pause screen holding the game's sound) overrides
+/// `enter` and calls this itself.
+pub fn menu_enter<S: Menu>(state: &mut S, ctx: &mut Ctx<S::Game>) {
+    ctx.play_ui(UiSound::Open);
+    state.refresh(ctx, false);
+    state.announce(ctx);
 }
 
 /// The navigation every menu shares, from the keyboard or a controller. A
