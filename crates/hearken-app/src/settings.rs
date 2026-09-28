@@ -73,6 +73,13 @@ pub struct AudioSettings {
     /// Percent volume (0-100) by bus name (`Bus::name`); a bus with no entry
     /// uses `default_volume`. Kept as a map, not an array, so a bus a game
     /// dropped stays in the file instead of being silently lost.
+    ///
+    /// Deserialized leniently (`deserialize_volumes`): a hand-edited number
+    /// out of range is clamped to `0..=100` and rounded rather than failing
+    /// the whole settings file, and an entry that is not a number at all
+    /// (`"loud"`) is dropped with a warning instead of it or anything else
+    /// in the file being lost.
+    #[serde(default, deserialize_with = "deserialize_volumes")]
     pub volumes: BTreeMap<String, u8>,
     /// Duck the ducked buses while speech is talking.
     pub duck_for_speech: bool,
@@ -88,12 +95,20 @@ impl Default for AudioSettings {
 }
 
 impl AudioSettings {
-    /// `bus`'s saved volume, capped at 100 (a hand-edited file may have
-    /// more), or `default_volume` when nothing is saved for it.
+    /// `bus`'s saved volume, capped at 100; `None` when nothing is saved
+    /// for it. A hand-edited file cannot produce an out-of-range value here
+    /// (`deserialize_volumes` already clamped it), but the cap stays as a
+    /// second line of defense for a value set directly, such as in a test.
+    pub fn saved_volume(&self, bus: Bus) -> Option<u8> {
+        self.volumes.get(bus.name()).map(|&v| v.min(100))
+    }
+
+    /// `bus`'s saved volume, or the engine's own default when nothing is
+    /// saved for it. A game with its own default (`SoundConfig::default_volume`)
+    /// should read `Ctx::volume_percent` instead, which falls back to that
+    /// instead of the engine's.
     pub fn volume(&self, bus: Bus) -> u8 {
-        self.volumes
-            .get(bus.name())
-            .map(|&v| v.min(100))
+        self.saved_volume(bus)
             .unwrap_or_else(|| default_volume(bus))
     }
 
@@ -102,6 +117,30 @@ impl AudioSettings {
         self.volumes
             .insert(bus.name().to_string(), percent.min(100));
     }
+}
+
+/// Deserializes `AudioSettings::volumes` leniently: any JSON number is
+/// clamped to `0..=100` and rounded (half away from zero, so `75.5` becomes
+/// `76`); an entry that is not a number is dropped with a warning naming the
+/// bus. Never fails, so one bad entry in a hand-edited file cannot take the
+/// rest of the settings down with it (Review Focus 5).
+fn deserialize_volumes<'de, D>(deserializer: D) -> Result<BTreeMap<String, u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    let mut volumes = BTreeMap::new();
+    for (bus, value) in raw {
+        match value.as_f64() {
+            Some(n) => {
+                volumes.insert(bus, n.clamp(0.0, 100.0).round() as u8);
+            }
+            None => {
+                log::warn!("settings: {bus}'s saved volume ({value}) is not a number; dropping it");
+            }
+        }
+    }
+    Ok(volumes)
 }
 
 /// A bus's volume before the player changes it: 100 for `Bus::MASTER`, 80

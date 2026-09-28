@@ -4,6 +4,8 @@
 use hearken_audio::{Bus, SpatialConfig};
 use hearken_speech::PacerConfig;
 
+use crate::settings::default_volume;
+
 /// A UI moment the engine plays a short earcon for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UiSound {
@@ -75,6 +77,12 @@ pub struct SoundConfig {
     pub spatial: SpatialConfig,
     /// Which sound plays for each UI moment.
     pub ui: UiSounds,
+    /// A bus's volume before the player changes it, for a bus with nothing
+    /// saved in `settings.audio.volumes`. Defaults to `settings::default_volume`
+    /// (100 for `Bus::MASTER`, 80 for the rest); read through
+    /// `Ctx::volume_percent`, not `AudioSettings::volume` directly, so a
+    /// game's own default is honoured.
+    pub default_volume: fn(Bus) -> u8,
 }
 
 impl Default for SoundConfig {
@@ -87,6 +95,7 @@ impl Default for SoundConfig {
             pacer: Some(PacerConfig::default()),
             spatial: SpatialConfig::default(),
             ui: UiSounds::default(),
+            default_volume,
         }
     }
 }

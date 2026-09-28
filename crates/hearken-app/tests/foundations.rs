@@ -106,6 +106,50 @@ fn partial_and_unknown_fields_load() {
 }
 
 #[test]
+fn a_bad_volume_entry_is_dropped_and_a_good_one_is_clamped_and_rounded() {
+    let (paths, _dir) = temp_paths();
+    std::fs::write(
+        paths.settings_file(),
+        r#"{"audio": {"volumes": {
+            "music": 300, "ui": -5, "effects": 75.5, "voice": "loud", "gone": 30
+        }}}"#,
+    )
+    .unwrap();
+    let (s, notice) = Settings::<GameBits>::load(&paths);
+    assert_eq!(notice, None, "one bad entry must not fail the whole file");
+    assert_eq!(
+        s.audio.volumes.get("music"),
+        Some(&100),
+        "300 clamps to 100"
+    );
+    assert_eq!(s.audio.volumes.get("ui"), Some(&0), "-5 clamps to 0");
+    // Rounds half away from zero: 75.5 becomes 76, not 75.
+    assert_eq!(s.audio.volumes.get("effects"), Some(&76));
+    assert_eq!(
+        s.audio.volumes.get("voice"),
+        None,
+        "\"loud\" is not a number"
+    );
+    assert_eq!(
+        s.audio.volume(hearken_app::Bus::VOICE),
+        80,
+        "a dropped entry reads back as the default"
+    );
+    assert_eq!(
+        s.audio.volumes.get("gone"),
+        Some(&30),
+        "a bus no game defines any more is kept, not dropped"
+    );
+    s.save(&paths).unwrap();
+    let (reloaded, _) = Settings::<GameBits>::load(&paths);
+    assert_eq!(
+        reloaded.audio.volumes.get("gone"),
+        Some(&30),
+        "it survives a save too"
+    );
+}
+
+#[test]
 fn an_unreadable_settings_file_is_kept_aside_and_reported() {
     let (paths, _dir) = temp_paths();
     std::fs::write(paths.settings_file(), "{ not json").unwrap();

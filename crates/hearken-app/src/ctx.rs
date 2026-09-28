@@ -87,9 +87,12 @@ impl<G: Game> Ctx<G> {
         ctx
     }
 
-    /// Installs `audio` as the pool the game plays through: applies the
-    /// game's spatial model and duck buses, then the player's saved volumes.
+    /// Installs `audio` as the pool the game plays through: shuts down the
+    /// pool it replaces (a harmless no-op the first time, since that one
+    /// never played anything), then applies the game's spatial model and
+    /// duck buses, then the player's saved volumes.
     pub fn install_audio(&mut self, audio: Audio) {
+        self.audio.shutdown();
         self.audio = audio;
         self.audio.spatial = self.sound.spatial;
         let duck_buses = self.sound.duck_buses.clone();
@@ -97,12 +100,23 @@ impl<G: Game> Ctx<G> {
         self.apply_audio_settings();
     }
 
-    /// Pushes the player's saved per-bus volumes to the audio pool.
+    /// Pushes the player's saved per-bus volumes (or this game's own default
+    /// for a bus with nothing saved) to the audio pool.
     pub fn apply_audio_settings(&mut self) {
         for (bus, _) in self.buses() {
-            let percent = self.settings.audio.volume(bus);
+            let percent = self.volume_percent(bus);
             self.audio.set_bus_volume(bus, percent as f32 / 100.0);
         }
+    }
+
+    /// `bus`'s volume as a percent: the player's saved value (capped at
+    /// 100), or this game's own default (`sound().default_volume`) when
+    /// nothing is saved for it.
+    pub fn volume_percent(&self, bus: Bus) -> u8 {
+        self.settings
+            .audio
+            .saved_volume(bus)
+            .unwrap_or_else(|| (self.sound.default_volume)(bus))
     }
 
     /// Every bus the player can set a volume for: the engine's own six, then
