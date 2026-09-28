@@ -6,14 +6,15 @@ use crate::silent::SilentBackend;
 use crate::spatial::{place, SpatialConfig};
 use crate::types::{Bus, Listener, Mix, Vec3};
 use hearken_synth::{builtin_wav, Params, Recipe, Voice};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::mpsc::Receiver;
 
 /// A handle to a sound in the pool. Stale once its slot is reused: lookups
 /// compare the slot's generation, so an old handle finds nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Sound {
-    index: u32,
-    generation: u32,
+    pub(crate) index: u32,
+    pub(crate) generation: u32,
 }
 
 impl Sound {
@@ -76,25 +77,24 @@ impl Default for Fades {
     }
 }
 
-struct Slot {
-    generation: u32,
-    live: Option<Live>,
+pub(crate) struct Slot {
+    pub(crate) generation: u32,
+    pub(crate) live: Option<Live>,
 }
 
-struct Live {
-    key: String,
-    channel: Channel,
-    bus: Bus,
-    pos: Option<Vec3>,
-    volume: f32,
-    pitch: f32,
-    looping: bool,
-    voice: Option<(Recipe, Params)>,
-    paused: bool,
-    #[allow(dead_code)] // set here; read starting with Task 4's pause-all
-    paused_by_all: bool,
-    occluded: bool,
-    sent: Mix,
+pub(crate) struct Live {
+    pub(crate) key: String,
+    pub(crate) channel: Channel,
+    pub(crate) bus: Bus,
+    pub(crate) pos: Option<Vec3>,
+    pub(crate) volume: f32,
+    pub(crate) pitch: f32,
+    pub(crate) looping: bool,
+    pub(crate) voice: Option<(Recipe, Params)>,
+    pub(crate) paused: bool,
+    pub(crate) paused_by_all: bool,
+    pub(crate) occluded: bool,
+    pub(crate) sent: Mix,
 }
 
 fn slot_ref(slots: &[Slot], sound: Sound) -> Option<&Live> {
@@ -104,7 +104,7 @@ fn slot_ref(slots: &[Slot], sound: Sound) -> Option<&Live> {
         .flatten()
 }
 
-fn slot_mut(slots: &mut [Slot], sound: Sound) -> Option<&mut Live> {
+pub(crate) fn slot_mut(slots: &mut [Slot], sound: Sound) -> Option<&mut Live> {
     let slot = slots.get_mut(sound.index as usize)?;
     if slot.generation != sound.generation {
         return None;
@@ -112,13 +112,37 @@ fn slot_mut(slots: &mut [Slot], sound: Sound) -> Option<&mut Live> {
     slot.live.as_mut()
 }
 
-fn bus_gain_of(bus_volumes: &HashMap<Bus, f32>, bus: Bus) -> f32 {
-    let master = *bus_volumes.get(&Bus::MASTER).unwrap_or(&1.0);
-    if bus == Bus::MASTER {
+/// Every bus's own volume and the duck, folded into one path -- `start`,
+/// `resend` and `update` all compute a sound's gain through
+/// [`bus_gain_of`], so a positioned sound on a ducked bus never flips
+/// between ducked and unducked depending on which of them last touched it.
+pub(crate) struct Mixing {
+    pub(crate) bus_volumes: HashMap<Bus, f32>,
+    pub(crate) duck_level: f32,
+    pub(crate) duck_buses: HashSet<Bus>,
+}
+
+impl Default for Mixing {
+    fn default() -> Mixing {
+        Mixing {
+            bus_volumes: HashMap::new(),
+            duck_level: 1.0, // 1.0 is no duck
+            duck_buses: HashSet::new(),
+        }
+    }
+}
+
+fn bus_gain_of(mixing: &Mixing, bus: Bus) -> f32 {
+    let master = *mixing.bus_volumes.get(&Bus::MASTER).unwrap_or(&1.0);
+    let mut gain = if bus == Bus::MASTER {
         master
     } else {
-        master * *bus_volumes.get(&bus).unwrap_or(&1.0)
+        master * *mixing.bus_volumes.get(&bus).unwrap_or(&1.0)
+    };
+    if mixing.duck_buses.contains(&bus) {
+        gain *= mixing.duck_level;
     }
+    gain
 }
 
 /// Clamps `value` into `min..=max`, or keeps `current` unchanged when
@@ -127,7 +151,7 @@ fn bus_gain_of(bus_volumes: &HashMap<Bus, f32>, bus: Bus) -> f32 {
 /// volume, pitch and bus volume, so a bad value from game code cannot poison
 /// a sound (or, on `Bus::MASTER`, every sound) and cannot defeat the
 /// send-only-on-change check below (`NaN != NaN` always).
-fn clamped_or(current: f32, value: f32, min: f32, max: f32) -> f32 {
+pub(crate) fn clamped_or(current: f32, value: f32, min: f32, max: f32) -> f32 {
     if value.is_finite() {
         value.clamp(min, max)
     } else {
@@ -156,13 +180,18 @@ fn compute_mix(listener: &Listener, spatial: &SpatialConfig, bus_gain: f32, live
 pub struct Audio {
     pub spatial: SpatialConfig,
     pub fades: Fades,
-    backend: Box<dyn Backend>,
+    pub(crate) backend: Box<dyn Backend>,
     clips: Box<dyn ClipSource>,
-    slots: Vec<Slot>,
+    pub(crate) slots: Vec<Slot>,
     free: Vec<u32>,
     listener: Listener,
-    bus_volumes: HashMap<Bus, f32>,
+    pub(crate) mixing: Mixing,
     missing: BTreeSet<String>,
+    pub(crate) bed: Option<(String, Sound)>,
+    pub(crate) music: Option<(String, bool, Sound)>,
+    pub(crate) opening: Option<Receiver<Result<Box<dyn Backend>, String>>>,
+    pub(crate) notice: Option<String>,
+    pub(crate) shut_down: bool,
 }
 
 impl Audio {
@@ -176,8 +205,13 @@ impl Audio {
             slots: Vec::new(),
             free: Vec::new(),
             listener: Listener::default(),
-            bus_volumes: HashMap::new(),
+            mixing: Mixing::default(),
             missing: BTreeSet::new(),
+            bed: None,
+            music: None,
+            opening: None,
+            notice: None,
+            shut_down: false,
         }
     }
 
@@ -191,17 +225,17 @@ impl Audio {
 
     /// Plays `key` once on `bus`.
     pub fn play(&mut self, key: &str, bus: Bus) -> Sound {
-        self.start(key, None, bus, false, None)
+        self.start(key, None, bus, false, None, 1.0)
     }
 
     /// Plays `key` once on `bus`, positioned at `pos`.
     pub fn play_at(&mut self, key: &str, pos: Vec3, bus: Bus) -> Sound {
-        self.start(key, Some(pos), bus, false, None)
+        self.start(key, Some(pos), bus, false, None, 1.0)
     }
 
     /// Starts `key` looping on `bus`, optionally positioned.
     pub fn start_loop(&mut self, key: &str, pos: Option<Vec3>, bus: Bus) -> Sound {
-        self.start(key, pos, bus, true, None)
+        self.start(key, pos, bus, true, None, 1.0)
     }
 
     /// Starts a live synth voice from `recipe`, looping until stopped.
@@ -212,7 +246,44 @@ impl Audio {
         pos: Option<Vec3>,
         bus: Bus,
     ) -> Sound {
-        self.start("voice", pos, bus, true, Some((recipe, Params::new(params))))
+        self.start(
+            "voice",
+            pos,
+            bus,
+            true,
+            Some((recipe, Params::new(params))),
+            1.0,
+        )
+    }
+
+    /// Starts `key` on `bus` at a given starting `volume`, instead of the
+    /// usual `1.0` -- for a bed that should fade in from silence.
+    pub(crate) fn start_at_volume(
+        &mut self,
+        key: &str,
+        bus: Bus,
+        looping: bool,
+        volume: f32,
+    ) -> Sound {
+        self.start(key, None, bus, looping, None, volume)
+    }
+
+    /// `key`'s clip bytes, falling back to its built-in default (and noting
+    /// it missing) the same way `start` does -- so a sound replayed on a
+    /// newly opened backend gets the same clip it would if started fresh.
+    pub(crate) fn clip_or_default(&mut self, key: &str) -> std::sync::Arc<[u8]> {
+        // Already known bad (missing, or rejected by the backend last time):
+        // go straight to the default without asking the clip source again.
+        if self.missing.contains(key) {
+            return builtin_wav(key);
+        }
+        match self.clips.load(key) {
+            Some(bytes) => bytes,
+            None => {
+                self.note_missing(key);
+                builtin_wav(key)
+            }
+        }
     }
 
     fn start(
@@ -222,20 +293,11 @@ impl Audio {
         bus: Bus,
         looping: bool,
         voice: Option<(Recipe, Params)>,
+        volume: f32,
     ) -> Sound {
         let source = match &voice {
             Some((recipe, params)) => Source::Voice(Voice::with_params(*recipe, params.clone())),
-            // Already known bad (missing, or rejected by the backend last
-            // time): go straight to the default without asking the clip
-            // source or the backend for the same failure again.
-            None if self.missing.contains(key) => Source::Clip(builtin_wav(key)),
-            None => match self.clips.load(key) {
-                Some(bytes) => Source::Clip(bytes),
-                None => {
-                    self.note_missing(key);
-                    Source::Clip(builtin_wav(key))
-                }
-            },
+            None => Source::Clip(self.clip_or_default(key)),
         };
 
         let mut live = Live {
@@ -243,7 +305,7 @@ impl Audio {
             channel: 0,
             bus,
             pos,
-            volume: 1.0,
+            volume,
             pitch: 1.0,
             looping,
             voice,
@@ -371,7 +433,7 @@ impl Audio {
     /// bus.
     pub fn set_bus_volume(&mut self, bus: Bus, volume: f32) {
         let volume = clamped_or(self.bus_volume(bus), volume, 0.0, 1.0);
-        self.bus_volumes.insert(bus, volume);
+        self.mixing.bus_volumes.insert(bus, volume);
         let affected: Vec<Sound> = self
             .slots
             .iter()
@@ -391,16 +453,18 @@ impl Audio {
 
     /// A bus's volume; `1.0` until set.
     pub fn bus_volume(&self, bus: Bus) -> f32 {
-        *self.bus_volumes.get(&bus).unwrap_or(&1.0)
+        *self.mixing.bus_volumes.get(&bus).unwrap_or(&1.0)
     }
 
-    /// Runs one frame: reaps ended channels and re-mixes positioned sounds
-    /// against the listener and `occluded`.
+    /// Runs one frame: checks whether a deferred backend has opened, reaps
+    /// ended channels and re-mixes positioned sounds against the listener
+    /// and `occluded`.
     pub fn update(&mut self, occluded: &dyn Fn(Vec3) -> bool) {
+        self.poll_open();
         self.backend.update();
         let listener = self.listener;
         let spatial = self.spatial;
-        let bus_volumes = &self.bus_volumes;
+        let mixing = &self.mixing;
         let backend = &mut self.backend;
         let mut freed = Vec::new();
         let mut sends: Vec<(Channel, Mix)> = Vec::new();
@@ -415,7 +479,7 @@ impl Audio {
             }
             if let Some(pos) = live.pos {
                 live.occluded = occluded(pos);
-                let gain = bus_gain_of(bus_volumes, live.bus);
+                let gain = bus_gain_of(mixing, live.bus);
                 let mix = compute_mix(&listener, &spatial, gain, live);
                 if mix != live.sent {
                     live.sent = mix;
@@ -471,10 +535,10 @@ impl Audio {
     }
 
     fn bus_gain(&self, bus: Bus) -> f32 {
-        bus_gain_of(&self.bus_volumes, bus)
+        bus_gain_of(&self.mixing, bus)
     }
 
-    fn resend(&mut self, sound: Sound, ramp_ms: u32) {
+    pub(crate) fn resend(&mut self, sound: Sound, ramp_ms: u32) {
         let Some(bus) = slot_ref(&self.slots, sound).map(|live| live.bus) else {
             return;
         };
@@ -523,7 +587,7 @@ impl Audio {
         }
     }
 
-    fn free_slot(&mut self, index: u32) {
+    pub(crate) fn free_slot(&mut self, index: u32) {
         let slot = &mut self.slots[index as usize];
         slot.live = None;
         slot.generation = slot.generation.wrapping_add(1);

@@ -7,14 +7,17 @@
 
 mod backend;
 mod clips;
+mod open;
 mod pool;
 mod recording;
 mod silent;
+mod slots;
 mod spatial;
 mod types;
 
 pub use backend::{Backend, BackendError, Channel, Source};
 pub use clips::{ClipSource, LooseClips, MemoryClips};
+pub use open::{NO_SOUND_NOTICE, SHUTDOWN_WAIT};
 pub use pool::{Audio, Fades, LiveSound, Sound};
 pub use recording::{Call, Recorder, RecordingBackend};
 pub use silent::SilentBackend;
