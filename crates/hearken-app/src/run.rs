@@ -55,9 +55,11 @@ fn open_backend<G: Game>() -> Result<Box<dyn Backend>, String> {
         log::info!("audio: using the silent backend ({silent_var}, or SDL_AUDIODRIVER=dummy)");
         return Ok(Box::new(SilentBackend::default()));
     }
-    if let Some(backend) = G::audio_backend() {
-        log::info!("audio: using the game's own backend");
-        return Ok(backend);
+    if let Some(r) = G::audio_backend() {
+        if r.is_ok() {
+            log::info!("audio: using the game's own backend");
+        }
+        return r;
     }
     default_backend(G::ENV_PREFIX)
 }

@@ -86,8 +86,10 @@ impl<S: 'static, G: Game> MenuItem<S, G> {
     }
 
     /// A row that does nothing when activated: a heading or a readout.
+    /// Activating it plays nothing, not the menu's Select earcon; a later
+    /// `.adjustable(...)` leaves that silent select alone.
     pub fn inert(label: impl Into<Label<S, G>>) -> Self {
-        MenuItem::new(label, |_: &mut S, _: &mut Ctx<G>| {})
+        MenuItem::new(label, |_: &mut S, _: &mut Ctx<G>| {}).select_sound(None)
     }
 
     pub fn help(mut self, help: impl Into<Label<S, G>>) -> Self {

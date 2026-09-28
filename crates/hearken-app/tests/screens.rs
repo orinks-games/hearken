@@ -122,6 +122,18 @@ fn the_menu_positions_row_toggles_on_enter_left_and_right_and_reads_back_once() 
 }
 
 #[test]
+fn enter_on_an_inert_row_plays_nothing() {
+    let mut h = over_root(SettingsScreen::<TestGame>::new());
+    h.clear();
+    h.press(Key::Return); // Speech rate: adjustable, but does nothing on Enter
+    assert!(h.played().is_empty());
+    h.press(Key::M); // Master volume: also inert
+    h.clear();
+    h.press(Key::Return);
+    assert!(h.played().is_empty());
+}
+
+#[test]
 fn escape_on_settings_saves_them_and_goes_back() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
     h.press(Key::Right);

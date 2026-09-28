@@ -2,7 +2,8 @@ mod common;
 
 use common::*;
 use hearken_app::{
-    Bus, Ctx, Game, Headless, NoAction, NoCategory, Sound, SoundConfig, State, UiSound, Vec3,
+    Backend, Bus, Ctx, Game, Headless, MemoryClips, NoAction, NoCategory, Sound, SoundConfig,
+    State, UiSound, Vec3,
 };
 
 fn start() -> Headless<TestGame> {
@@ -115,4 +116,65 @@ fn ending_the_run_stops_every_sound() {
         .iter()
         .any(|c| matches!(c, hearken_app::Call::Stop { .. })));
     assert!(h.app.ctx.audio.live().is_empty());
+}
+
+/// A game whose own backend fails to open. `run`'s `open_backend` hands this
+/// straight back, the same `Result` a failed default backend would return.
+struct FailingBackendGame;
+
+impl Game for FailingBackendGame {
+    const TITLE: &'static str = "Failing Backend Test";
+    const DATA_DIR: &'static str = "HearkenFailingBackendTest";
+    const ENV_PREFIX: &'static str = "HEARKEN_FAILING_BACKEND_TEST";
+    type Event = ();
+    type Data = ();
+    type Settings = ();
+    type Action = NoAction;
+    type Category = NoCategory;
+
+    fn audio_backend() -> Option<Result<Box<dyn Backend>, String>> {
+        Some(Err("this game's backend could not be opened".to_string()))
+    }
+}
+
+#[test]
+fn a_games_own_backend_reporting_failure_reaches_the_no_sound_notice() {
+    // `Some(Err(..))` from the game's hook must type-check as the closure
+    // `Audio::deferred` runs off the game loop, and its error must reach the
+    // player the same way a failed default backend's would.
+    let mut audio = hearken_audio::Audio::deferred(
+        || FailingBackendGame::audio_backend().expect("the game supplies a backend"),
+        Box::new(MemoryClips::default()),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while audio.opening() && std::time::Instant::now() < deadline {
+        audio.update(&|_| false);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!audio.opening());
+    assert_eq!(
+        audio.take_notice().as_deref(),
+        Some(hearken_audio::NO_SOUND_NOTICE)
+    );
+}
+
+#[test]
+fn a_failed_open_speaks_the_no_sound_notice_exactly_once() {
+    let mut h = start();
+    h.clear();
+    h.app.ctx.install_audio(hearken_audio::Audio::deferred(
+        || Err("no device".to_string()),
+        Box::new(MemoryClips::default()),
+    ));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while h.app.ctx.audio.opening() && std::time::Instant::now() < deadline {
+        h.frame(0.01);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!h.app.ctx.audio.opening());
+    assert_eq!(h.spoken(), [hearken_audio::NO_SOUND_NOTICE]);
+    // Further frames must not repeat it: the notice is one-shot.
+    h.frame(0.01);
+    h.frame(0.01);
+    assert_eq!(h.spoken(), [hearken_audio::NO_SOUND_NOTICE]);
 }

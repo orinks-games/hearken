@@ -63,8 +63,10 @@ pub trait Game: Sized + 'static {
     }
 
     /// A sound backend the game supplies itself. Runs off the game loop,
-    /// while the device opens. `None` uses the engine's own default.
-    fn audio_backend() -> Option<Box<dyn Backend>> {
+    /// while the device opens. `None` uses the engine's own default;
+    /// `Some(Err(reason))` reaches the player the same way a failed default
+    /// backend would, through the "no sound device" notice.
+    fn audio_backend() -> Option<Result<Box<dyn Backend>, String>> {
         None
     }
 
