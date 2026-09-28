@@ -9,6 +9,12 @@ reads help for wherever you are, and F2 stops speech.
 
 Press Space to count out loud. Press Escape for the pause menu.
 
+## Sound
+
+A beacon pings as it circles you, and holding the engine key revs an engine
+that idles otherwise. If a sound file is missing, a stand-in plays in its
+place.
+
 ## Leaving
 
 Choose Quit on the title menu, or Quit from the pause menu.

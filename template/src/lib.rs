@@ -1,6 +1,7 @@
 //! Hello Hearken: the smallest complete Hearken game.
 
 mod practice;
+mod sound;
 mod title;
 
 use hearken_app::{Action, Chord, ControllerButton, Key, PadChord};
@@ -28,22 +29,35 @@ impl hearken_app::Game for HelloGame {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HelloAction {
     Count,
+    Throttle,
 }
 
 impl Action for HelloAction {
     fn all() -> &'static [Self] {
-        &[HelloAction::Count]
+        &[HelloAction::Count, HelloAction::Throttle]
     }
     fn id(self) -> &'static str {
-        "count"
+        match self {
+            HelloAction::Count => "count",
+            HelloAction::Throttle => "throttle",
+        }
     }
     fn label(self) -> &'static str {
-        "Count"
+        match self {
+            HelloAction::Count => "Count",
+            HelloAction::Throttle => "Engine",
+        }
     }
     fn default_keys(self) -> &'static [Chord] {
-        const { &[Chord::plain(Key::Space)] }
+        match self {
+            HelloAction::Count => const { &[Chord::plain(Key::Space)] },
+            HelloAction::Throttle => const { &[Chord::plain(Key::Up)] },
+        }
     }
     fn default_pad(self) -> &'static [PadChord] {
-        const { &[PadChord::plain(ControllerButton::A)] }
+        match self {
+            HelloAction::Count => const { &[PadChord::plain(ControllerButton::A)] },
+            HelloAction::Throttle => const { &[PadChord::plain(ControllerButton::X)] },
+        }
     }
 }

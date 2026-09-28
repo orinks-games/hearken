@@ -1,7 +1,7 @@
 # Hearken Engine Design
 
 - Date: 2026-09-26; M2 revised 2026-09-27
-- Status: M1 and M1b built from this; the M2 revision is for owner review
+- Status: M1 and M1b built from this; M2 approved 2026-09-27
 - Repository: `Orinks/hearken` (local only until the owner says to publish)
 - Sources: Freight Fate `c5d3ef8d` (2026-09-25), Lucky Break `a101970` (2026-09-23)
 
