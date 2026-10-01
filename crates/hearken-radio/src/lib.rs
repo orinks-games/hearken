@@ -5,7 +5,9 @@
 
 mod codecs;
 mod decode;
+mod hls;
 mod http;
+mod playlist;
 mod ring;
 mod stream;
 mod title;

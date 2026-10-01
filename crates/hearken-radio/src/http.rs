@@ -17,7 +17,9 @@ const MAX_HEAD: u64 = 16 * 1024;
 
 /// A station that answered: what it says it sends, and the body.
 pub(crate) struct Response {
-    #[expect(dead_code, reason = "read once the worker sniffs what a station sends")]
+    /// Where the reply came from, after any redirects: a playlist's relative
+    /// entries are relative to this.
+    pub(crate) url: Url,
     pub(crate) content_type: Option<String>,
     /// Body bytes between ICY title blocks, when the station sends them.
     pub(crate) icy_metaint: Option<NonZeroUsize>,
@@ -39,6 +41,7 @@ pub(crate) fn open(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
         .call()
     {
         Ok(response) => Ok(Response {
+            url: Url::parse(response.get_url()).unwrap_or(url),
             content_type: response.header("content-type").map(str::to_owned),
             icy_metaint: metaint(response.header("icy-metaint")),
             body: response.into_reader(),
@@ -139,6 +142,7 @@ fn request(mut socket: TcpStream, url: &Url, opts: &StreamOptions) -> Result<Res
         })
     };
     Ok(Response {
+        url: url.clone(),
         content_type: header("content-type").map(str::to_owned),
         icy_metaint: metaint(header("icy-metaint")),
         body: Box::new(reader),
