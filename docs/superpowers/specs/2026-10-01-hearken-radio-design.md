@@ -34,8 +34,8 @@ facade, with radio as its first optional feature.
 | A `hearken` facade crate is the core a game depends on | Re-exports the must-haves; extras are its optional features, each its own crate |
 | Radio is `hearken-radio`, behind the facade's `radio` feature | Not a feature of `hearken-audio`, which stays free of networking |
 | `hearken-audio` gains a generic feed source | Audio a backend pulls; radio is its first user |
-| Blocking worker thread per stream: `ureq`, `icy-metadata`, Symphonia | No async runtime; a stalled server blocks only its own thread |
-| HLS is built in the same worker on `m3u8-rs` and `mpeg2ts-reader` | No Rust crate plays live HLS |
+| Blocking worker thread per stream: `ureq` 2, `icy-metadata`, Symphonia | No async runtime; a stalled server blocks only its own thread. `ureq` 2, not 3: only 2 has a per-read timeout, which an endless body needs |
+| HLS is built in the same worker on `m3u8-rs` and `mpeg2ts` | No Rust crate plays live HLS; `mpeg2ts` has no dependencies |
 | The engine retries a dropped stream, then reports `Failed` | Any game gets working radio without its own reconnect loop |
 | HE-AAC through `fdk-aac` is opt-in, off by default | Symphonia plays HE-AAC's AAC-LC core (duller) with no patent exposure |
 | Tracker music is out of scope | Freight Fate supports it but ships no module files |
@@ -107,6 +107,7 @@ let sound = audio.start_feed(radio.feed(), None, Bus::MUSIC);
 radio.state();   // Connecting | Playing | Reconnecting | Failed(reason)
 radio.title();   // Option<String>: the latest now-playing title
 audio.stop(sound, 800);
+// Stream::open_with(url, StreamOptions { .. }) changes the defaults below.
 ```
 
 - `Stream` is a cheap `Clone` handle. `open` spawns the worker and returns;
@@ -118,10 +119,12 @@ audio.stop(sound, 800);
 ### The worker
 
 1. **Connect.** `ureq` GET with `Icy-MetaData: 1` and `User-Agent:
-   Hearken/<version>`; nothing about the user is sent. Connect and read time
-   out at 10 s. HTTPS is rustls with the OS certificate store (`ureq`'s
-   `platform-verifier`), so stations BASS's Windows TLS accepted are
-   accepted. Redirects follow, up to `ureq`'s 10.
+   Hearken/<version>`; nothing about the user is sent. Connect and every
+   read time out at 10 s. HTTPS is rustls with the OS certificate store
+   (`ureq`'s `native-certs`), so stations BASS's Windows TLS accepted are
+   accepted. Redirects follow, up to 10. An old Shoutcast v1 server's `ICY
+   200 OK` status line, which `ureq` rejects, gets one retry over a plain
+   socket that accepts it.
 2. **What came back**, by Content-Type, then the URL's extension, then the
    first bytes:
    - `.pls` or plain `.m3u`: take the first stream URL and connect to it, at
@@ -131,7 +134,7 @@ audio.stop(sound, 800);
      re-read the media playlist about every half target duration; fetch each
      new segment in order and feed it to one decoder. ADTS segments go
      straight in; MPEG-TS segments are demuxed to their audio elementary
-     stream with `mpeg2ts-reader`. `#EXT-X-KEY` (encrypted) fails.
+     stream with `mpeg2ts`. `#EXT-X-KEY` (encrypted) fails.
    - Anything else is audio: Symphonia on a non-seekable source, hinted by
      Content-Type (`audio/mpeg` MP3, `audio/aac` and `audio/aacp` ADTS,
      `ogg` Ogg).
@@ -170,8 +173,8 @@ audio.stop(sound, 800);
 ## Licences
 
 - New crates: `ureq` (MIT/Apache), `icy-metadata` (MIT/Apache), `m3u8-rs`
-  (MIT), `mpeg2ts-reader` (MIT/Apache), Symphonia's AAC (MPL-2.0, as the
-  rest of Symphonia). No DLLs.
+  (MIT), `mpeg2ts` (MIT), `url` (MIT/Apache), Symphonia's AAC (MPL-2.0, as
+  the rest of Symphonia). No DLLs.
 - `fdk-aac` adds `symphonia-adapter-fdk-aac` ((MIT or Apache-2.0) and
   MPL-2.0) and Fraunhofer's FDK AAC library, compiled in. Fraunhofer's
   licence allows shipping it but grants no patent rights; a game that turns
