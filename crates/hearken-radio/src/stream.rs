@@ -172,7 +172,6 @@ impl Shared {
         *lock(&self.state) = state;
     }
 
-    #[expect(dead_code, reason = "titles arrive with ICY and Ogg comment support")]
     pub(crate) fn set_title(&self, title: Option<String>) {
         *lock(&self.title) = title;
     }

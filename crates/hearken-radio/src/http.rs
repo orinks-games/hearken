@@ -20,7 +20,6 @@ pub(crate) struct Response {
     #[expect(dead_code, reason = "read once the worker sniffs what a station sends")]
     pub(crate) content_type: Option<String>,
     /// Body bytes between ICY title blocks, when the station sends them.
-    #[expect(dead_code, reason = "read once ICY titles are parsed")]
     pub(crate) icy_metaint: Option<NonZeroUsize>,
     /// `Sync` because Symphonia's media sources must be.
     pub(crate) body: Box<dyn Read + Send + Sync>,

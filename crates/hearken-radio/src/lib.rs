@@ -8,6 +8,7 @@ mod decode;
 mod http;
 mod ring;
 mod stream;
+mod title;
 mod worker;
 
 pub use stream::{Stream, StreamOptions, StreamState};
