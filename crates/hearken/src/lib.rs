@@ -5,3 +5,6 @@
 
 pub use hearken_app::*;
 pub use hearken_speech as speech;
+
+#[cfg(feature = "radio")]
+pub use hearken_radio as radio;

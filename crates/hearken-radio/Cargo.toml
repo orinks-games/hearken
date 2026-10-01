@@ -1,0 +1,18 @@
+[package]
+name = "hearken-radio"
+description = "Internet radio for audio games: HTTP and ICY stations, playlists and live HLS, played as a Hearken feed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+hearken-audio.workspace = true
+icy-metadata.workspace = true
+# AAC also registers Symphonia's ADTS reader, the format most AAC stations send.
+symphonia = { workspace = true, features = ["aac"] }
+symphonia-adapter-libopus.workspace = true
+ureq.workspace = true
+url.workspace = true

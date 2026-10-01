@@ -14,8 +14,11 @@ build = "build.rs"
 [features]
 default = ["kira"]
 kira = ["hearken-app/kira"]
+# Internet radio: `hearken::radio::Stream`.
+radio = ["dep:hearken-radio"]
 
 [dependencies]
 hearken-app.workspace = true
+hearken-radio = { workspace = true, optional = true }
 # A direct dependency, so build.rs sees Prism's delay-load list.
 hearken-speech.workspace = true
