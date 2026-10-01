@@ -80,7 +80,8 @@ shape of its API: a new game should never have to look like Freight Fate.
 | M2 splits into M2 (runtime) and M2b (pipeline) | 2026-09-27 | |
 | Kira replaces BASS as the built-in backend; `hearken-bass-sys` is dropped | 2026-10-01 | Compiled in: no DLL to ship, no commercial licence. A game that needs BASS brings it behind the trait |
 | Opus decodes through libopus, compiled in | 2026-10-01 | Symphonia has no Opus decoder yet, and Freight Fate's music and most of its sounds are Opus. libopus is BSD-3: its notice ships with the game |
-| Internet radio becomes an optional `streams` feature of `hearken-audio`, not BASS | 2026-10-01 | The point of Kira was no BASS; spec to follow |
+| A `hearken` facade crate is the core a game depends on; extras are its optional features | 2026-10-01 | See `2026-10-01-hearken-radio-design.md` |
+| Internet radio is `hearken-radio`, behind the facade's `radio` feature, not BASS | 2026-10-01 | The point of Kira was no BASS. HE-AAC via `fdk-aac` is opt-in |
 | The speech ladder is generic and comes in M2 | 2026-09-27 | Game-declared categories and levels |
 
 ### Evidence behind the sound decision
@@ -107,10 +108,12 @@ every clip took 0.2 seconds. The spike's sources are kept in
 ```
 hearken/
   crates/
+    hearken            the facade a game depends on; optional extras as features
     hearken-speech     prismer, speech worker, two channels, capture, fakes
     hearken-audio      handles and pool, positioning, backends, live voices
     hearken-synth      fundsp recipes, category defaults, layer helpers
     hearken-app        shell, loop, screen stack, menus, input, settings
+    hearken-radio      internet radio: HTTP/ICY, playlists, live HLS (optional)
     hearken-online     updater, sign-in, keyring, cloud saves, presence
     hearken-playtest   headless harness, scenario runner, agent-server MCP
   tools/
@@ -501,8 +504,8 @@ Each milestone gets its own implementation plan.
   vendored for Windows, ALSA headers on Linux. The template README covers
   all of it on one page.
 - **Kira plays less than BASS did.** No internet radio yet, which Freight
-  Fate uses; it comes as the optional `streams` feature before Freight Fate
-  moves (M6). No tracker music either, which Freight Fate supports but
+  Fate uses; it comes as `hearken-radio`, the facade's `radio` feature,
+  before Freight Fate moves (M6). No tracker music either, which Freight Fate supports but
   ships none of.
 - **Decoder licences.** Symphonia is MPL-2.0: a game that ships it
   unchanged says where its source is; a game that changes its files
