@@ -11,6 +11,8 @@ authors.workspace = true
 [dependencies]
 hearken-audio.workspace = true
 icy-metadata.workspace = true
+m3u8-rs.workspace = true
+mpeg2ts.workspace = true
 # AAC also registers Symphonia's ADTS reader, the format most AAC stations send.
 symphonia = { workspace = true, features = ["aac"] }
 symphonia-adapter-libopus.workspace = true

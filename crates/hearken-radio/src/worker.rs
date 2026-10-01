@@ -30,7 +30,7 @@ const MAX_HOPS: usize = 3;
 const HEAD: u64 = 1024;
 
 /// The most of a playlist worth reading; past it, it is not one.
-const MAX_PLAYLIST: u64 = 1 << 20;
+pub(crate) const MAX_PLAYLIST: u64 = 1 << 20;
 
 /// Plays `url`, following playlists to the station they name.
 fn play(url: &str, shared: &Arc<Shared>, opts: &StreamOptions) -> Fault {
@@ -70,7 +70,7 @@ fn open_station(url: &str, shared: &Arc<Shared>, opts: &StreamOptions) -> Result
 }
 
 /// At most `limit` bytes of `body`, fewer if it ends first.
-fn read_up_to(body: &mut impl Read, limit: u64) -> Result<Vec<u8>, Fault> {
+pub(crate) fn read_up_to(body: &mut impl Read, limit: u64) -> Result<Vec<u8>, Fault> {
     let mut bytes = Vec::new();
     body.take(limit).read_to_end(&mut bytes)?;
     Ok(bytes)

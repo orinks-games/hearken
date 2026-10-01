@@ -68,7 +68,7 @@ fn io_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a io::
     source.downcast_ref().or_else(|| io_error(source))
 }
 
-fn bad_url() -> Fault {
+pub(crate) fn bad_url() -> Fault {
     Fault::Fatal("bad URL".into())
 }
 

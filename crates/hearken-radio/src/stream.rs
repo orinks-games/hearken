@@ -191,7 +191,6 @@ impl Shared {
     }
 
     /// Waits `d`, or less if the stream closes meanwhile. False if it closed.
-    #[expect(dead_code, reason = "the reconnect loop waits here between attempts")]
     pub(crate) fn sleep(&self, d: Duration) -> bool {
         let closed = lock(&self.closed);
         let (closed, _) = self

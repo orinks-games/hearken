@@ -114,6 +114,6 @@ fn comments_title(reader: &mut dyn FormatReader) -> Option<String> {
     title::ogg(tag("artist").as_deref(), tag("title").as_deref())
 }
 
-fn no_audio() -> Fault {
+pub(crate) fn no_audio() -> Fault {
     Fault::Fatal("no playable audio".into())
 }

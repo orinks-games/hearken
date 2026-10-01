@@ -29,10 +29,6 @@ pub(crate) fn ogg(artist: Option<&str>, title: Option<&str>) -> Option<String> {
 }
 
 /// An HLS `#EXTINF` title. Some encoders write "no desc" for none.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read once HLS playlists are parsed")
-)]
 pub(crate) fn hls(extinf_title: &str) -> Option<String> {
     tidy(extinf_title).filter(|title| !title.eq_ignore_ascii_case("no desc"))
 }
