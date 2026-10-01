@@ -3,8 +3,8 @@
 
 use std::time::Duration;
 
-#[cfg(feature = "bass")]
-use hearken_audio::BassBackend;
+#[cfg(feature = "kira")]
+use hearken_audio::KiraBackend;
 use hearken_audio::{Audio, Backend, LooseClips, SilentBackend};
 use hearken_speech::{SpeechEnv, SpeechSink, ThreadedSpeech};
 
@@ -64,14 +64,14 @@ fn open_backend<G: Game>() -> Result<Box<dyn Backend>, String> {
     default_backend(G::ENV_PREFIX)
 }
 
-#[cfg(feature = "bass")]
-fn default_backend(prefix: &str) -> Result<Box<dyn Backend>, String> {
-    let backend = BassBackend::open(prefix)?;
-    log::info!("audio: using BASS");
+#[cfg(feature = "kira")]
+fn default_backend(_prefix: &str) -> Result<Box<dyn Backend>, String> {
+    let backend = KiraBackend::open()?;
+    log::info!("audio: using Kira");
     Ok(Box::new(backend))
 }
 
-#[cfg(not(feature = "bass"))]
+#[cfg(not(feature = "kira"))]
 fn default_backend(_prefix: &str) -> Result<Box<dyn Backend>, String> {
     log::info!("audio: using the silent backend (no backend built in)");
     Ok(Box::new(SilentBackend::default()))

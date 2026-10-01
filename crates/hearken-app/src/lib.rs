@@ -30,8 +30,8 @@ pub use controller::{ControllerManager, InputDevice};
 pub use ctx::{Ctx, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
 pub use game::Game;
 pub use hearken_audio as audio;
-#[cfg(feature = "bass")]
-pub use hearken_audio::BassBackend;
+#[cfg(feature = "kira")]
+pub use hearken_audio::KiraBackend;
 pub use hearken_audio::{
     Audio, Backend, BackendError, Bus, Call, Channel, ClipSource, Fades, Listener, LiveSound,
     LooseClips, MemoryClips, Mix, Recorder, RecordingBackend, SilentBackend, Sound, Source,

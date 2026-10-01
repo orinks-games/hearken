@@ -24,7 +24,7 @@ impl fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
-/// A sound backend: BASS, FMOD, or a test double.
+/// A sound backend: Kira, FMOD, or a test double.
 ///
 /// Nothing here may block the game loop: `shutdown` is explicit, idempotent
 /// and bounded, never a network call, an IPC round trip or a thread join.

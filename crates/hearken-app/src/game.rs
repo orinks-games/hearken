@@ -19,7 +19,7 @@ pub trait Game: Sized + 'static {
     /// Prefix of the game's environment overrides: `<PREFIX>_DATA_DIR`,
     /// `<PREFIX>_LOG`, `<PREFIX>_LOG_FILE`, `<PREFIX>_NO_SPEECH`, `<PREFIX>_SPEECH_BACKEND`,
     /// `<PREFIX>_STREAM_TRANSCRIPT`, `<PREFIX>_AUDIO_BACKEND` (`silent` turns sound off),
-    /// `<PREFIX>_SOUNDS` (the loose sounds folder), `<PREFIX>_BASS_PATH`.
+    /// `<PREFIX>_SOUNDS` (the loose sounds folder).
     const ENV_PREFIX: &'static str;
 
     /// What the game's rules emit. The top screen receives each one in

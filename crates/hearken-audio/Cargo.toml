@@ -9,14 +9,13 @@ repository.workspace = true
 authors.workspace = true
 
 [features]
-default = ["bass"]
-bass = ["dep:hearken-bass-sys"]
+default = ["kira"]
+kira = ["dep:kira"]
 
 [dependencies]
 hearken-synth.workspace = true
-hearken-bass-sys = { workspace = true, optional = true }
+kira = { workspace = true, optional = true }
 log.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-hearken-bass-sys.workspace = true
