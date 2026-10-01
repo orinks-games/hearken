@@ -11,6 +11,5 @@ publish = false
 build = "build.rs"
 
 [dependencies]
-hearken-app.workspace = true
-# A direct dependency, so build.rs sees Prism's delay-load list.
-hearken-speech.workspace = true
+# The only dependency: build.rs reads Prism's delay-load list from it.
+hearken.workspace = true

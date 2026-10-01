@@ -1,0 +1,21 @@
+[package]
+name = "hearken"
+description = "Hearken: the one dependency for an audio-first, screen-reader-first game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Republishes Prism's delay-load list under this crate's name (see build.rs).
+links = "hearken"
+build = "build.rs"
+
+[features]
+default = ["kira"]
+kira = ["hearken-app/kira"]
+
+[dependencies]
+hearken-app.workspace = true
+# A direct dependency, so build.rs sees Prism's delay-load list.
+hearken-speech.workspace = true

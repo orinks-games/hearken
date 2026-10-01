@@ -1,6 +1,6 @@
-use hearken_app::menu::{Menu, MenuCore, MenuItem};
-use hearken_app::screens::{HelpScreen, SettingsScreen};
-use hearken_app::Ctx;
+use hearken::menu::{Menu, MenuCore, MenuItem};
+use hearken::screens::{HelpScreen, SettingsScreen};
+use hearken::Ctx;
 
 use crate::{HelloGame, Practice, HELP};
 

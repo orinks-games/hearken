@@ -1,8 +1,8 @@
 use std::f32::consts::TAU;
 
-use hearken_app::screens::PauseScreen;
-use hearken_app::text::sentence_start;
-use hearken_app::{Bus, Ctx, InputEvent, Key, Sound, State, Vec3};
+use hearken::screens::PauseScreen;
+use hearken::text::sentence_start;
+use hearken::{Bus, Ctx, InputEvent, Key, Sound, State, Vec3};
 
 use crate::sound::engine;
 use crate::{HelloAction, HelloGame, Title, HELP};

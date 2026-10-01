@@ -20,7 +20,8 @@ dirs = "6"
 sdl2 = "0.38"
 prismer = { version = "0.1.3", features = ["static"] }
 hearken-speech = { path = "crates/hearken-speech" }
-hearken-app = { path = "crates/hearken-app" }
+hearken = { path = "crates/hearken" }
+hearken-app = { path = "crates/hearken-app", default-features = false }
 hearken-synth = { path = "crates/hearken-synth" }
 hearken-audio = { path = "crates/hearken-audio", default-features = false }
 kira = { version = "0.12", default-features = false, features = ["cpal", "symphonia"] }

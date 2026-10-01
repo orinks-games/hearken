@@ -6,6 +6,7 @@ of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
 
 ## What is here
 
+- `hearken`: the one dependency for a game; it re-exports the rest.
 - `hearken-app`: the window, the screen stack, spoken menus, settings,
   help and pause screens, and a headless harness for tests.
 - `hearken-speech`: screen reader, braille and text-to-speech output
@@ -32,9 +33,9 @@ Every game needs a `build.rs` like `template/build.rs`. It passes on the link
 arguments hearken-speech works out for Prism: the screen reader DLLs
 delay-loaded, so the game still starts on a machine that lacks some of them,
 and Prism's delay-load failure hook kept, so a missing DLL is reported
-unavailable instead of crashing the game. The game must list `hearken-speech`
-as a direct dependency, not only through `hearken-app`: Cargo hands a build
-script those arguments only from a direct dependency.
+unavailable instead of crashing the game. The game must list `hearken` as a
+direct dependency, which is all it needs: Cargo hands a build script those
+arguments only from a direct dependency, and `hearken` passes them on.
 
 ## Licence
 

@@ -42,7 +42,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Build without Kira
-        run: cargo check -p hearken-app --no-default-features --locked
+        run: cargo check -p hearken --no-default-features --locked
 
       - name: Tests
         run: cargo test --workspace --locked

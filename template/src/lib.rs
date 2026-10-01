@@ -4,7 +4,7 @@ mod practice;
 mod sound;
 mod title;
 
-use hearken_app::{Action, Chord, ControllerButton, Key, PadChord};
+use hearken::{Action, Chord, ControllerButton, Key, PadChord};
 
 pub use practice::Practice;
 pub use title::Title;
@@ -14,7 +14,7 @@ pub const HELP: &str = include_str!("../help.md");
 
 pub struct HelloGame;
 
-impl hearken_app::Game for HelloGame {
+impl hearken::Game for HelloGame {
     const TITLE: &'static str = "Hello Hearken";
     const DATA_DIR: &'static str = "HelloHearken";
     const ENV_PREFIX: &'static str = "HELLO_HEARKEN";
@@ -22,7 +22,7 @@ impl hearken_app::Game for HelloGame {
     type Data = ();
     type Settings = ();
     type Action = HelloAction;
-    type Category = hearken_app::NoCategory;
+    type Category = hearken::NoCategory;
 }
 
 /// The controls the player can move to other keys and buttons.

@@ -1,4 +1,4 @@
-use hearken_app::{Headless, InputEvent, Key, Mods};
+use hearken::{Headless, InputEvent, Key, Mods};
 use hello_hearken::{HelloGame, Title};
 
 fn start() -> Headless<HelloGame> {
@@ -133,7 +133,7 @@ fn the_practice_room_runs_an_engine_and_a_beacon_pings_as_it_circles() {
         h.frame(0.05);
     }
     for call in h.sounds.calls() {
-        if let hearken_app::Call::Play { key, mix, .. } = call {
+        if let hearken::Call::Play { key, mix, .. } = call {
             if key == "sfx/beacon" {
                 places.push(mix.relative.expect("a placed sound"));
             }
