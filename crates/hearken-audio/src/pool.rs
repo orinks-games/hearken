@@ -2,12 +2,14 @@
 
 use crate::backend::{Backend, Channel, Source};
 use crate::clips::{ClipSource, LooseClips};
+use crate::feed::Feed;
 use crate::silent::SilentBackend;
 use crate::spatial::{place, SpatialConfig};
 use crate::types::{Bus, Listener, Mix, Vec3};
 use hearken_synth::{builtin_wav, Params, Recipe, Voice};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 
 /// A handle to a sound in the pool. Stale once its slot is reused: lookups
 /// compare the slot's generation, so an old handle finds nothing.
@@ -91,10 +93,35 @@ pub(crate) struct Live {
     pub(crate) pitch: f32,
     pub(crate) looping: bool,
     pub(crate) voice: Option<(Recipe, Params)>,
+    /// Kept so a deferred backend's replay can hand the new backend the same
+    /// feed.
+    pub(crate) feed: Option<Arc<dyn Feed>>,
     pub(crate) paused: bool,
     pub(crate) paused_by_all: bool,
     pub(crate) occluded: bool,
     pub(crate) sent: Mix,
+}
+
+impl Live {
+    /// A sound at unity pitch, not yet on a backend: `channel` and `sent` are
+    /// filled in once one takes it.
+    fn new(key: &str, pos: Option<Vec3>, bus: Bus, looping: bool, volume: f32) -> Live {
+        Live {
+            key: key.to_string(),
+            channel: 0,
+            bus,
+            pos,
+            volume,
+            pitch: 1.0,
+            looping,
+            voice: None,
+            feed: None,
+            paused: false,
+            paused_by_all: false,
+            occluded: false,
+            sent: Mix::UNITY,
+        }
+    }
 }
 
 fn slot_ref(slots: &[Slot], sound: Sound) -> Option<&Live> {
@@ -256,6 +283,17 @@ impl Audio {
         )
     }
 
+    /// Starts a feed -- audio the backend pulls, such as a radio stream --
+    /// looping until stopped, as an ordinary sound: bus volume, the duck,
+    /// pause, fades, position and occlusion all apply.
+    pub fn start_feed(&mut self, feed: Arc<dyn Feed>, pos: Option<Vec3>, bus: Bus) -> Sound {
+        let live = Live {
+            feed: Some(feed.clone()),
+            ..Live::new("feed", pos, bus, true, 1.0)
+        };
+        self.launch(Source::Feed(feed), live)
+    }
+
     /// Starts `key` on `bus` at a given starting `volume`, instead of the
     /// usual `1.0` -- for a bed that should fade in from silence.
     pub(crate) fn start_at_volume(
@@ -291,8 +329,9 @@ impl Audio {
     /// unless `source` is already a live voice, which has no clip to fall
     /// back to: retrying would start an unrequested, unstoppable loop
     /// (nobody holds a handle to stop it) named after a key that was never
-    /// missing. Shared by `start` and, for the replay after a deferred
-    /// backend opens, `open`'s `swap_backend`.
+    /// missing. A feed is the same: it has no clip either. Shared by
+    /// `launch` and, for the replay after a deferred backend opens, `open`'s
+    /// `swap_backend`.
     pub(crate) fn play_with_fallback(
         &mut self,
         key: &str,
@@ -300,12 +339,12 @@ impl Audio {
         looping: bool,
         mix: Mix,
     ) -> Option<Channel> {
-        let is_voice = matches!(source, Source::Voice(_));
+        let is_live = matches!(source, Source::Voice(_) | Source::Feed(_));
         match self.backend.play(key, source, looping, mix) {
             Ok(channel) => Some(channel),
             Err(err) => {
-                if is_voice {
-                    log::error!("backend failed to play voice {key:?}: {err}");
+                if is_live {
+                    log::error!("backend failed to play live source {key:?}: {err}");
                     return None;
                 }
                 if self.note_missing(key) {
@@ -339,23 +378,19 @@ impl Audio {
             None => Source::Clip(self.clip_or_default(key)),
         };
 
-        let mut live = Live {
-            key: key.to_string(),
-            channel: 0,
-            bus,
-            pos,
-            volume,
-            pitch: 1.0,
-            looping,
+        let live = Live {
             voice,
-            paused: false,
-            paused_by_all: false,
-            occluded: false,
-            sent: Mix::UNITY,
+            ..Live::new(key, pos, bus, looping, volume)
         };
+        self.launch(source, live)
+    }
+
+    /// Plays `source` for `live` and gives it a slot, or returns
+    /// [`Sound::NONE`] if the backend would not take it.
+    fn launch(&mut self, source: Source, mut live: Live) -> Sound {
         let mix = self.mix_of(&live);
 
-        match self.play_with_fallback(key, source, looping, mix) {
+        match self.play_with_fallback(&live.key, source, live.looping, mix) {
             Some(channel) => {
                 live.channel = channel;
                 live.sent = mix;

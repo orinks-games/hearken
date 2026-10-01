@@ -1,5 +1,6 @@
 #![cfg(feature = "kira")]
 use std::f32::consts::TAU;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -433,4 +434,100 @@ fn a_truncated_opus_clip_is_an_error_not_a_panic() {
     assert!(err.is_err());
     r.render(256);
     assert_eq!(r.sub_tracks(), 0, "the failed sound's track did not leak");
+}
+
+/// A 441 Hz sine at an adjustable sample rate, there whenever it is pulled
+/// unless `dry` is set.
+struct TestFeed {
+    rate: AtomicU32,
+    dry: AtomicBool,
+    phase: Mutex<f64>,
+}
+
+impl TestFeed {
+    fn new(rate: u32) -> Arc<TestFeed> {
+        Arc::new(TestFeed {
+            rate: AtomicU32::new(rate),
+            dry: AtomicBool::new(false),
+            phase: Mutex::new(0.0),
+        })
+    }
+}
+
+impl Feed for TestFeed {
+    fn read(&self, out: &mut [[f32; 2]]) -> FeedRead {
+        if self.dry.load(Ordering::Relaxed) {
+            return FeedRead {
+                frames: 0,
+                sample_rate: 0,
+            };
+        }
+        let rate = self.rate.load(Ordering::Relaxed);
+        let mut phase = self.phase.lock().unwrap();
+        for frame in out.iter_mut() {
+            let sample = (*phase * std::f64::consts::TAU).sin() as f32 * 0.5;
+            *frame = [sample; 2];
+            *phase = (*phase + 441.0 / f64::from(rate)).fract();
+        }
+        FeedRead {
+            frames: out.len(),
+            sample_rate: rate,
+        }
+    }
+}
+
+#[test]
+fn a_feed_is_heard_at_its_own_pitch_across_a_rate_change() {
+    let mut r = rig();
+    let feed = TestFeed::new(22_050);
+    let ch =
+        r.b.play("feed", Source::Feed(feed.clone()), true, Mix::UNITY)
+            .expect("play");
+    let before = crossings(&r.render(4_410)[..4_410]);
+    assert!(
+        (80..=96).contains(&before),
+        "441 Hz for 0.1 s crosses zero ~88 times: {before}"
+    );
+    feed.rate.store(48_000, Ordering::Relaxed);
+    r.render(1_024);
+    let after = crossings(&r.render(4_410)[..4_410]);
+    assert!(
+        (80..=96).contains(&after),
+        "the new rate leaves the pitch alone: {after}"
+    );
+    assert!(r.b.is_playing(ch));
+}
+
+#[test]
+fn a_feed_that_runs_dry_is_silence_not_a_stop() {
+    let mut r = rig();
+    let feed = TestFeed::new(44_100);
+    feed.dry.store(true, Ordering::Relaxed);
+    let ch =
+        r.b.play("feed", Source::Feed(feed.clone()), true, Mix::UNITY)
+            .expect("play");
+    assert!(rms(&r.render(2_000)[500..]) < 1e-4, "dry is silence");
+    r.b.update();
+    assert!(r.b.is_playing(ch), "and the feed is still alive");
+    feed.dry.store(false, Ordering::Relaxed);
+    assert!(
+        rms(&r.render(2_000)[500..]) > 0.1,
+        "it sounds again once there is audio"
+    );
+}
+
+#[test]
+fn pause_silences_a_feed() {
+    let mut r = rig();
+    let ch =
+        r.b.play(
+            "feed",
+            Source::Feed(TestFeed::new(44_100)),
+            true,
+            Mix::UNITY,
+        )
+        .expect("play");
+    assert!(rms(&r.render(2_000)[500..]) > 0.1, "it makes sound");
+    r.b.pause(ch, true);
+    assert!(rms(&r.render(2_000)[500..]) < 1e-4);
 }

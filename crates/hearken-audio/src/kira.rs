@@ -1,15 +1,15 @@
-//! The Kira [`Backend`]: plays clips and live voices through the `kira`
-//! crate, which compiles into the game -- no library to fetch, ship or
-//! license.
+//! The Kira [`Backend`]: plays clips, live voices and feeds through the
+//! `kira` crate, which compiles into the game -- no library to fetch, ship
+//! or license.
 //!
 //! Each channel is a Kira sub-track of its own, carrying a low-pass filter
 //! and a panner, with its one sound playing on it. So a [`Mix`] lands the
-//! same way on a clip and a live voice: the gain is the track's volume, the
-//! pan its panner, the low-pass its filter (left in, all dry, when the mix
-//! wants none, so muffling ramps in and out instead of switching). Pitch is
-//! a clip's playback rate, or a live voice's own resampling step. Every stop
-//! ends with the channel's track handle dropped, which removes the track and
-//! the sound on it.
+//! same way on a clip, a live voice and a feed: the gain is the track's
+//! volume, the pan its panner, the low-pass its filter (left in, all dry,
+//! when the mix wants none, so muffling ramps in and out instead of
+//! switching). Pitch is a clip's playback rate, or a voice's or feed's own
+//! resampling step. Every stop ends with the channel's track handle dropped,
+//! which removes the track and the sound on it.
 //!
 //! Dropping a `KiraBackend` without [`Backend::shutdown`] is safe: Kira tells
 //! its output thread to stop on drop, without a join.
@@ -35,6 +35,7 @@ use kira::{
 
 use crate::backend::{Backend, BackendError, Channel, Source};
 use crate::decode;
+use crate::feed::Feed;
 use crate::types::Mix;
 
 /// How many sounds can play at once: one Kira sub-track each.
@@ -58,6 +59,8 @@ enum Playing {
     Stream(StreamingSoundHandle<FromFileError>),
     /// A live voice, which never ends on its own; its pitch, as `f32` bits.
     Voice(Arc<AtomicU32>),
+    /// A feed, which never ends on its own either; its pitch, as `f32` bits.
+    Feed(Arc<AtomicU32>),
 }
 
 struct Entry {
@@ -68,13 +71,13 @@ struct Entry {
 }
 
 impl Entry {
-    /// A clip is alive until Kira reports it stopped; a voice until its
-    /// channel is stopped.
+    /// A clip is alive until Kira reports it stopped; a voice or a feed
+    /// until its channel is stopped.
     fn alive(&self) -> bool {
         match &self.playing {
             Playing::Clip(h) => h.state() != PlaybackState::Stopped,
             Playing::Stream(h) => h.state() != PlaybackState::Stopped,
-            Playing::Voice(_) => true,
+            Playing::Voice(_) | Playing::Feed(_) => true,
         }
     }
 }
@@ -239,6 +242,13 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
                     .map_err(backend_error)?;
                 Playing::Voice(pitch)
             }
+            Source::Feed(feed) => {
+                let pitch = Arc::new(AtomicU32::new(mix.pitch.to_bits()));
+                track
+                    .play(FeedSound::new(feed, pitch.clone()))
+                    .map_err(backend_error)?;
+                Playing::Feed(pitch)
+            }
         };
         let channel = self.next;
         self.next += 1;
@@ -267,7 +277,9 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
         match &mut entry.playing {
             Playing::Clip(h) => h.set_playback_rate(rate(mix.pitch), tween),
             Playing::Stream(h) => h.set_playback_rate(rate(mix.pitch), tween),
-            Playing::Voice(pitch) => pitch.store(mix.pitch.to_bits(), Ordering::Relaxed),
+            Playing::Voice(pitch) | Playing::Feed(pitch) => {
+                pitch.store(mix.pitch.to_bits(), Ordering::Relaxed)
+            }
         }
     }
 
@@ -376,6 +388,112 @@ impl Sound for LiveVoice {
 }
 
 impl SoundData for LiveVoice {
+    type Error = Infallible;
+    type Handle = ();
+
+    fn into_sound(self) -> Result<(Box<dyn Sound>, ()), Infallible> {
+        Ok((Box::new(self), ()))
+    }
+}
+
+/// How many frames a [`FeedSound`] pulls from its feed at a time: the size of
+/// the buffer it makes up front, so nothing allocates on the audio thread. A
+/// feed hands over what it has, so this only bounds one pull.
+const FEED_BLOCK: usize = 1_024;
+
+/// A feed as a Kira sound: pulled a block at a time into a buffer made
+/// up front, then read back `feed_rate * pitch / output_rate` frames per
+/// output frame through the same linear resampler as [`LiveVoice`], so the
+/// feed plays at its own pitch whatever rate it arrives at, and a pitch
+/// change never clicks. Nothing here allocates on the audio thread.
+struct FeedSound {
+    feed: Arc<dyn Feed>,
+    pitch: Arc<AtomicU32>,
+    /// The last pull: `len` frames, the first `pos` of them already read.
+    block: Box<[[f32; 2]]>,
+    len: usize,
+    pos: usize,
+    /// The sample rate of the block in hand; zero until the first one.
+    rate: f64,
+    /// Where the next output frame falls between `prev` and `next`.
+    phase: f64,
+    prev: Frame,
+    next: Frame,
+}
+
+impl FeedSound {
+    fn new(feed: Arc<dyn Feed>, pitch: Arc<AtomicU32>) -> FeedSound {
+        FeedSound {
+            feed,
+            pitch,
+            block: vec![[0.0; 2]; FEED_BLOCK].into_boxed_slice(),
+            len: 0,
+            pos: 0,
+            rate: 0.0,
+            phase: 1.0,
+            prev: Frame::ZERO,
+            next: Frame::ZERO,
+        }
+    }
+
+    /// The feed's next frame, pulling a new block when the last is used up;
+    /// `None` when the feed has nothing more for now. A new block's rate
+    /// applies from its first frame on.
+    fn pull(&mut self) -> Option<Frame> {
+        if self.pos == self.len {
+            let read = self.feed.read(&mut self.block);
+            self.len = read.frames.min(self.block.len());
+            self.pos = 0;
+            if self.len == 0 {
+                return None;
+            }
+            // Zero is a feed's mistake; carrying on at the old rate beats
+            // freezing on one frame.
+            if read.sample_rate > 0 {
+                self.rate = f64::from(read.sample_rate);
+            }
+        }
+        let [left, right] = self.block[self.pos];
+        self.pos += 1;
+        Some(Frame::new(left, right))
+    }
+}
+
+impl Sound for FeedSound {
+    fn process(&mut self, out: &mut [Frame], dt: f64, _info: &Info) {
+        let per_frame = rate(f32::from_bits(self.pitch.load(Ordering::Relaxed))) * dt;
+        // Asking a dry feed again every frame would only repeat the answer:
+        // once it has nothing, the rest of this block is silence.
+        let mut dry = false;
+        for frame in out {
+            while !dry && self.phase >= 1.0 {
+                match self.pull() {
+                    Some(next) => {
+                        self.prev = self.next;
+                        self.next = next;
+                        self.phase -= 1.0;
+                    }
+                    None => dry = true,
+                }
+            }
+            if dry {
+                // Zeroed, so silence carries no DC and the audio that comes
+                // back fades in from nothing.
+                (self.prev, self.next) = (Frame::ZERO, Frame::ZERO);
+                *frame = Frame::ZERO;
+            } else {
+                *frame = self.prev + (self.next - self.prev) * self.phase as f32;
+                self.phase += self.rate * per_frame;
+            }
+        }
+    }
+
+    fn finished(&self) -> bool {
+        false
+    }
+}
+
+impl SoundData for FeedSound {
     type Error = Infallible;
     type Handle = ();
 

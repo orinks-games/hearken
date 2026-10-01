@@ -147,7 +147,7 @@ impl Backend for RecordingBackend {
             inner.playing.insert(channel);
             let clip = match source {
                 Source::Clip(bytes) => Some(bytes),
-                Source::Voice(_) => None,
+                Source::Voice(_) | Source::Feed(_) => None,
             };
             inner.calls.push(Call::Play {
                 channel,

@@ -1,4 +1,4 @@
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use hearken_audio::*;
@@ -178,4 +178,32 @@ fn a_voice_started_while_opening_is_replayed_and_keeps_its_parameters() {
         .find(|l| l.sound == v)
         .expect("the voice is still live");
     assert_eq!(entry.params.as_ref().unwrap().value("throttle"), Some(0.8));
+}
+
+/// A feed with nothing to say: the pool only needs to hand it on.
+struct Quiet;
+
+impl Feed for Quiet {
+    fn read(&self, _out: &mut [[f32; 2]]) -> FeedRead {
+        FeedRead {
+            frames: 0,
+            sample_rate: 0,
+        }
+    }
+}
+
+#[test]
+fn a_feed_moves_over_when_the_device_opens() {
+    let (backend, rec) = RecordingBackend::new();
+    let (mut audio, go) = opened(backend);
+    let radio = audio.start_feed(Arc::new(Quiet), None, Bus::MUSIC);
+    go.send(()).unwrap();
+    wait_for_open(&mut audio);
+
+    assert_eq!(rec.played(), ["feed"], "the feed is replayed once");
+    assert!(
+        matches!(rec.calls().last(), Some(Call::Play { clip: None, .. })),
+        "a feed is not a clip"
+    );
+    assert!(audio.is_playing(radio), "the handle survives the swap");
 }

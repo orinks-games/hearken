@@ -83,7 +83,7 @@ impl Audio {
         }
     }
 
-    /// Replays every looping slot (clip or voice) on `backend` with its
+    /// Replays every looping slot (clip, voice or feed) on `backend` with its
     /// current mix, keeping its slot and generation so handles stay valid,
     /// re-applying `paused` and falling back to a default clip the same way
     /// `start` would if the new backend refuses one; frees every one-shot
@@ -113,13 +113,19 @@ impl Audio {
             let Some(live) = self.slots[index as usize].live.as_ref() else {
                 continue;
             };
-            let (key, mix, voice, paused) =
-                (live.key.clone(), live.sent, live.voice.clone(), live.paused);
-            let source = match &voice {
-                Some((recipe, params)) => {
+            let (key, mix, voice, feed, paused) = (
+                live.key.clone(),
+                live.sent,
+                live.voice.clone(),
+                live.feed.clone(),
+                live.paused,
+            );
+            let source = match (&voice, feed) {
+                (Some((recipe, params)), _) => {
                     Source::Voice(Voice::with_params(*recipe, params.clone()))
                 }
-                None => Source::Clip(self.clip_or_default(&key)),
+                (None, Some(feed)) => Source::Feed(feed),
+                (None, None) => Source::Clip(self.clip_or_default(&key)),
             };
             match self.play_with_fallback(&key, source, true, mix) {
                 Some(channel) => {

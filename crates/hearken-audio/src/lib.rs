@@ -9,6 +9,7 @@ mod backend;
 mod clips;
 #[cfg(feature = "kira")]
 mod decode;
+mod feed;
 #[cfg(feature = "kira")]
 mod kira;
 mod open;
@@ -23,6 +24,7 @@ mod types;
 pub use self::kira::KiraBackend;
 pub use backend::{Backend, BackendError, Channel, Source};
 pub use clips::{ClipSource, LooseClips, MemoryClips};
+pub use feed::{Feed, FeedRead};
 pub use open::{NO_SOUND_NOTICE, SHUTDOWN_WAIT};
 pub use pool::{Audio, Fades, LiveSound, Sound};
 pub use recording::{Call, Recorder, RecordingBackend};

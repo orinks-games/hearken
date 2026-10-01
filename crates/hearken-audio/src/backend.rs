@@ -1,15 +1,18 @@
 //! The [`Backend`] trait every sound library implements, and what it plays.
 
+use crate::feed::Feed;
 use crate::types::Mix;
 use std::fmt;
 
 /// An opaque, backend-assigned id for one playing sound.
 pub type Channel = u64;
 
-/// What to play: loose clip bytes, or a live synth voice.
+/// What to play: loose clip bytes, a live synth voice, or a feed the backend
+/// pulls audio from.
 pub enum Source {
     Clip(std::sync::Arc<[u8]>),
     Voice(hearken_synth::Voice),
+    Feed(std::sync::Arc<dyn Feed>),
 }
 
 /// An error a backend reports back through [`Backend::play`].
