@@ -35,22 +35,13 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Cache BASS
-        uses: actions/cache@v4
-        with:
-          path: crates/hearken-bass-sys/vendor
-          key: bass-${{ runner.os }}-${{ hashFiles('tools/fetch_bass.py') }}
-
-      - name: Fetch BASS
-        run: python tools/fetch_bass.py
-
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Build without BASS
+      - name: Build without Kira
         run: cargo check -p hearken-app --no-default-features --locked
 
       - name: Tests

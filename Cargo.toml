@@ -11,7 +11,6 @@ repository = "https://github.com/Orinks/hearken"
 authors = ["Joshua Tubbs (Orinks)"]
 
 [workspace.dependencies]
-libloading = "0.8"
 log = "0.4"
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
@@ -24,7 +23,6 @@ hearken-speech = { path = "crates/hearken-speech" }
 hearken-app = { path = "crates/hearken-app" }
 hearken-synth = { path = "crates/hearken-synth" }
 hearken-audio = { path = "crates/hearken-audio", default-features = false }
-hearken-bass-sys = { path = "crates/hearken-bass-sys" }
 kira = { version = "0.12", default-features = false, features = ["cpal", "mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
 fundsp = { version = "0.23", default-features = false, features = ["std"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_WindowsAndMessaging"] }

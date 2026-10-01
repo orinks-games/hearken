@@ -10,8 +10,10 @@ of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
   help and pause screens, and a headless harness for tests.
 - `hearken-speech`: screen reader, braille and text-to-speech output
   through Prism.
-- `hearken-bass-sys`: bindings to the BASS audio library, loaded at run
-  time, including streams fed by a Rust closure.
+- `hearken-audio`: a pool of positioned sounds, buses and live voices,
+  played through Kira, which compiles into the game.
+- `hearken-synth`: fundsp recipes for live voices and the default sound for
+  every category, so a game makes sound with no sound files.
 - `template/`: Hello Hearken, the smallest complete game.
 
 ## Building
@@ -20,11 +22,9 @@ of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
 2. Install CMake 3.24 or newer and a C++23 compiler (Visual Studio 2022 on
    Windows). Prism is compiled from source the first time. To skip that,
    set `PRISM_LIB_DIR` to a folder holding a prebuilt Prism library.
-3. Install Python 3, for `tools/fetch_bass.py`.
-4. `python tools/fetch_bass.py` downloads BASS. BASS is free for
-   non-commercial use; a commercial game needs its own licence from
-   un4seen. Hearken never bundles it.
-5. `cargo run -p hello-hearken` starts the template game. Turn your screen
+3. On Linux, install ALSA's development files (`libasound2-dev` on Debian
+   and Ubuntu), which Kira's sound output builds against.
+4. `cargo run -p hello-hearken` starts the template game. Turn your screen
    reader on first; without one, Windows' SAPI voices speak instead.
 
 Every game needs a `build.rs` like `template/build.rs`. It passes on the link
@@ -37,5 +37,6 @@ script those arguments only from a direct dependency.
 
 ## Licence
 
-MIT or Apache-2.0, at your option. BASS and Prism's screen reader clients
-keep their own licences.
+MIT or Apache-2.0, at your option. Prism's screen reader clients keep their
+own licences. Kira's decoder, Symphonia, is MPL-2.0: a game that ships it
+unchanged says where its source is, in its credits or licence notes.

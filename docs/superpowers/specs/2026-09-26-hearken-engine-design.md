@@ -11,7 +11,7 @@ Hearken is a set of Rust crates for audio-first, screen-reader-first games,
 extracted from the two games that already share its design: Freight Fate and
 Lucky Break Casino. It gives a new game a window and loop, a screen stack,
 menus, key and controller bindings, settings and help screens, speech through
-Prism, 3D audio through BASS, synthesized and recorded sound, optional online
+Prism, 3D audio through Kira, synthesized and recorded sound, optional online
 services, and a headless test harness an AI assistant can play through.
 
 It exists because the next two games (a watersports arcade game and a
@@ -56,7 +56,7 @@ shape of its API: a new game should never have to look like Freight Fate.
   bridge, and no Python studio tool; the author makes files however they
   like and the engine takes files.
 - A second built-in audio library. The backend is a public trait, so a game
-  that does not want BASS brings its own.
+  that does not want Kira brings its own.
 
 ## Decisions already made
 
@@ -73,11 +73,12 @@ shape of its API: a new game should never have to look like Freight Fate.
 | Every built-in is a replaceable default | 2026-09-27 | Goal 7 |
 | No sound-source integrations; a layer is a file | 2026-09-27 | Drops ElevenLabs, the provider trait and `generate` layers |
 | No Faust bridge or Python studio tool | 2026-09-27 | Recipes are Rust on fundsp |
-| The audio backend is a public trait; BASS is a default feature | 2026-09-27 | A game may bring its own library, or leave BASS out |
+| The audio backend is a public trait; the built-in one is a default feature | 2026-09-27 | A game may bring its own library, or leave the built-in one out |
 | The engine does positioning; a backend is handed a mix | 2026-09-27 | Same sound on every library, tested without a device |
 | The audio API is handles and a pool | 2026-09-27 | Like NVGT's `sound_pool` |
 | Positions use NVGT's axes | 2026-09-27 | x east, y north, z up; facing in degrees clockwise from north |
 | M2 splits into M2 (runtime) and M2b (pipeline) | 2026-09-27 | |
+| Kira replaces BASS as the built-in backend; `hearken-bass-sys` is dropped | 2026-10-01 | Compiled in: no DLL to ship, no commercial licence. A game that needs BASS brings it behind the trait |
 | The speech ladder is generic and comes in M2 | 2026-09-27 | Game-declared categories and levels |
 
 ### Evidence behind the sound decision
@@ -104,7 +105,6 @@ every clip took 0.2 seconds. The spike's sources are kept in
 ```
 hearken/
   crates/
-    hearken-bass-sys   BASS C ABI, loaded at run time
     hearken-speech     prismer, speech worker, two channels, capture, fakes
     hearken-audio      handles and pool, positioning, backends, live voices
     hearken-synth      fundsp recipes, category defaults, layer helpers
@@ -117,24 +117,9 @@ hearken/
 ```
 
 Dependency direction is strictly downward: `hearken-app` depends on speech
-and audio; audio depends on bass-sys and synth; nothing depends on
+and audio; audio depends on synth and Kira; nothing depends on
 `hearken-app` except games, playtest and the template. `hearken-online` is
 optional and depends only on `hearken-app`'s service traits.
-
-### hearken-bass-sys
-
-Lucky Break's `bass-sys` (effects and the 3D API) is the base, plus the
-tracker-music and HLS-tag bindings Lucky Break dropped and Freight Fate still
-uses. The package is `hearken-bass-sys` because `bass-sys` is taken on
-crates.io; its library name stays `bass_sys`, so ported code keeps its
-imports. Changes:
-
-- Drop the `FREIGHT_FATE_BASS_PATH` legacy variable; the path variable
-  becomes `HEARKEN_BASS_PATH`, and a game may set its own name for it.
-- Add `BASS_StreamCreate` with a `STREAMPROC` callback, which live voices
-  need. Neither game binds it today.
-- BASS is never redistributed by the engine. `tools/fetch_bass.py` moves here;
-  the README states that a commercial game needs its own BASS licence.
 
 ### hearken-speech
 
@@ -242,9 +227,12 @@ Handles and a pool, like NVGT's `sound_pool`, with Freight Fate's safety.
   - A mix is gain, pan, pitch, an optional low-pass, and the position
     relative to the listener for a backend that does its own 3D (HRTF).
   - A backend never sees handles, buses or fades.
-  - M2 ships BASS (a default Cargo feature), a silent backend, and a
-    recording fake for tests.
-- **Choosing**: the game's own backend if it supplies one, else BASS when
+  - M2 shipped BASS; since 2026-10-01 the built-in backend is Kira (the
+    default `kira` Cargo feature), beside a silent backend and a recording
+    fake for tests. Kira's mixer runs one sub-track per sound, carrying its
+    gain, pan and low-pass; a clip over 256 KiB streams instead of decoding
+    whole, so starting music never stalls the loop.
+- **Choosing**: the game's own backend if it supplies one, else Kira when
   the feature is on, else silent. The backend opens off the loop, as Freight
   Fate's does: the game runs silent for its first frames, then the real
   backend is swapped in and the music and volumes set meanwhile are
@@ -334,7 +322,7 @@ The shell and everything a menu-driven audio game needs:
     speech", saved as `audio.volumes` by bus name, `audio.duck_for_speech`
     and `speech.verbosity`.
   - Pause pauses all sound and the speech pacer, and resumes both.
-  - A silent start (no BASS, no device) is said once through the notices.
+  - A silent start (no device) is said once through the notices.
   - `audio.shutdown()` is explicit and bounded; it runs after the game's
     `on_exit` and before speech shuts down.
 - **Services**: single-instance guard, file logging with a transcript
@@ -430,15 +418,15 @@ game that:
 - has the `build.rs` that delay-loads the screen-reader DLLs;
 - has one headless test that walks the menus and asserts the transcript;
 - has CI on pull requests, `v*` tags and manual dispatch, Windows only;
-- has a README for a first-time Rust developer covering the toolchain, BASS
-  and its licence, Prism's build requirements, and running the agent server
+- has a README for a first-time Rust developer covering the toolchain, the
+  decoder's licence note, Prism's build requirements, and running the agent server
   so an assistant can play the game.
 
 ## Failure handling
 
 Carried over from Freight Fate's engineering rules:
 
-- Optional everything: no BASS, silent audio; no screen reader, SAPI through
+- Optional everything: no sound device, silent audio; no screen reader, SAPI through
   Prism; missing layers, synthesis; no network, online features say so once
   and the game plays on.
 - Nothing unbounded on the loop: speech, audio device discovery, HTTP,
@@ -453,8 +441,8 @@ Carried over from Freight Fate's engineering rules:
 ## Testing
 
 - Each crate tests headless: speech through the capture sink, audio through
-  the silent backend (BASS-backed tests skip themselves without BASS and say
-  so), recipes render and are measured, the manifest parser and tier
+  the silent backend (Kira's backend tests run on Kira's mock output and
+  listen to what it renders, so they need no device), recipes render and are measured, the manifest parser and tier
   resolution are property-tested.
 - Positioning (pan, gain, the behind cue, occlusion) is plain unit tests;
   handles, buses, the duck and earcons are asserted through the recording
@@ -505,13 +493,15 @@ Each milestone gets its own implementation plan.
   Fate moves, a fix to any of those modules there gets ported to Hearken, so
   the move stays a swap. The extraction commit is recorded in each crate's
   docs.
-- **First-time setup is heavy.** A C++23 compiler and CMake for Prism, BASS
-  from a fetch script, SDL2 vendored for Windows. The template README covers
+- **First-time setup is heavy.** A C++23 compiler and CMake for Prism, SDL2
+  vendored for Windows, ALSA headers on Linux. The template README covers
   all of it on one page.
-- **BASS licence.** Free for non-commercial use only; commercial games need
-  their own licence, and the engine cannot bundle it. BASS is a default
-  Cargo feature, so a game that will not license it turns the feature off
-  and brings another library behind the public backend trait.
+- **Kira plays less than BASS did.** No tracker music and no HLS streams,
+  both of which Freight Fate uses. When it moves (M6) it keeps a BASS
+  backend of its own behind the public trait, under its own BASS licence.
+- **Decoder licence.** Kira decodes through Symphonia, MPL-2.0: a game that
+  ships it unchanged says where its source is; a game that changes its
+  files publishes those files.
 - **Source terms.** Each game's author is responsible for the terms of the
   sounds they use; the manifest's required provenance is what makes that
   checkable.

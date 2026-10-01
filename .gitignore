@@ -1,4 +1,1 @@
 /target
-# BASS is proprietary: fetched by tools/fetch_bass.py, never committed.
-crates/hearken-bass-sys/vendor/*/*bass*
-!crates/hearken-bass-sys/vendor/licenses/
