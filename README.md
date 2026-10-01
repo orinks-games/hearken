@@ -20,8 +20,9 @@ of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
 
 1. Install Rust with rustup; `rust-toolchain.toml` picks the version.
 2. Install CMake 3.24 or newer and a C++23 compiler (Visual Studio 2022 on
-   Windows). Prism is compiled from source the first time. To skip that,
-   set `PRISM_LIB_DIR` to a folder holding a prebuilt Prism library.
+   Windows). Prism and libopus, the Opus decoder, are compiled from source
+   the first time. To skip Prism's build, set `PRISM_LIB_DIR` to a folder
+   holding a prebuilt Prism library.
 3. On Linux, install ALSA's development files (`libasound2-dev` on Debian
    and Ubuntu), which Kira's sound output builds against.
 4. `cargo run -p hello-hearken` starts the template game. Turn your screen
@@ -38,5 +39,11 @@ script those arguments only from a direct dependency.
 ## Licence
 
 MIT or Apache-2.0, at your option. Prism's screen reader clients keep their
-own licences. Kira's decoder, Symphonia, is MPL-2.0: a game that ships it
-unchanged says where its source is, in its credits or licence notes.
+own licences. Two decoders compile into every game with sound, and its
+credits or licence notes carry what they ask:
+
+- Symphonia (MPL-2.0): where its source is, when shipped unchanged.
+- libopus (BSD-3-Clause): its copyright notice and licence text, from
+  [opus-codec.org/license](https://opus-codec.org/license/). Xiph's,
+  Broadcom's and Microsoft's Opus patents are licensed royalty-free; Vectis
+  IP's Opus pool covers hardware devices, not software.

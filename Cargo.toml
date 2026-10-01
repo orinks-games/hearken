@@ -23,7 +23,9 @@ hearken-speech = { path = "crates/hearken-speech" }
 hearken-app = { path = "crates/hearken-app" }
 hearken-synth = { path = "crates/hearken-synth" }
 hearken-audio = { path = "crates/hearken-audio", default-features = false }
-kira = { version = "0.12", default-features = false, features = ["cpal", "mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
+kira = { version = "0.12", default-features = false, features = ["cpal", "symphonia"] }
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
+symphonia-adapter-libopus = "0.3"
 fundsp = { version = "0.23", default-features = false, features = ["std"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_WindowsAndMessaging"] }
 

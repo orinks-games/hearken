@@ -10,12 +10,14 @@ authors.workspace = true
 
 [features]
 default = ["kira"]
-kira = ["dep:kira"]
+kira = ["dep:kira", "dep:symphonia", "dep:symphonia-adapter-libopus"]
 
 [dependencies]
 hearken-synth.workspace = true
 kira = { workspace = true, optional = true }
 log.workspace = true
+symphonia = { workspace = true, optional = true }
+symphonia-adapter-libopus = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

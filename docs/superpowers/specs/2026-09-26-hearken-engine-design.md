@@ -79,6 +79,8 @@ shape of its API: a new game should never have to look like Freight Fate.
 | Positions use NVGT's axes | 2026-09-27 | x east, y north, z up; facing in degrees clockwise from north |
 | M2 splits into M2 (runtime) and M2b (pipeline) | 2026-09-27 | |
 | Kira replaces BASS as the built-in backend; `hearken-bass-sys` is dropped | 2026-10-01 | Compiled in: no DLL to ship, no commercial licence. A game that needs BASS brings it behind the trait |
+| Opus decodes through libopus, compiled in | 2026-10-01 | Symphonia has no Opus decoder yet, and Freight Fate's music and most of its sounds are Opus. libopus is BSD-3: its notice ships with the game |
+| Internet radio becomes an optional `streams` feature of `hearken-audio`, not BASS | 2026-10-01 | The point of Kira was no BASS; spec to follow |
 | The speech ladder is generic and comes in M2 | 2026-09-27 | Game-declared categories and levels |
 
 ### Evidence behind the sound decision
@@ -231,7 +233,9 @@ Handles and a pool, like NVGT's `sound_pool`, with Freight Fate's safety.
     default `kira` Cargo feature), beside a silent backend and a recording
     fake for tests. Kira's mixer runs one sub-track per sound, carrying its
     gain, pan and low-pass; a clip over 256 KiB streams instead of decoding
-    whole, so starting music never stalls the loop.
+    whole, so starting music never stalls the loop. Clips decode through
+    Symphonia plus libopus for Opus, outside Kira, whose own loaders take
+    no extra codecs.
 - **Choosing**: the game's own backend if it supplies one, else Kira when
   the feature is on, else silent. The backend opens off the loop, as Freight
   Fate's does: the game runs silent for its first frames, then the real
@@ -493,15 +497,16 @@ Each milestone gets its own implementation plan.
   Fate moves, a fix to any of those modules there gets ported to Hearken, so
   the move stays a swap. The extraction commit is recorded in each crate's
   docs.
-- **First-time setup is heavy.** A C++23 compiler and CMake for Prism, SDL2
+- **First-time setup is heavy.** A C++23 compiler and CMake for Prism and libopus, SDL2
   vendored for Windows, ALSA headers on Linux. The template README covers
   all of it on one page.
-- **Kira plays less than BASS did.** No tracker music and no HLS streams,
-  both of which Freight Fate uses. When it moves (M6) it keeps a BASS
-  backend of its own behind the public trait, under its own BASS licence.
-- **Decoder licence.** Kira decodes through Symphonia, MPL-2.0: a game that
-  ships it unchanged says where its source is; a game that changes its
-  files publishes those files.
+- **Kira plays less than BASS did.** No internet radio yet, which Freight
+  Fate uses; it comes as the optional `streams` feature before Freight Fate
+  moves (M6). No tracker music either, which Freight Fate supports but
+  ships none of.
+- **Decoder licences.** Symphonia is MPL-2.0: a game that ships it
+  unchanged says where its source is; a game that changes its files
+  publishes those files. libopus is BSD-3: a game ships its notice.
 - **Source terms.** Each game's author is responsible for the terms of the
   sounds they use; the manifest's required provenance is what makes that
   checkable.

@@ -365,3 +365,72 @@ fn a_nonsense_pitch_on_a_voice_still_renders_sound() {
     assert!(frames.iter().all(|f| f.left.is_finite()));
     assert!(rms(&frames[1_000..]) > 0.1);
 }
+
+// The Opus fixtures are 440 Hz tones at half scale (ffmpeg's sine is 1/8
+// scale; +12 dB), made with:
+//   ffmpeg -f lavfi -i sine=frequency=440:duration=1 -af volume=12dB -ac 1 -c:a libopus -b:a 48k tone.opus
+//   ffmpeg -f lavfi -i sine=frequency=440:duration=4.5 -af volume=12dB -ac 2 -c:a libopus -b:a 512k -vbr off tone_long.opus
+const OPUS: &[u8] = include_bytes!("fixtures/tone.opus");
+/// 4.5 s at a constant 512 kbps: over the streaming cut.
+const OPUS_LONG: &[u8] = include_bytes!("fixtures/tone_long.opus");
+
+#[test]
+fn an_opus_clip_is_heard_at_its_own_pitch() {
+    let mut r = rig();
+    r.b.play("sfx/opus", Source::Clip(OPUS.into()), false, Mix::UNITY)
+        .expect("play");
+    let frames = r.render(RATE as usize / 2);
+    assert!(rms(&frames[4_410..]) > 0.2, "it makes sound");
+    // 48 kHz Opus played at the output's 44.1 kHz: still 440 Hz.
+    let n = crossings(&frames[4_410..8_820]);
+    assert!(
+        (84..=92).contains(&n),
+        "440 Hz for 0.1 s crosses ~88 times: {n}"
+    );
+}
+
+#[test]
+fn a_long_opus_clip_streams_and_loops() {
+    let mut r = rig();
+    assert!(OPUS_LONG.len() > 256 * 1024);
+    let ch =
+        r.b.play(
+            "music/opus",
+            Source::Clip(OPUS_LONG.into()),
+            true,
+            Mix::UNITY,
+        )
+        .expect("play");
+    // Past the clip's 4.5 s end, giving the decoder thread time to keep up.
+    let mut rendered = 0;
+    while rendered < 5 * RATE as usize {
+        rendered += r.render(1_024).len();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    r.b.update();
+    assert!(r.b.is_playing(ch), "a loop outlasts its clip");
+    let mut heard = false;
+    for _ in 0..200 {
+        if rms(&r.render(1_024)) > 0.2 {
+            heard = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(heard, "the stream looped back to sound");
+}
+
+#[test]
+fn a_truncated_opus_clip_is_an_error_not_a_panic() {
+    let mut r = rig();
+    // Cut inside the Opus header page.
+    let err = r.b.play(
+        "sfx/bad",
+        Source::Clip(OPUS[..40].into()),
+        false,
+        Mix::UNITY,
+    );
+    assert!(err.is_err());
+    r.render(256);
+    assert_eq!(r.sub_tracks(), 0, "the failed sound's track did not leak");
+}

@@ -6,12 +6,14 @@ fn a_key_finds_its_file_by_folder_and_any_known_extension() {
     std::fs::create_dir_all(dir.path().join("ui")).unwrap();
     std::fs::write(dir.path().join("ui/menu_move.wav"), b"RIFF-ish").unwrap();
     std::fs::write(dir.path().join("door.ogg"), b"OggS").unwrap();
+    std::fs::write(dir.path().join("theme.opus"), b"OggS-opus").unwrap();
     let mut clips = LooseClips::at(dir.path());
     assert_eq!(
         clips.load("ui/menu_move").as_deref(),
         Some(&b"RIFF-ish"[..])
     );
     assert_eq!(clips.load("door").as_deref(), Some(&b"OggS"[..]));
+    assert_eq!(clips.load("theme").as_deref(), Some(&b"OggS-opus"[..]));
     assert!(clips.load("ui/nothing").is_none());
 }
 

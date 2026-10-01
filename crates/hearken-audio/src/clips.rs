@@ -31,7 +31,7 @@ pub struct LooseClips {
 
 impl LooseClips {
     /// Extensions appended to every key, in order, when looking for its file.
-    pub const EXTENSIONS: [&'static str; 3] = ["ogg", "wav", "mp3"];
+    pub const EXTENSIONS: [&'static str; 5] = ["ogg", "opus", "wav", "flac", "mp3"];
 
     /// Loads clips from `root`.
     pub fn at(root: impl Into<PathBuf>) -> LooseClips {

@@ -16,7 +16,6 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::io::Cursor;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,8 +24,8 @@ use hearken_synth::Voice;
 use kira::effect::filter::{FilterBuilder, FilterHandle};
 use kira::effect::panning_control::{PanningControlBuilder, PanningControlHandle};
 use kira::info::Info;
-use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
-use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
+use kira::sound::static_sound::StaticSoundHandle;
+use kira::sound::streaming::StreamingSoundHandle;
 use kira::sound::{FromFileError, PlaybackState, Sound, SoundData};
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{
@@ -35,6 +34,7 @@ use kira::{
 };
 
 use crate::backend::{Backend, BackendError, Channel, Source};
+use crate::decode;
 use crate::types::Mix;
 
 /// How many sounds can play at once: one Kira sub-track each.
@@ -183,7 +183,7 @@ fn play_clip(
     pitch: f32,
 ) -> Result<Playing, BackendError> {
     if bytes.len() > STREAM_OVER_BYTES {
-        let mut data = StreamingSoundData::from_cursor(Cursor::new(bytes))
+        let mut data = decode::stream(bytes)
             .map_err(backend_error)?
             .playback_rate(rate(pitch));
         if looping {
@@ -191,7 +191,7 @@ fn play_clip(
         }
         track.play(data).map(Playing::Stream).map_err(backend_error)
     } else {
-        let mut data = StaticSoundData::from_cursor(Cursor::new(bytes))
+        let mut data = decode::decode_whole(bytes)
             .map_err(backend_error)?
             .playback_rate(rate(pitch));
         if looping {

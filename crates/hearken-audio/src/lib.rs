@@ -8,6 +8,8 @@
 mod backend;
 mod clips;
 #[cfg(feature = "kira")]
+mod decode;
+#[cfg(feature = "kira")]
 mod kira;
 mod open;
 mod pool;
