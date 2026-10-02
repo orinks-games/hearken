@@ -1,6 +1,7 @@
 //! The game's side of a station: a cheap handle, and the fields it shares
 //! with the worker thread.
 
+use std::fmt;
 use std::io;
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +31,8 @@ pub enum StreamState {
     /// Buffered and playing.
     Playing,
     /// The station dropped and is being called again; what was buffered
-    /// plays out, then silence.
+    /// plays out, then silence. New audio is held until the prebuffer is
+    /// rebuilt.
     Reconnecting,
     /// Given up, for the reason given. Open a new `Stream` to try again.
     Failed(String),
@@ -98,6 +100,8 @@ impl Stream {
         Stream(Arc::new(Handle { shared }))
     }
 
+    /// Where the station is up to. Never blocks, so it can be polled every
+    /// frame.
     pub fn state(&self) -> StreamState {
         self.0.shared.state()
     }
@@ -108,9 +112,19 @@ impl Stream {
     }
 
     /// The audio, for `Audio::start_feed`. Silent until the stream first
-    /// plays, then whatever is buffered.
+    /// plays, and after a reconnect until the prebuffer is rebuilt; between,
+    /// whatever is buffered.
     pub fn feed(&self) -> Arc<dyn Feed> {
         self.0.clone()
+    }
+}
+
+impl fmt::Debug for Stream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Stream")
+            .field("url", &self.0.shared.url)
+            .field("state", &self.state())
+            .finish_non_exhaustive()
     }
 }
 

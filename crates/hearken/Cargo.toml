@@ -9,7 +9,6 @@ repository.workspace = true
 authors.workspace = true
 # Republishes Prism's delay-load list under this crate's name (see build.rs).
 links = "hearken"
-build = "build.rs"
 
 [features]
 default = ["kira"]

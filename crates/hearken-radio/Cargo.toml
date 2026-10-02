@@ -10,8 +10,8 @@ authors.workspace = true
 
 [features]
 # Fraunhofer's FDK AAC in place of Symphonia's AAC: it decodes HE-AAC, which
-# Symphonia's does not. Opt-in because Fraunhofer's licence grants no patent
-# rights (see the README).
+# Symphonia's does not. Opt-in because Fraunhofer's licence permits use only
+# under AAC patent licences the game holds (see the README).
 fdk-aac = ["dep:symphonia-adapter-fdk-aac"]
 
 [dependencies]

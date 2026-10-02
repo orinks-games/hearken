@@ -361,11 +361,11 @@ Decided with the user on 2026-10-01: the drop-oldest ring and Task 6's HLS pacin
 
 - [ ] **Step 1: Write the failing test** in `codecs.rs`: `#[cfg(feature = "fdk-aac")] #[test] fn fdk_aac_takes_aac_when_enabled()`. It makes an AAC decoder from `codecs::registry()` and asserts that its `codec_info().profiles` list HE-AAC, which only the fdk adapter's do (both decoders are named "aac").
 - [ ] **Step 2: Run `cargo test -p hearken-radio --features fdk-aac fdk`.** Expected: FAIL.
-- [ ] **Step 3: Implement.** Under `fdk-aac`, register the fdk decoder at `Tier::Preferred`, so it takes AAC (a same-tier registration is replaced by Symphonia's, whichever goes first).
+- [ ] **Step 3: Implement.** Under `fdk-aac`, register the fdk decoder at `Tier::Preferred`, so it takes AAC (within one tier the last registration wins; at Preferred, FDK wins in either order).
 - [ ] **Step 4: Run `cargo test -p hearken-radio --features fdk-aac`.** Expected: every radio test passes with fdk decoding the AAC fixtures.
 - [ ] **Step 5: Listening pass.** `tests/live.rs` has one `#[ignore]` test. It plays four stations from Freight Fate's `data/radio_catalog.json`: the first MP3, AAC, Ogg and `.m3u8` URL there, copied in as constants. Each plays for 10 s, and the test prints its URL, state and title. Run `cargo test -p hearken-radio --test live -- --ignored --nocapture` once and read the output.
 - [ ] **Step 6: Docs and CI.**
-  - README: a "Features" list with `radio` (internet radio) and `fdk-aac`. The `fdk-aac` entry says Fraunhofer's licence allows shipping it but grants no patent rights, so a game that turns it on takes the HE-AAC patent question on itself.
+  - README: a "Features" list with `radio` (internet radio) and `fdk-aac`. The `fdk-aac` entry says Fraunhofer's licence permits use only under AAC patent licences the game holds, and grants none.
   - The licence list gains the new crates, per the spec's Licences section.
   - CI adds a step `cargo check -p hearken --features fdk-aac --locked`; run `actionlint`.
 - [ ] **Step 7: Final gates.**

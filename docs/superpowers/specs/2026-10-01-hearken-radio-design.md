@@ -141,8 +141,8 @@ audio.stop(sound, 800);
 3. **Decode** with radio's own codec registry: Symphonia's enabled codecs,
    AAC (its `aac` feature, which also registers the ADTS reader), libopus,
    and under `fdk-aac` the `symphonia-adapter-fdk-aac` 0.2 decoder,
-   registered at the preferred tier so it takes AAC (a same-tier
-   registration is replaced by Symphonia's, whichever goes first).
+   registered at the preferred tier so it takes AAC (within one tier the
+   last registration wins; at Preferred, FDK wins in either order).
 4. **Titles**, whichever arrived last:
    - ICY `StreamTitle`, from radio's own ICY reader around the response
      (`icy-metadata`'s reader panics on the short reads of a real socket),
@@ -187,10 +187,12 @@ audio.stop(sound, 800);
   (MIT), `mpeg2ts` (MIT), `url` (MIT/Apache), Symphonia's AAC (MPL-2.0, as
   the rest of Symphonia). No DLLs.
 - `fdk-aac` adds `symphonia-adapter-fdk-aac` ((MIT or Apache-2.0) and
-  MPL-2.0) and Fraunhofer's FDK AAC library, compiled in. Fraunhofer's
-  licence allows shipping it but grants no patent rights; a game that turns
-  it on takes the HE-AAC patent question on itself. The README says so where
-  it lists the feature.
+  MPL-2.0), the `fdk-aac` and `fdk-aac-sys` crates (MIT) and Fraunhofer's
+  FDK AAC library, compiled in. Fraunhofer's licence lets a game ship it if
+  the game keeps the licence text and offers the FDK AAC source, but it
+  permits use only under AAC patent licences the game holds, and grants
+  none: a game without them is not licensed to use it at all. The README
+  says so where it lists the feature.
 
 ## Testing
 

@@ -12,8 +12,8 @@ pub(crate) fn registry() -> &'static CodecRegistry {
     CODECS.get_or_init(|| {
         let mut codecs = CodecRegistry::new();
         symphonia::default::register_enabled_codecs(&mut codecs);
-        // Preferred, not Standard: a Standard registration is replaced by
-        // Symphonia's own AAC, whichever of the two is registered first.
+        // Preferred, not Standard: at one tier the decoder registered last
+        // takes the codec. At Preferred, FDK wins in either order.
         #[cfg(feature = "fdk-aac")]
         codecs.register_audio_decoder_at_tier::<symphonia_adapter_fdk_aac::AacDecoder>(
             symphonia::core::common::Tier::Preferred,

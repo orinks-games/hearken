@@ -27,9 +27,9 @@ opt-in:
 - `radio`: internet radio, as `hearken::radio::Stream`.
 - `fdk-aac`: Fraunhofer's FDK AAC decodes radio's AAC in place of
   Symphonia's, adding HE-AAC, which Symphonia's does not decode. It turns on
-  `radio`. Fraunhofer's licence allows shipping it but grants no patent
-  rights, so a game that turns it on takes the HE-AAC patent question on
-  itself.
+  `radio`. Fraunhofer's licence permits using FDK AAC only under AAC patent
+  licences the game holds, and grants none itself: a game without them is
+  not licensed to use it at all.
 
 ## Building
 
@@ -68,9 +68,15 @@ The opt-in features compile in more, all of it into the game, with no DLLs:
 - `radio`: `ureq`, `icy-metadata` and `url` (each MIT or Apache-2.0),
   `m3u8-rs` and `mpeg2ts` (MIT), and Symphonia's AAC decoder (MPL-2.0, as
   the rest of Symphonia). `ureq`'s TLS is rustls, which is built on `ring`
-  (Apache-2.0 and ISC).
-- `fdk-aac`: `symphonia-adapter-fdk-aac` ((MIT or Apache-2.0) and MPL-2.0)
-  and Fraunhofer's FDK AAC library, under its own licence. That licence
-  asks the game to keep its complete text with its credits or licence notes
-  and to make the FDK AAC source available free of charge to anyone who gets
-  the game, and it grants no patent rights: see Features.
+  (Apache-2.0 and ISC) and brings in `rustls-webpki` and `untrusted` (ISC).
+  `url` brings in ICU's Unicode data through `idna` (Unicode-3.0).
+- `fdk-aac`: `symphonia-adapter-fdk-aac` ((MIT or Apache-2.0) and MPL-2.0),
+  the `fdk-aac` and `fdk-aac-sys` crates (MIT), and Fraunhofer's FDK AAC
+  library, under its own licence. That licence asks the game to keep its
+  complete text with its credits or licence notes and to make the FDK AAC
+  source available free of charge to anyone who gets the game. It permits
+  use only under AAC patent licences the game holds, and grants none: see
+  Features.
+
+These lists name the notable licences, not every crate's. `cargo about`
+builds the complete notice for what a game actually compiles in.

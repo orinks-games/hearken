@@ -72,7 +72,7 @@ impl Ring {
 mod tests {
     use super::*;
 
-    /// `n` frames at `rate`, each valued by its index from `from`.
+    /// `n` frames, each valued by its index from `from`.
     fn frames(from: usize, n: usize) -> Vec<[f32; 2]> {
         (from..from + n).map(|i| [i as f32; 2]).collect()
     }
