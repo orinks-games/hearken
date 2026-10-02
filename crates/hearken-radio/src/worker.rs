@@ -6,10 +6,10 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
 use icy_metadata::error::MetadataParseError;
-use icy_metadata::IcyMetadataReader;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::ReadOnlySource;
 
+use crate::icy::IcyReader;
 use crate::playlist::Kind;
 use crate::stream::{Fault, Shared, StreamOptions, StreamState};
 use crate::{decode, hls, http, playlist, title};
@@ -115,7 +115,7 @@ fn listen(
 ) -> Fault {
     // Title blocks come out of the body before the decoder reads it.
     let titles = shared.clone();
-    let body = IcyMetadataReader::new(body, icy_metaint, move |block| {
+    let body = IcyReader::new(body, icy_metaint, move |block| {
         let current = match block {
             Ok(metadata) => metadata.stream_title().and_then(title::tidy),
             Err(MetadataParseError::InvalidUtf8(error)) => title::icy(&error.into_bytes()),

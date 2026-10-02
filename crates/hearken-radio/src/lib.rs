@@ -7,6 +7,7 @@ mod codecs;
 mod decode;
 mod hls;
 mod http;
+mod icy;
 mod playlist;
 mod ring;
 mod stream;
