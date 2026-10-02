@@ -1,5 +1,6 @@
 //! Radio's own codec registry: Symphonia's enabled codecs (with AAC, for
-//! the many AAC stations) and libopus, which Symphonia lacks.
+//! the many AAC stations) and libopus, which Symphonia lacks. Under
+//! `fdk-aac`, FDK AAC decodes AAC instead, adding HE-AAC.
 
 use std::sync::OnceLock;
 
@@ -11,7 +12,38 @@ pub(crate) fn registry() -> &'static CodecRegistry {
     CODECS.get_or_init(|| {
         let mut codecs = CodecRegistry::new();
         symphonia::default::register_enabled_codecs(&mut codecs);
+        // Preferred, not Standard: a Standard registration is replaced by
+        // Symphonia's own AAC, whichever of the two is registered first.
+        #[cfg(feature = "fdk-aac")]
+        codecs.register_audio_decoder_at_tier::<symphonia_adapter_fdk_aac::AacDecoder>(
+            symphonia::core::common::Tier::Preferred,
+        );
         codecs.register_audio_decoder::<OpusDecoder>();
         codecs
     })
+}
+
+#[cfg(all(test, feature = "fdk-aac"))]
+mod tests {
+    use symphonia::core::audio::Channels;
+    use symphonia::core::codecs::audio::well_known::CODEC_ID_AAC;
+    use symphonia::core::codecs::audio::AudioCodecParameters;
+
+    use super::registry;
+
+    /// Both AAC decoders call themselves "aac", so the profiles tell them
+    /// apart: only FDK lists HE-AAC.
+    #[test]
+    fn fdk_aac_takes_aac_when_enabled() {
+        let mut params = AudioCodecParameters::new();
+        params
+            .for_codec(CODEC_ID_AAC)
+            .with_sample_rate(44_100)
+            .with_channels(Channels::Discrete(2));
+        let decoder = registry()
+            .make_audio_decoder(&params, &Default::default())
+            .expect("an AAC decoder");
+        let profiles = decoder.codec_info().profiles;
+        assert!(profiles.iter().any(|p| p.short_name == "aac-he"));
+    }
 }

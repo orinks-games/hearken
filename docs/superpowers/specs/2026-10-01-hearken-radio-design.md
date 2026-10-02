@@ -141,9 +141,12 @@ audio.stop(sound, 800);
 3. **Decode** with radio's own codec registry: Symphonia's enabled codecs,
    AAC (its `aac` feature, which also registers the ADTS reader), libopus,
    and under `fdk-aac` the `symphonia-adapter-fdk-aac` 0.2 decoder,
-   registered first so it takes AAC.
+   registered at the preferred tier so it takes AAC (a same-tier
+   registration is replaced by Symphonia's, whichever goes first).
 4. **Titles**, whichever arrived last:
-   - ICY `StreamTitle`, from `icy-metadata`'s reader around the response.
+   - ICY `StreamTitle`, from radio's own ICY reader around the response
+     (`icy-metadata`'s reader panics on the short reads of a real socket),
+     parsed with `icy-metadata`.
    - Ogg comments from Symphonia's metadata as each chained track starts,
      as `ARTIST - TITLE` (either alone when the other is missing).
    - HLS `#EXTINF` titles, dropping empty ones and "no desc".

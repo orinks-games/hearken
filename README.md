@@ -15,7 +15,21 @@ of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
   played through Kira, which compiles into the game.
 - `hearken-synth`: fundsp recipes for live voices and the default sound for
   every category, so a game makes sound with no sound files.
+- `hearken-radio`: internet radio, played as a feed: HTTP and ICY stations,
+  playlists and live HLS, with now-playing titles.
 - `template/`: Hello Hearken, the smallest complete game.
+
+## Features
+
+`hearken`'s `kira` feature, which plays sound, is on by default. These are
+opt-in:
+
+- `radio`: internet radio, as `hearken::radio::Stream`.
+- `fdk-aac`: Fraunhofer's FDK AAC decodes radio's AAC in place of
+  Symphonia's, adding HE-AAC, which Symphonia's does not decode. It turns on
+  `radio`. Fraunhofer's licence allows shipping it but grants no patent
+  rights, so a game that turns it on takes the HE-AAC patent question on
+  itself.
 
 ## Building
 
@@ -48,3 +62,15 @@ credits or licence notes carry what they ask:
   [opus-codec.org/license](https://opus-codec.org/license/). Xiph's,
   Broadcom's and Microsoft's Opus patents are licensed royalty-free; Vectis
   IP's Opus pool covers hardware devices, not software.
+
+The opt-in features compile in more, all of it into the game, with no DLLs:
+
+- `radio`: `ureq`, `icy-metadata` and `url` (each MIT or Apache-2.0),
+  `m3u8-rs` and `mpeg2ts` (MIT), and Symphonia's AAC decoder (MPL-2.0, as
+  the rest of Symphonia). `ureq`'s TLS is rustls, which is built on `ring`
+  (Apache-2.0 and ISC).
+- `fdk-aac`: `symphonia-adapter-fdk-aac` ((MIT or Apache-2.0) and MPL-2.0)
+  and Fraunhofer's FDK AAC library, under its own licence. That licence
+  asks the game to keep its complete text with its credits or licence notes
+  and to make the FDK AAC source available free of charge to anyone who gets
+  the game, and it grants no patent rights: see Features.

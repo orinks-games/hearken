@@ -44,5 +44,8 @@ jobs:
       - name: Build without Kira
         run: cargo check -p hearken --no-default-features --locked
 
+      - name: Build with fdk-aac
+        run: cargo check -p hearken --features fdk-aac --locked
+
       - name: Tests
         run: cargo test --workspace --locked

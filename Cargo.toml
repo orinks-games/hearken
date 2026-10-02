@@ -28,6 +28,7 @@ hearken-radio = { path = "crates/hearken-radio" }
 kira = { version = "0.12", default-features = false, features = ["cpal", "symphonia"] }
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
 symphonia-adapter-libopus = "0.3"
+symphonia-adapter-fdk-aac = "0.2"
 ureq = { version = "2.12", default-features = false, features = ["tls", "native-certs"] }
 icy-metadata = { version = "0.6", default-features = false }
 url = "2"

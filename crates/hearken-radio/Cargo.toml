@@ -8,6 +8,12 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Fraunhofer's FDK AAC in place of Symphonia's AAC: it decodes HE-AAC, which
+# Symphonia's does not. Opt-in because Fraunhofer's licence grants no patent
+# rights (see the README).
+fdk-aac = ["dep:symphonia-adapter-fdk-aac"]
+
 [dependencies]
 hearken-audio.workspace = true
 icy-metadata.workspace = true
@@ -16,6 +22,7 @@ m3u8-rs.workspace = true
 mpeg2ts.workspace = true
 # AAC also registers Symphonia's ADTS reader, the format most AAC stations send.
 symphonia = { workspace = true, features = ["aac"] }
+symphonia-adapter-fdk-aac = { workspace = true, optional = true }
 symphonia-adapter-libopus.workspace = true
 ureq.workspace = true
 url.workspace = true
