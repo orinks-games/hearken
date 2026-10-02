@@ -23,6 +23,9 @@ pub enum Reply {
     Endless(&'static str, Vec<u8>, Option<Vec<u8>>),
     /// Like `Endless` without ICY, closing after this many body bytes.
     Cut(&'static str, Vec<u8>, usize),
+    /// Like `Cut`, but going silent after this many body bytes, the
+    /// connection held open.
+    Stall(&'static str, Vec<u8>, usize),
     /// Like `Endless` without ICY, as fast as the client takes it.
     Flood(&'static str, Vec<u8>),
     /// Accept, read the request, send nothing.
@@ -152,6 +155,14 @@ fn serve(socket: TcpStream, log: &Log, route: &dyn Fn(&str) -> Reply) -> io::Res
                 "HTTP/1.0 200 OK\r\nContent-Type: {content_type}\r\n\r\n"
             )?;
             paced(out, &body, Some(n), None, PACE.1, &sent)
+        }
+        Reply::Stall(content_type, body, n) => {
+            write!(
+                out,
+                "HTTP/1.0 200 OK\r\nContent-Type: {content_type}\r\n\r\n"
+            )?;
+            paced(out, &body, Some(n), None, PACE.1, &sent)?;
+            io::copy(&mut reader, &mut io::sink()).map(drop)
         }
         Reply::Flood(content_type, body) => {
             write!(

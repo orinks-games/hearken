@@ -163,10 +163,10 @@ pub(crate) struct Shared {
     /// Buffered this much, the stream plays.
     prebuffer: Duration,
     state: Mutex<StreamState>,
-    /// When the station was last called, and when that call began to play:
-    /// the log's timing, and whether a call that dropped had played long
-    /// enough to earn back its retries.
-    call: Mutex<(Instant, Option<Instant>)>,
+    /// When the station was last called, and from when that call began to
+    /// play until its latest audio: the log's timing, and whether a call
+    /// that dropped had played long enough to earn back its retries.
+    call: Mutex<(Instant, Option<(Instant, Instant)>)>,
     title: Mutex<Option<String>>,
     ring: Mutex<Ring>,
     /// Signalled when the feed takes audio or the stream closes, for a push
@@ -213,7 +213,8 @@ impl Shared {
             self.started.store(true, Ordering::Release);
             let called = {
                 let mut call = lock(&self.call);
-                call.1 = Some(Instant::now());
+                let now = Instant::now();
+                call.1 = Some((now, now));
                 call.0
             };
             let after = called.elapsed().as_millis();
@@ -227,9 +228,12 @@ impl Shared {
         *lock(&self.call) = (Instant::now(), None);
     }
 
-    /// How long the current call has been playing; zero until it plays.
+    /// How long the current call played, up to its latest audio: the dead
+    /// air before a timeout or stall is not good playback. Zero until it
+    /// plays.
     pub(crate) fn played(&self) -> Duration {
-        lock(&self.call).1.map_or(Duration::ZERO, |at| at.elapsed())
+        let span = lock(&self.call).1;
+        span.map_or(Duration::ZERO, |(from, to)| to.duration_since(from))
     }
 
     pub(crate) fn set_title(&self, title: Option<String>) {
@@ -256,6 +260,9 @@ impl Shared {
             // rebuilt, so it is heard as a cushion again rather than played
             // packet by packet as it lands.
             self.started.store(false, Ordering::Release);
+        }
+        if let Some((_, latest)) = &mut lock(&self.call).1 {
+            *latest = Instant::now();
         }
     }
 

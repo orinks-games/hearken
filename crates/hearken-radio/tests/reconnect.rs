@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hearken_radio::{Stream, StreamState};
+use hearken_radio::{Stream, StreamOptions, StreamState};
 use support::{failed, fast, listen, playing, wait_for, Reply, TestServer};
 
 /// The tone from `tests/http.rs`; see there for how it is made.
@@ -101,6 +101,26 @@ fn good_playback_resets_the_retry_count() {
         server.hits("/live.mp3") >= 5 || failed(&stream).is_some()
     });
     assert_eq!(failed(&stream), None);
+}
+
+#[test]
+fn dead_air_before_a_timeout_is_not_good_playback() {
+    // Half a second of audio, then silence until the client gives up.
+    let server = TestServer::start(|_| Reply::Stall("audio/mpeg", TONE.to_vec(), 4 * 1024));
+    // The timeout alone outlasts `healthy_after` (1 s); the audio does not.
+    let options = StreamOptions {
+        timeout: Duration::from_secs(2),
+        stall: Duration::from_secs(2),
+        ..fast()
+    };
+    let stream = Stream::open_with(&server.url("/live.mp3"), options);
+    let _listener = listen(&stream);
+    wait_for("Failed", Duration::from_secs(10), || {
+        failed(&stream).is_some()
+    });
+    let reason = failed(&stream).unwrap();
+    assert!(reason.contains("timed out"), "{reason}");
+    assert_eq!(server.hits("/live.mp3"), 1 + fast().retry_delays.len());
 }
 
 #[test]
