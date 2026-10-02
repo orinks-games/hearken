@@ -46,9 +46,11 @@ pub struct StreamOptions {
     pub healthy_after: Duration,
     /// This long with no decoded audio counts as a dropped stream.
     pub stall: Duration,
-    /// How much audio to buffer before playing.
+    /// How much audio to buffer before playing; kept below `buffer`.
     pub prebuffer: Duration,
-    /// The most audio to hold; past it, the oldest is dropped.
+    /// The most audio to hold. Once it is held, the station is read no
+    /// further until the feed makes room, so a paused stream resumes where
+    /// it paused.
     pub buffer: Duration,
 }
 
@@ -74,7 +76,11 @@ impl Stream {
 
     /// Starts playing `url`. Never blocks: a bad URL or a failure to start
     /// shows up as [`StreamState::Failed`].
-    pub fn open_with(url: &str, options: StreamOptions) -> Stream {
+    pub fn open_with(url: &str, mut options: StreamOptions) -> Stream {
+        // Only the feed makes room in a full buffer, and it is silent until
+        // the stream plays: the prebuffer must come first.
+        let below = options.buffer.saturating_sub(Duration::from_millis(1));
+        options.prebuffer = options.prebuffer.min(below);
         let shared = Arc::new(Shared::new(&options));
         let worker = shared.clone();
         let url = url.to_owned();
@@ -121,6 +127,10 @@ impl Drop for Handle {
     fn drop(&mut self) {
         *lock(&self.shared.closed) = true;
         self.shared.wake.notify_all();
+        // Through the ring's lock, so a push between seeing the ring full and
+        // waiting still hears this.
+        drop(lock(&self.shared.ring));
+        self.shared.room.notify_all();
     }
 }
 
@@ -141,11 +151,15 @@ impl From<io::Error> for Fault {
 }
 
 /// The fields the game, the audio thread and the worker share. Every lock is
-/// held only to copy in or out, never across I/O.
+/// held only to copy in or out, never across I/O. `closed` may be locked
+/// inside `ring`, never the other way round.
 pub(crate) struct Shared {
     state: Mutex<StreamState>,
     title: Mutex<Option<String>>,
     ring: Mutex<Ring>,
+    /// Signalled when the feed takes audio or the stream closes, for a push
+    /// waiting on a full ring.
+    room: Condvar,
     /// Set once the stream first plays: until then the feed stays silent,
     /// so the prebuffer is heard as a cushion, not drained as it fills.
     started: AtomicBool,
@@ -159,6 +173,7 @@ impl Shared {
             state: Mutex::new(StreamState::Connecting),
             title: Mutex::new(None),
             ring: Mutex::new(Ring::new(options.buffer)),
+            room: Condvar::new(),
             started: AtomicBool::new(false),
             closed: Mutex::new(false),
             wake: Condvar::new(),
@@ -176,9 +191,16 @@ impl Shared {
         *lock(&self.title) = title;
     }
 
-    /// Adds decoded frames at `rate`, which must not be 0.
+    /// Adds decoded frames at `rate`, which must not be 0, once the ring has
+    /// room: the station is read no faster than it is heard, as BASS did.
+    /// Returns at once when the stream closes.
     pub(crate) fn push(&self, rate: u32, frames: Vec<[f32; 2]>) {
-        lock(&self.ring).push(rate, frames);
+        let ring = lock(&self.ring);
+        let mut ring = self
+            .room
+            .wait_while(ring, |ring| ring.full() && !self.closed())
+            .unwrap_or_else(PoisonError::into_inner);
+        ring.push(rate, frames);
     }
 
     pub(crate) fn buffered(&self) -> Duration {
@@ -207,7 +229,12 @@ impl Shared {
                 sample_rate: 0,
             };
         }
-        lock(&self.ring).read(out)
+        let read = lock(&self.ring).read(out);
+        // Never blocks: wakes the worker, if it is waiting for room.
+        if read.frames > 0 {
+            self.room.notify_one();
+        }
+        read
     }
 }
 

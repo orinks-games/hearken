@@ -84,8 +84,7 @@ pub(crate) fn pump(
             shared.set_state(StreamState::Playing);
         }
     }
-    // Nobody is left to read this.
-    Fault::Fatal("closed".into())
+    closed()
 }
 
 /// A decoder for the default audio track, and the track's id.
@@ -112,6 +111,11 @@ fn comments_title(reader: &mut dyn FormatReader) -> Option<String> {
         tag.map(|tag| tag.raw.value.to_string())
     };
     title::ogg(tag("artist").as_deref(), tag("title").as_deref())
+}
+
+/// Nobody is left to hear the stream.
+pub(crate) fn closed() -> Fault {
+    Fault::Fatal("closed".into())
 }
 
 pub(crate) fn no_audio() -> Fault {

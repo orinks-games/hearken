@@ -3,11 +3,10 @@
 
 mod support;
 
-use std::thread;
 use std::time::{Duration, Instant};
 
-use hearken_radio::{Stream, StreamState};
-use support::{drain, fast, rms, wait_for, Reply, TestServer};
+use hearken_radio::Stream;
+use support::{drain, failed, fast, listen, playing, rms, wait_for, Reply, TestServer};
 
 /// One second of a 440 Hz tone at half scale, as AAC in ADTS frames:
 /// `ffmpeg -f lavfi -i sine=frequency=440:duration=1 -af volume=12dB -ac 1
@@ -88,17 +87,6 @@ fn segment_hits(server: &TestServer, extension: &str) -> usize {
         .sum()
 }
 
-fn playing(stream: &Stream) -> bool {
-    stream.state() == StreamState::Playing
-}
-
-fn failed(stream: &Stream) -> Option<String> {
-    match stream.state() {
-        StreamState::Failed(reason) => Some(reason),
-        _ => None,
-    }
-}
-
 #[test]
 fn a_live_hls_station_with_adts_segments_plays_with_its_title() {
     let server = station();
@@ -142,22 +130,12 @@ fn an_encrypted_hls_station_fails_at_once() {
 fn an_hls_playlist_that_stops_growing_counts_as_a_stall() {
     let server = station();
     let stream = Stream::open_with(&server.url("/still.m3u8"), fast());
+    let _listener = listen(&stream);
     wait_for("Playing", Duration::from_secs(5), || playing(&stream));
-    // Three seconds of segments, served half a second ahead of real time,
-    // then `stall` (1 s) of re-reads that find nothing new: about 3.5 s.
-    wait_for("leaving Playing", Duration::from_secs(5), || {
-        !playing(&stream)
+    // Three seconds of segments, heard as fast as they decode, then `stall`
+    // (1 s) of re-reads that find nothing new.
+    wait_for("Failed", Duration::from_secs(5), || {
+        failed(&stream).is_some()
     });
-}
-
-#[test]
-fn a_live_hls_station_fetches_each_segment_as_it_comes_due() {
-    let server = station();
-    let stream = Stream::open_with(&server.url("/live.m3u8"), fast());
-    wait_for("Playing", Duration::from_secs(5), || playing(&stream));
-    thread::sleep(Duration::from_millis(900));
-    // fast() lets the reader run half a second ahead of real time: the
-    // first segment at once, the second at 0.5 s, the third not until
-    // 1.5 s. All at once would overflow the ring.
-    assert_eq!(segment_hits(&server, "aac"), 2);
+    assert_eq!(failed(&stream).as_deref(), Some("stalled"));
 }

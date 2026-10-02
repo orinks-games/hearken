@@ -47,7 +47,7 @@ fn play(url: &str, shared: &Arc<Shared>, opts: &StreamOptions) -> Fault {
 /// One connection, from the request to why it ended. A playlist ends it at
 /// once with the URL to try next, as `Ok`.
 fn open_station(url: &str, shared: &Arc<Shared>, opts: &StreamOptions) -> Result<String, Fault> {
-    let response = http::open(url, opts)?;
+    let response = http::open(url, shared, opts)?;
     let mut body = response.body;
     // Kept, so the decoder starts from the first byte.
     let head = read_up_to(&mut body, HEAD)?;

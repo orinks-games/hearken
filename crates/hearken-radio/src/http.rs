@@ -4,11 +4,12 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use ureq::ErrorKind;
 use url::{Position, Url};
 
-use crate::stream::{Fault, StreamOptions};
+use crate::stream::{Fault, Shared, StreamOptions};
 
 const USER_AGENT: &str = concat!("Hearken/", env!("CARGO_PKG_VERSION"));
 
@@ -27,7 +28,38 @@ pub(crate) struct Response {
     pub(crate) body: Box<dyn Read + Send + Sync>,
 }
 
-pub(crate) fn open(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
+/// Calls `url`. Its body fails the first read after the stream closes.
+pub(crate) fn open(
+    url: &str,
+    shared: &Arc<Shared>,
+    opts: &StreamOptions,
+) -> Result<Response, Fault> {
+    let mut response = call(url, opts)?;
+    response.body = Box::new(UntilClosed {
+        body: response.body,
+        shared: shared.clone(),
+    });
+    Ok(response)
+}
+
+/// A body that stops once every handle is gone, wherever it is being read
+/// from (a probe, a playlist, the decoder): a dropped stream lets go of the
+/// socket within one read.
+struct UntilClosed {
+    body: Box<dyn Read + Send + Sync>,
+    shared: Arc<Shared>,
+}
+
+impl Read for UntilClosed {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.shared.closed() {
+            return Err(io::ErrorKind::ConnectionAborted.into());
+        }
+        self.body.read(buf)
+    }
+}
+
+fn call(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
     let url = Url::parse(url).map_err(|_| bad_url())?;
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(opts.timeout)

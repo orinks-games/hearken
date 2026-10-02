@@ -4,22 +4,11 @@ mod support;
 
 use std::time::Duration;
 
-use hearken_radio::{Stream, StreamState};
-use support::{fast, wait_for, Reply, TestServer};
+use hearken_radio::Stream;
+use support::{failed, fast, playing, wait_for, Reply, TestServer};
 
 /// The tone from `tests/http.rs`; see there for how it is made.
 const TONE: &[u8] = include_bytes!("fixtures/tone.mp3");
-
-fn playing(stream: &Stream) -> bool {
-    stream.state() == StreamState::Playing
-}
-
-fn failed(stream: &Stream) -> Option<String> {
-    match stream.state() {
-        StreamState::Failed(reason) => Some(reason),
-        _ => None,
-    }
-}
 
 #[test]
 fn a_pls_link_plays_its_first_station() {

@@ -7,13 +7,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use m3u8_rs::{KeyMethod, MasterPlaylist, MediaPlaylist, MediaSegment, Playlist, VariantStream};
-use mpeg2ts::pes::{PesPacketReader, ReadPesPacket};
-use mpeg2ts::ts::TsPacketReader;
+use mpeg2ts::ts::{Pid, ReadTsPacket, TsPacketReader, TsPayload};
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::ReadOnlySource;
 use url::Url;
 
-use crate::decode::{self, no_audio};
+use crate::decode::{self, closed, no_audio};
 use crate::http::{self, bad_url};
 use crate::stream::{Fault, Shared, StreamOptions};
 use crate::title;
@@ -29,9 +28,6 @@ const MAX_SEGMENT: u64 = 16 << 20;
 
 /// The shortest wait between re-reads of a playlist.
 const MIN_REFRESH: Duration = Duration::from_millis(500);
-
-/// How often a reader that is ahead of time looks at the clock again.
-const TICK: Duration = Duration::from_millis(50);
 
 /// Codecs that make a variant video.
 const VIDEO_CODECS: [&str; 5] = ["avc1", "hvc1", "hev1", "vp09", "av01"];
@@ -51,9 +47,8 @@ pub(crate) fn play(url: &str, playlist: &str, shared: &Arc<Shared>, opts: &Strea
     kept.unwrap_or(pumped)
 }
 
-/// A live station's segments as one stream of audio bytes, paced to real
-/// time as a live HTTP station is: all at once, the backlog would overflow
-/// the ring.
+/// A live station's segments as one stream of audio bytes. The ring paces
+/// it: once that is full the decoder waits, and so does the next fetch.
 struct HlsReader {
     /// The media playlist, as last answered: segment URIs are relative to
     /// it.
@@ -71,9 +66,9 @@ struct HlsReader {
     /// The current segment's audio, and how much of it has been served.
     segment: Vec<u8>,
     served: usize,
-    /// When the current segment is due to start playing, and its length.
-    start: Instant,
-    duration: Duration,
+    /// The MPEG-TS packet id of the audio played, once one is seen: a
+    /// second audio stream (another language) must not reach the decoder.
+    audio: Option<Pid>,
     /// When audio was last served: `stall` without it, the station is lost.
     fed: Instant,
     /// Why the reader failed, for [`play`] to report.
@@ -94,10 +89,9 @@ impl HlsReader {
         if let Playlist::MasterPlaylist(master) = &playlist {
             let variant = audio_variant(master).ok_or_else(no_audio)?;
             let variant = url.join(&variant.uri).map_err(|_| bad_url())?;
-            let (at, text) = fetch(&variant, MAX_PLAYLIST, opts)?;
+            let (at, text) = fetch(&variant, MAX_PLAYLIST, shared, opts)?;
             (url, playlist) = (at, parse(&text)?);
         }
-        let now = Instant::now();
         let mut reader = HlsReader {
             url,
             shared: shared.clone(),
@@ -108,9 +102,8 @@ impl HlsReader {
             ended: false,
             segment: Vec::new(),
             served: 0,
-            start: now,
-            duration: Duration::ZERO,
-            fed: now,
+            audio: None,
+            fed: Instant::now(),
             fault: Arc::default(),
         };
         reader.enqueue(&media(playlist)?);
@@ -128,37 +121,20 @@ impl HlsReader {
         }
     }
 
-    /// The current segment's bytes as they come due, then the next
-    /// segment's; 0 once the playlist has ended.
+    /// The current segment's bytes, then the next segment's; 0 once the
+    /// playlist has ended.
     fn serve(&mut self, buf: &mut [u8]) -> Result<usize, Fault> {
-        loop {
-            if self.served == self.segment.len() && !self.next_segment()? {
+        // A segment may hold no audio at all.
+        while self.served == self.segment.len() {
+            if !self.next_segment()? {
                 return Ok(0);
             }
-            let due = self.due();
-            if due > self.served {
-                let n = buf.len().min(due - self.served);
-                buf[..n].copy_from_slice(&self.segment[self.served..][..n]);
-                self.served += n;
-                self.fed = Instant::now();
-                return Ok(n);
-            }
-            if !self.shared.sleep(TICK) {
-                return Err(closed());
-            }
         }
-    }
-
-    /// How many of the current segment's bytes are due: those up to half
-    /// the ring ahead of real time, so the decoder never pushes more than
-    /// the ring holds.
-    fn due(&self) -> usize {
-        let ahead = (Instant::now() + self.opts.buffer / 2).saturating_duration_since(self.start);
-        if ahead >= self.duration {
-            return self.segment.len();
-        }
-        let due = self.segment.len() as u128 * ahead.as_nanos() / self.duration.as_nanos();
-        due as usize
+        let n = buf.len().min(self.segment.len() - self.served);
+        buf[..n].copy_from_slice(&self.segment[self.served..][..n]);
+        self.served += n;
+        self.fed = Instant::now();
+        Ok(n)
     }
 
     /// Fetches the next segment, re-reading the playlist until it lists
@@ -174,7 +150,8 @@ impl HlsReader {
             if self.ended {
                 return Ok(false);
             }
-            let (url, text) = fetch(&self.url, MAX_PLAYLIST, &self.opts).map_err(retry)?;
+            let fetched = fetch(&self.url, MAX_PLAYLIST, &self.shared, &self.opts);
+            let (url, text) = fetched.map_err(retry)?;
             self.url = url;
             self.enqueue(&media(parse(&text).map_err(retry)?)?);
             if self.queue.is_empty() {
@@ -186,19 +163,21 @@ impl HlsReader {
                 }
             }
         };
-        let url = self.url.join(&segment.uri).map_err(|_| retry(bad_url()))?;
+        let url = self.url.join(&segment.uri).map_err(|_| bad_url())?;
         // ponytail: a segment is fetched once the last is spent, so one slower
-        // than half the buffer to arrive is heard; prefetch if that happens.
-        let (_, bytes) = fetch(&url, MAX_SEGMENT, &self.opts).map_err(retry)?;
+        // to arrive than the buffer lasts is heard; prefetch if that happens.
+        let fetched = fetch(&url, MAX_SEGMENT, &self.shared, &self.opts);
+        let (_, bytes) = fetched.map_err(retry)?;
         // Every MPEG-TS packet starts with 0x47.
         let ts = bytes.first() == Some(&0x47) || url.path().ends_with(".ts");
         // ponytail: a codec change at #EXT-X-DISCONTINUITY is not re-probed;
         // restart the pump there if a station is heard doing it.
-        self.segment = if ts { demux(&bytes) } else { bytes };
+        self.segment = if ts {
+            demux(&bytes, &mut self.audio)
+        } else {
+            bytes
+        };
         self.served = 0;
-        // On time, this segment follows the last; late, it starts now.
-        self.start = (self.start + self.duration).max(Instant::now());
-        self.duration = Duration::try_from_secs_f32(segment.duration).unwrap_or_default();
         if let Some(title) = segment.title.as_deref().and_then(title::hls) {
             self.shared.set_title(Some(title));
         }
@@ -216,12 +195,15 @@ impl Read for HlsReader {
 }
 
 /// The segments of `playlist` after media sequence number `last`, with
-/// their numbers; with no `last`, the final [`BEHIND_LIVE`].
+/// their numbers. With no `last`, or one the window has moved past (a long
+/// pause, a slow fetch), the final [`BEHIND_LIVE`]: the segments between
+/// are gone.
 fn newer(
     playlist: &MediaPlaylist,
     last: Option<u64>,
 ) -> impl Iterator<Item = (u64, &MediaSegment)> {
     let sequence = playlist.media_sequence;
+    let last = last.filter(|last| last.saturating_add(1) >= sequence);
     let live = playlist.segments.len().saturating_sub(BEHIND_LIVE) as u64;
     let first = last.map_or(sequence.saturating_add(live), |last| last.saturating_add(1));
     let numbered = playlist.segments.iter().enumerate();
@@ -261,44 +243,68 @@ fn parse(text: &[u8]) -> Result<Playlist, Fault> {
 }
 
 /// What `url` answers, up to `limit` bytes, and where the answer came from.
-fn fetch(url: &Url, limit: u64, opts: &StreamOptions) -> Result<(Url, Vec<u8>), Fault> {
-    let mut response = http::open(url.as_str(), opts)?;
+fn fetch(
+    url: &Url,
+    limit: u64,
+    shared: &Arc<Shared>,
+    opts: &StreamOptions,
+) -> Result<(Url, Vec<u8>), Fault> {
+    let mut response = http::open(url.as_str(), shared, opts)?;
     let bytes = read_up_to(&mut response.body, limit)?;
     Ok((response.url, bytes))
 }
 
-/// The audio elementary stream in an MPEG-TS segment. A packet that does
-/// not parse ends the segment there.
-fn demux(ts: &[u8]) -> Vec<u8> {
-    let mut packets = PesPacketReader::new(TsPacketReader::new(ts));
-    let mut audio = Vec::new();
-    while let Ok(Some(packet)) = packets.read_pes_packet() {
-        if packet.header.stream_id.is_audio() {
-            audio.extend(packet.data);
+/// The audio elementary stream in an MPEG-TS segment: the one on packet id
+/// `audio`, or on the first that starts an audio packet, which `audio` then
+/// keeps. Audio streams may share a PES stream id, so only the packet id
+/// tells them apart. A packet that does not parse ends the segment there.
+fn demux(ts: &[u8], audio: &mut Option<Pid>) -> Vec<u8> {
+    let mut packets = TsPacketReader::new(ts);
+    let mut bytes = Vec::new();
+    while let Ok(Some(packet)) = packets.read_ts_packet() {
+        let pid = packet.header.pid;
+        match packet.payload {
+            Some(TsPayload::PesStart(pes))
+                if pes.header.stream_id.is_audio() && *audio.get_or_insert(pid) == pid =>
+            {
+                bytes.extend_from_slice(&pes.data);
+            }
+            Some(TsPayload::PesContinuation(data)) if *audio == Some(pid) => {
+                bytes.extend_from_slice(&data);
+            }
+            _ => {}
         }
     }
-    audio
+    bytes
 }
 
-/// A station that has played is worth calling again whatever goes wrong
-/// fetching from it: a CDN missing a segment for a moment is not the
-/// station gone.
+/// Once its playlist has been read, a station is worth calling again
+/// whatever goes wrong fetching from it, played yet or not: a CDN missing a
+/// segment for a moment is not the station gone.
 fn retry(fault: Fault) -> Fault {
     let (Fault::Fatal(reason) | Fault::Retry(reason)) = fault;
     Fault::Retry(reason)
-}
-
-fn closed() -> Fault {
-    Fault::Fatal("closed".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Six segments, numbered from 10.
-    fn six() -> MediaPlaylist {
-        let mut text = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:10\n");
+    /// One second of a 440 Hz tone at half scale, as AAC in MPEG-TS:
+    /// `ffmpeg -f lavfi -i sine=frequency=440:duration=1 -af volume=12dB -ac 1
+    /// -c:a aac -b:a 64k -f mpegts tone.ts`
+    const TONE: &[u8] = include_bytes!("../tests/fixtures/tone.ts");
+
+    /// The same tone beside a second audio stream at 880 Hz, as another
+    /// language would be:
+    /// `ffmpeg -f lavfi -i sine=frequency=440:duration=1 -f lavfi -i
+    /// sine=frequency=880:duration=1 -map 0 -map 1 -af volume=12dB -ac 1
+    /// -c:a aac -b:a 64k -f mpegts two-tracks.ts`
+    const TWO_TRACKS: &[u8] = include_bytes!("../tests/fixtures/two-tracks.ts");
+
+    /// Six segments, numbered from `from`.
+    fn six(from: u64) -> MediaPlaylist {
+        let mut text = format!("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:{from}\n");
         for n in 0..6 {
             text += &format!("#EXTINF:1.0,\nseg{n}.aac\n");
         }
@@ -307,14 +313,14 @@ mod tests {
 
     #[test]
     fn the_live_edge_starts_three_segments_back() {
-        let playlist = six();
+        let playlist = six(10);
         let (sequence, segment) = newer(&playlist, None).next().unwrap();
         assert_eq!((sequence, segment.uri.as_str()), (13, "seg3.aac"));
     }
 
     #[test]
     fn a_reread_playlist_yields_only_newer_segments() {
-        let playlist = six();
+        let playlist = six(10);
         let uris: Vec<_> = newer(&playlist, Some(14))
             .map(|(_, segment)| segment.uri.as_str())
             .collect();
@@ -322,10 +328,23 @@ mod tests {
     }
 
     #[test]
+    fn a_window_that_jumped_ahead_re_anchors_at_the_live_edge() {
+        let playlist = six(20);
+        let (sequence, _) = newer(&playlist, Some(10)).next().unwrap();
+        assert_eq!(sequence, 23);
+    }
+
+    #[test]
     fn a_ts_segment_demuxes_to_its_audio() {
-        let audio = demux(include_bytes!("../tests/fixtures/tone.ts"));
+        let audio = demux(TONE, &mut None);
         // An ADTS sync word.
         assert_eq!(audio[0], 0xFF);
         assert_eq!(audio[1] & 0xF0, 0xF0);
+    }
+
+    #[test]
+    fn a_ts_segment_with_two_audio_streams_demuxes_to_the_first() {
+        let first = demux(TWO_TRACKS, &mut None);
+        assert!(first == demux(TONE, &mut None), "the streams interleave");
     }
 }

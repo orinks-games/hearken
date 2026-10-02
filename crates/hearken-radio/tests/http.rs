@@ -2,10 +2,11 @@
 
 mod support;
 
+use std::thread;
 use std::time::Duration;
 
-use hearken_radio::{Stream, StreamState};
-use support::{drain, fast, rms, wait_for, Reply, TestServer};
+use hearken_radio::Stream;
+use support::{drain, failed, fast, playing, rms, wait_for, Reply, TestServer};
 
 /// Two seconds of a 440 Hz tone at half scale, as bare MP3 frames, so that
 /// repeating it end to end is a clean endless stream:
@@ -15,17 +16,6 @@ const TONE: &[u8] = include_bytes!("fixtures/tone.mp3");
 
 fn station() -> TestServer {
     TestServer::start(|_| Reply::Endless("audio/mpeg", TONE.to_vec(), None))
-}
-
-fn playing(stream: &Stream) -> bool {
-    stream.state() == StreamState::Playing
-}
-
-fn failed(stream: &Stream) -> Option<String> {
-    match stream.state() {
-        StreamState::Failed(reason) => Some(reason),
-        _ => None,
-    }
 }
 
 #[test]
@@ -86,6 +76,9 @@ fn dropping_every_handle_stops_the_worker() {
     wait_for("Playing", Duration::from_secs(5), || playing(&stream));
     assert_eq!(server.open_connections(), 1);
     drop(stream);
+    // The pool may still be playing the feed: it alone keeps the station.
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(server.open_connections(), 1);
     drop(feed);
     wait_for("the connection to close", Duration::from_secs(3), || {
         server.open_connections() == 0

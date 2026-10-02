@@ -22,27 +22,21 @@ impl Ring {
         }
     }
 
-    /// Adds frames at `rate` (never 0), dropping the oldest audio past the
-    /// cap: a stream nobody reads stays live, and the socket keeps being
-    /// read so the server keeps us.
+    /// Adds frames at `rate` (never 0). Nothing is ever dropped: the worker
+    /// waits while the ring is [`full`](Ring::full) instead.
     pub(crate) fn push(&mut self, rate: u32, frames: Vec<[f32; 2]>) {
         match self.runs.back_mut() {
             Some((last, run)) if *last == rate => run.extend(frames),
             _ => self.runs.push_back((rate, frames.into())),
         }
         self.runs.retain(|(_, run)| !run.is_empty());
-        while let Some(over) = self
-            .buffered()
-            .checked_sub(self.cap)
-            .filter(|d| !d.is_zero())
-        {
-            let (rate, run) = self.runs.front_mut().expect("over the cap, so not empty");
-            let n = (over.as_nanos() * u128::from(*rate)).div_ceil(1_000_000_000);
-            match usize::try_from(n) {
-                Ok(n) if n < run.len() => drop(run.drain(..n)),
-                _ => drop(self.runs.pop_front()),
-            }
-        }
+    }
+
+    /// Holding the cap. A push may run past it by its own length, so a ring
+    /// that is filling always gets there; an empty ring is never full.
+    pub(crate) fn full(&self) -> bool {
+        let buffered = self.buffered();
+        !buffered.is_zero() && buffered >= self.cap
     }
 
     /// Copies out the oldest frames, stopping at a rate change.
@@ -110,13 +104,15 @@ mod tests {
     }
 
     #[test]
-    fn a_full_ring_drops_the_oldest_audio() {
+    fn a_full_ring_keeps_all_its_audio() {
         let mut ring = Ring::new(Duration::from_secs(1));
         ring.push(1_000, frames(0, 1_500));
-        assert_eq!(ring.buffered(), Duration::from_secs(1));
-        let mut out = [[0.0; 2]; 1];
-        ring.read(&mut out);
-        assert_eq!(out[0], [500.0; 2]);
+        assert_eq!(ring.buffered(), Duration::from_millis(1_500));
+        assert!(ring.full());
+        let mut out = [[0.0; 2]; 2_000];
+        assert_eq!(ring.read(&mut out).frames, 1_500);
+        assert_eq!(out[..1_500].to_vec(), frames(0, 1_500));
+        assert!(!Ring::new(Duration::ZERO).full(), "empty is never full");
     }
 
     #[test]
