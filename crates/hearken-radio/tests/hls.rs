@@ -16,6 +16,11 @@ const ADTS: &[u8] = include_bytes!("fixtures/tone.aac");
 /// The same tone in MPEG-TS: the command above with `-f mpegts tone.ts`.
 const TS: &[u8] = include_bytes!("fixtures/tone.ts");
 
+/// The same again on packet id 0x200 rather than 0x100, as a station's
+/// tracks may be renumbered after a discontinuity (an inserted ad): the
+/// command above with `-mpegts_start_pid 0x200 -f mpegts tone-pid200.ts`.
+const TS_PID_200: &[u8] = include_bytes!("fixtures/tone-pid200.ts");
+
 const M3U8: &str = "application/vnd.apple.mpegurl";
 
 const MASTER: &str = "#EXTM3U
@@ -51,6 +56,20 @@ seg1.aac
 seg2.aac
 ";
 
+/// A segment on packet id 0x100, then a discontinuity, then two on 0x200.
+const RENUMBERED: &str = "#EXTM3U
+#EXT-X-TARGETDURATION:1
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:1.0,
+seg0.ts
+#EXT-X-DISCONTINUITY
+#EXTINF:1.0,
+moved1.ts
+#EXTINF:1.0,
+moved2.ts
+#EXT-X-ENDLIST
+";
+
 /// Four one-second segments from `seg{n}`.
 fn window(n: u64, extension: &str) -> Vec<u8> {
     let mut text = format!("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:{n}\n");
@@ -73,6 +92,8 @@ fn station() -> TestServer {
             "/master.m3u8" => playlist(MASTER.into()),
             "/locked.m3u8" => playlist(LOCKED.into()),
             "/still.m3u8" => playlist(STILL.into()),
+            "/renumbered.m3u8" => playlist(RENUMBERED.into()),
+            _ if path.starts_with("/moved") => Reply::Body(200, "video/mp2t", TS_PID_200.to_vec()),
             _ if path.ends_with(".aac") => Reply::Body(200, "audio/aac", ADTS.to_vec()),
             _ if path.ends_with(".ts") => Reply::Body(200, "video/mp2t", TS.to_vec()),
             _ => Reply::Body(404, "text/plain", b"not here".to_vec()),
@@ -138,4 +159,15 @@ fn an_hls_playlist_that_stops_growing_counts_as_a_stall() {
         failed(&stream).is_some()
     });
     assert_eq!(failed(&stream).as_deref(), Some("stalled"));
+}
+
+#[test]
+fn a_ts_station_renumbered_at_a_discontinuity_plays_on() {
+    let server = station();
+    let stream = Stream::open_with(&server.url("/renumbered.m3u8"), fast());
+    let listener = listen(&stream);
+    // Three one-second segments; the first alone is about one second.
+    wait_for("2.5 s of audio", Duration::from_secs(5), || {
+        listener.heard() >= Duration::from_millis(2_500)
+    });
 }

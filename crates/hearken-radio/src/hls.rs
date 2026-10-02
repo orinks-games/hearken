@@ -68,6 +68,8 @@ struct HlsReader {
     served: usize,
     /// The MPEG-TS packet id of the audio played, once one is seen: a
     /// second audio stream (another language) must not reach the decoder.
+    /// Forgotten at a discontinuity, where a station may renumber its
+    /// tracks (an inserted ad).
     audio: Option<Pid>,
     /// When audio was last served: `stall` without it, the station is lost.
     fed: Instant,
@@ -172,6 +174,9 @@ impl HlsReader {
         let ts = bytes.first() == Some(&0x47) || url.path().ends_with(".ts");
         // ponytail: a codec change at #EXT-X-DISCONTINUITY is not re-probed;
         // restart the pump there if a station is heard doing it.
+        if segment.discontinuity {
+            self.audio = None;
+        }
         self.segment = if ts {
             demux(&bytes, &mut self.audio)
         } else {
