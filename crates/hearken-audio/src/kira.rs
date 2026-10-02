@@ -401,6 +401,10 @@ impl SoundData for LiveVoice {
 /// feed hands over what it has, so this only bounds one pull.
 const FEED_BLOCK: usize = 1_024;
 
+/// The sample rates a [`FeedSound`] believes: up to 768 kHz, the top of
+/// what audio hardware commonly runs at.
+const FEED_RATES: std::ops::RangeInclusive<u32> = 1..=768_000;
+
 /// A feed as a Kira sound: pulled a block at a time into a buffer made
 /// up front, then read back `feed_rate * pitch / output_rate` frames per
 /// output frame through the same linear resampler as [`LiveVoice`], so the
@@ -413,7 +417,8 @@ struct FeedSound {
     block: Box<[[f32; 2]]>,
     len: usize,
     pos: usize,
-    /// The sample rate of the block in hand; zero until the first one.
+    /// The sample rate of the block in hand; zero until a block arrives at
+    /// one of [`FEED_RATES`].
     rate: f64,
     /// Where the next output frame falls between `prev` and `next`.
     phase: f64,
@@ -447,10 +452,15 @@ impl FeedSound {
             if self.len == 0 {
                 return None;
             }
-            // Zero is a feed's mistake; carrying on at the old rate beats
-            // freezing on one frame.
-            if read.sample_rate > 0 {
+            // A feed is anyone's code: a rate of 0 would freeze the sound on
+            // one frame for good, and a huge one would pull the feed in a
+            // tight loop on the shared audio thread. Carrying on at the old
+            // rate beats both; with no old rate, the block is dropped.
+            if FEED_RATES.contains(&read.sample_rate) {
                 self.rate = f64::from(read.sample_rate);
+            } else if self.rate == 0.0 {
+                self.len = 0;
+                return None;
             }
         }
         let [left, right] = self.block[self.pos];

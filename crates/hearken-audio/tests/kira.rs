@@ -1,6 +1,6 @@
 #![cfg(feature = "kira")]
 use std::f32::consts::TAU;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -437,11 +437,12 @@ fn a_truncated_opus_clip_is_an_error_not_a_panic() {
 }
 
 /// A 441 Hz sine at an adjustable sample rate, there whenever it is pulled
-/// unless `dry` is set.
+/// unless `dry` is set, counting the frames it hands over.
 struct TestFeed {
     rate: AtomicU32,
     dry: AtomicBool,
     phase: Mutex<f64>,
+    pulled: AtomicUsize,
 }
 
 impl TestFeed {
@@ -450,6 +451,7 @@ impl TestFeed {
             rate: AtomicU32::new(rate),
             dry: AtomicBool::new(false),
             phase: Mutex::new(0.0),
+            pulled: AtomicUsize::new(0),
         })
     }
 }
@@ -467,8 +469,10 @@ impl Feed for TestFeed {
         for frame in out.iter_mut() {
             let sample = (*phase * std::f64::consts::TAU).sin() as f32 * 0.5;
             *frame = [sample; 2];
-            *phase = (*phase + 441.0 / f64::from(rate)).fract();
+            // A rate of 0 is the feed's mistake under test, not this sine's.
+            *phase = (*phase + 441.0 / f64::from(rate.max(1))).fract();
         }
+        self.pulled.fetch_add(out.len(), Ordering::Relaxed);
         FeedRead {
             frames: out.len(),
             sample_rate: rate,
@@ -496,6 +500,33 @@ fn a_feed_is_heard_at_its_own_pitch_across_a_rate_change() {
         "the new rate leaves the pitch alone: {after}"
     );
     assert!(r.b.is_playing(ch));
+}
+
+#[test]
+fn a_feed_that_starts_at_rate_zero_is_heard_once_it_has_a_rate() {
+    let mut r = rig();
+    let feed = TestFeed::new(0);
+    r.b.play("feed", Source::Feed(feed.clone()), true, Mix::UNITY)
+        .expect("play");
+    assert!(rms(&r.render(2_000)[500..]) < 1e-4, "no rate is silence");
+    feed.rate.store(44_100, Ordering::Relaxed);
+    assert!(
+        rms(&r.render(2_000)[500..]) > 0.1,
+        "it sounds once the rate is real"
+    );
+}
+
+#[test]
+fn a_feed_at_an_absurd_rate_is_pulled_no_faster_than_a_real_one() {
+    let mut r = rig();
+    let feed = TestFeed::new(u32::MAX);
+    r.b.play("feed", Source::Feed(feed.clone()), true, Mix::UNITY)
+        .expect("play");
+    let rendered = r.render(512).len();
+    let pulled = feed.pulled.load(Ordering::Relaxed);
+    // The most a 768 kHz feed could be asked for, and the block in hand.
+    let most = rendered * 768_000 / RATE as usize + 1_024;
+    assert!(pulled <= most, "{pulled} frames pulled for {rendered}");
 }
 
 #[test]
