@@ -302,17 +302,27 @@
 - [ ] **Step 5: Run `cargo test -p hearken-radio`.** Expected: PASS.
 - [ ] **Step 6: Commit** `feat(radio): live HLS with ADTS and MPEG-TS segments`.
 
-### Task 7: Retries and stalls
+### Task 7: Backpressure, retries and stalls
 
 **Files:**
-- Modify: `crates/hearken-radio/src/worker.rs`, `decode.rs` (stall clock)
-- Test: `crates/hearken-radio/tests/reconnect.rs`
+- Modify: `crates/hearken-radio/src/worker.rs`, `decode.rs` (stall clock), `stream.rs` (`Shared::push` waits), `ring.rs` (no drop-oldest), `hls.rs` (pacing removed), `http.rs`, `tests/support/mod.rs` (`listen`)
+- Test: `crates/hearken-radio/tests/reconnect.rs`, `tests/backpressure.rs`, ring unit tests
 
 **Interfaces:**
 - Consumes: `Fault`, `Shared::sleep`, `StreamOptions`.
+- Produces: `Shared::push(rate, frames)` blocks until the ring has room for the chunk or the stream is closed (the feed's `read` notifies after taking frames; `Handle::drop` notifies too). `Ring::push` never drops audio. Test support `pub fn listen(stream: &Stream) -> Listener`: a thread that drains the feed every 10 ms until the `Listener` drops, standing in for the audio thread.
 
-- [ ] **Step 1: Write the failing tests** (all with `fast()`):
+Decided with the user on 2026-10-01: the drop-oldest ring and Task 6's HLS pacing go. When the ring is full, the worker waits for room, so the network paces the download as BASS did. A paused stream resumes a few seconds behind live, and a pause long enough for the server to drop the connection ends in a reconnect on resume.
+
+- [ ] **Step 1: Write the failing tests** (all with `fast()`; every test that needs playback to flow holds a `listen(&stream)`):
   ```rust
+  // ring.rs: replace a_full_ring_drops_the_oldest_audio with
+  #[test] fn a_full_ring_keeps_all_its_audio()               // push past cap: nothing is dropped; reads come out in order
+  // tests/backpressure.rs
+  #[test] fn an_unheard_stream_stops_reading_when_its_buffer_is_full() // Endless, no listener: after Playing, the server's bytes sent stop growing (TestServer gains `bytes_sent(path)`)
+  #[test] fn a_paused_stream_resumes_where_it_left_off()     // listen, stop listening 2 s, listen again: no Reconnecting, audio continues
+  #[test] fn dropping_a_stream_blocked_on_a_full_buffer_ends_the_worker() // Endless, no listener; drop: open_connections() == 0 within 3 s
+  // tests/reconnect.rs
   #[test] fn a_dropped_stream_reconnects_and_plays_again()   // first hit Cut(.., 64 KiB), later Endless: states seen in order Playing, Reconnecting, Playing
   #[test] fn a_server_error_is_retried_then_reported()        // Body(503) always: Failed within 3 s; hits == 3 (1 + retry_delays.len())
   #[test] fn a_server_that_never_answers_is_retried()         // Hang always: Failed within 6 s; hits == 3
@@ -323,7 +333,14 @@
 - [ ] **Step 3: Implement** the worker loop:
   - A `Fatal` fault sets `Failed(reason)`.
   - A `Retry` fault resets the attempt count if playback had lasted `healthy_after`. Once the attempts reach `retry_delays.len()` the stream is `Failed(reason)`. Otherwise the state becomes `Reconnecting`, but only if the stream ever reached `Playing` (before that it stays `Connecting`), and the worker waits `retry_delays[attempt]` through `Shared::sleep`, exiting if that returns false.
-  - The pump returns `Retry("stalled")` after `stall` with no decoded audio, and `Retry("stream ended")` at the end of the stream.
+  - The pump returns `Retry("stalled")` after `stall` with no decoded audio, and `Retry("stream ended")` at the end of the stream. Time spent waiting for room in the ring is not a stall.
+  - Backpressure: `Shared::push` waits on a `Condvar` until the chunk fits in `buffer` or the stream closes; `Ring` no longer drops audio; delete Task 6's HLS pacing and its pacing test (backpressure paces segment fetches).
+  - Carried from Task 3's review:
+    - Clamp `prebuffer` strictly below `buffer` in one place, so a game's options can never leave a stream silent in `Connecting`.
+    - `ureq::ErrorKind::TooManyRedirects` is `Fatal`, not `Retry`.
+    - Wrap every response body in a `Read` that returns an error once `shared.closed()`, so the closed check is truly per read (probe and playlist reads included).
+    - After a reconnect, re-gate the feed (or count the prebuffer from the reconnect) so `Reconnecting` returns to `Playing`.
+    - Tests: `a_url_that_is_not_one_fails_without_panicking` asserts the reason is `"bad URL"`; `dropping_every_handle_stops_the_worker` first drops only the `Stream` and asserts the connection stays open while the feed lives.
   - `log::info!` lines:
     - `radio: <url> playing after <ms> ms`
     - `radio: <url> lost (<reason>); retry <n> in <s> s`

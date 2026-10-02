@@ -149,8 +149,11 @@ audio.stop(sound, 800);
    - HLS `#EXTINF` titles, dropping empty ones and "no desc".
 5. **Buffer.** Decoded stereo frames, chunked with their sample rate, go into
    a ring of about 4 s. `Playing` once 1.5 s is buffered (Freight Fate's
-   BASS pre-buffer). When full, the oldest audio is dropped, which keeps a
-   paused stream live and keeps reading the socket so the server keeps us.
+   BASS pre-buffer). When full, the worker waits for room instead of
+   reading on, so the network paces the download (HLS segments included),
+   as BASS did. A paused stream resumes where it paused, a few seconds
+   behind live; a pause long enough for the server to drop us ends in a
+   reconnect on resume (decided 2026-10-01, replacing drop-oldest).
 
 ### States, retries and failure
 
