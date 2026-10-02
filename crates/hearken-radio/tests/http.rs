@@ -59,6 +59,7 @@ fn a_url_that_is_not_one_fails_without_panicking() {
     wait_for("Failed", Duration::from_secs(1), || {
         failed(&stream).is_some()
     });
+    assert_eq!(failed(&stream).as_deref(), Some("bad URL"));
 }
 
 #[test]

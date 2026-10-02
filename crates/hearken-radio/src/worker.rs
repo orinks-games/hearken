@@ -14,12 +14,41 @@ use crate::playlist::Kind;
 use crate::stream::{Fault, Shared, StreamOptions, StreamState};
 use crate::{decode, hls, http, playlist, title};
 
-/// Plays `url` until it fails or every handle is dropped. A panic in here
-/// is a bug, reported as `Failed` rather than taking the game down.
+/// Plays `url` until it fails or every handle is dropped, calling it again
+/// after each drop while the retries last. A panic in here is a bug,
+/// reported as `Failed` rather than taking the game down.
 pub(crate) fn run(url: &str, shared: &Arc<Shared>, opts: &StreamOptions) {
-    let fault = panic::catch_unwind(AssertUnwindSafe(|| play(url, shared, opts)))
-        .unwrap_or_else(|_| Fault::Fatal("internal error".into()));
-    let (Fault::Fatal(reason) | Fault::Retry(reason)) = fault;
+    let mut attempt = 0;
+    let reason = loop {
+        shared.calling();
+        let fault = panic::catch_unwind(AssertUnwindSafe(|| play(url, shared, opts)))
+            .unwrap_or_else(|_| Fault::Fatal("internal error".into()));
+        // Nobody is left to hear a retry or be told of a failure. A closed
+        // body's read fails as a Retry, so this comes first.
+        if shared.closed() {
+            return;
+        }
+        let reason = match fault {
+            Fault::Fatal(reason) => break reason,
+            Fault::Retry(reason) => reason,
+        };
+        if shared.played() >= opts.healthy_after {
+            attempt = 0;
+        }
+        let Some(&delay) = opts.retry_delays.get(attempt) else {
+            break reason;
+        };
+        attempt += 1;
+        let secs = delay.as_secs_f32();
+        log::info!("radio: {url} lost ({reason}); retry {attempt} in {secs} s");
+        // Until it first plays, a station is still connecting.
+        if shared.state() != StreamState::Connecting {
+            shared.set_state(StreamState::Reconnecting);
+        }
+        if !shared.sleep(delay) {
+            return;
+        }
+    };
     shared.set_state(StreamState::Failed(reason));
 }
 

@@ -5,7 +5,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use hearken_radio::Stream;
+use hearken_radio::{Stream, StreamOptions};
 use support::{drain, failed, fast, listen, playing, rms, wait_for, Reply, TestServer};
 
 /// One second of a 440 Hz tone at half scale, as AAC in ADTS frames:
@@ -150,7 +150,12 @@ fn an_encrypted_hls_station_fails_at_once() {
 #[test]
 fn an_hls_playlist_that_stops_growing_counts_as_a_stall() {
     let server = station();
-    let stream = Stream::open_with(&server.url("/still.m3u8"), fast());
+    // No retries, so the stall itself is reported.
+    let options = StreamOptions {
+        retry_delays: Vec::new(),
+        ..fast()
+    };
+    let stream = Stream::open_with(&server.url("/still.m3u8"), options);
     let _listener = listen(&stream);
     wait_for("Playing", Duration::from_secs(5), || playing(&stream));
     // Three seconds of segments, heard as fast as they decode, then `stall`

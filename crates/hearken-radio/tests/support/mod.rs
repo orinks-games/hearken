@@ -30,6 +30,8 @@ pub enum Reply {
     /// A Shoutcast v1 server: `ICY 200 OK`, `audio/mpeg`, the body repeated
     /// forever.
     IcyV1(Vec<u8>),
+    /// Status and `Location`, no body, then close.
+    Redirect(u16, String),
 }
 
 /// How many body bytes go out at a time, and how often: 32 KiB/s, four
@@ -163,6 +165,11 @@ fn serve(socket: TcpStream, log: &Log, route: &dyn Fn(&str) -> Reply) -> io::Res
             write!(out, "ICY 200 OK\r\ncontent-type: audio/mpeg\r\n\r\n")?;
             paced(out, &body, None, None, PACE.1, &sent)
         }
+        Reply::Redirect(status, location) => write!(
+            out,
+            "HTTP/1.1 {status} Found\r\nLocation: {location}\r\n\
+             Content-Length: 0\r\nConnection: close\r\n\r\n"
+        ),
     }
 }
 

@@ -71,8 +71,6 @@ struct HlsReader {
     /// Forgotten at a discontinuity, where a station may renumber its
     /// tracks (an inserted ad).
     audio: Option<Pid>,
-    /// When audio was last served: `stall` without it, the station is lost.
-    fed: Instant,
     /// Why the reader failed, for [`play`] to report.
     fault: Arc<Mutex<Option<Fault>>>,
 }
@@ -105,7 +103,6 @@ impl HlsReader {
             segment: Vec::new(),
             served: 0,
             audio: None,
-            fed: Instant::now(),
             fault: Arc::default(),
         };
         reader.enqueue(&media(playlist)?);
@@ -126,22 +123,26 @@ impl HlsReader {
     /// The current segment's bytes, then the next segment's; 0 once the
     /// playlist has ended.
     fn serve(&mut self, buf: &mut [u8]) -> Result<usize, Fault> {
+        // The stall clock runs from when the decoder asks for more than is
+        // here, so time it spent waiting for room in the ring (a paused
+        // game) is not a stall.
+        let asked = Instant::now();
         // A segment may hold no audio at all.
         while self.served == self.segment.len() {
-            if !self.next_segment()? {
+            if !self.next_segment(asked)? {
                 return Ok(0);
             }
         }
         let n = buf.len().min(self.segment.len() - self.served);
         buf[..n].copy_from_slice(&self.segment[self.served..][..n]);
         self.served += n;
-        self.fed = Instant::now();
         Ok(n)
     }
 
     /// Fetches the next segment, re-reading the playlist until it lists
-    /// one. False once the playlist has ended.
-    fn next_segment(&mut self) -> Result<bool, Fault> {
+    /// one, or until `stall` after the decoder `asked`. False once the
+    /// playlist has ended.
+    fn next_segment(&mut self, asked: Instant) -> Result<bool, Fault> {
         let segment = loop {
             if self.shared.closed() {
                 return Err(closed());
@@ -157,7 +158,7 @@ impl HlsReader {
             self.url = url;
             self.enqueue(&media(parse(&text).map_err(retry)?)?);
             if self.queue.is_empty() {
-                if self.fed.elapsed() >= self.opts.stall {
+                if asked.elapsed() >= self.opts.stall {
                     return Err(Fault::Retry("stalled".into()));
                 }
                 if !self.shared.sleep(self.refresh) {

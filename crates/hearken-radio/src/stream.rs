@@ -2,10 +2,11 @@
 //! with the worker thread.
 
 use std::io;
+use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hearken_audio::{Feed, FeedRead};
 
@@ -23,7 +24,8 @@ pub struct Stream(Arc<Handle>);
 /// Where a station is up to. `state` never blocks, so poll it every frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StreamState {
-    /// Connecting and buffering, before the first audio is ready.
+    /// Connecting and buffering, before the first audio is ready; calling
+    /// again, if the first calls fail.
     Connecting,
     /// Buffered and playing.
     Playing,
@@ -44,7 +46,8 @@ pub struct StreamOptions {
     pub retry_delays: Vec<Duration>,
     /// Playback this long earns a dropped stream its full set of retries.
     pub healthy_after: Duration,
-    /// This long with no decoded audio counts as a dropped stream.
+    /// This long with no decoded audio counts as a dropped stream. Waiting
+    /// for room in a full buffer does not count.
     pub stall: Duration,
     /// How much audio to buffer before playing; kept below `buffer`.
     pub prebuffer: Duration,
@@ -81,7 +84,7 @@ impl Stream {
         // the stream plays: the prebuffer must come first.
         let below = options.buffer.saturating_sub(Duration::from_millis(1));
         options.prebuffer = options.prebuffer.min(below);
-        let shared = Arc::new(Shared::new(&options));
+        let shared = Arc::new(Shared::new(url, &options));
         let worker = shared.clone();
         let url = url.to_owned();
         let spawned = thread::Builder::new()
@@ -94,7 +97,7 @@ impl Stream {
     }
 
     pub fn state(&self) -> StreamState {
-        lock(&self.0.shared.state).clone()
+        self.0.shared.state()
     }
 
     /// The latest now-playing title, where the station sends one.
@@ -138,7 +141,8 @@ impl Drop for Handle {
 pub(crate) enum Fault {
     /// Calling again would not help: a 4xx, nothing playable.
     Fatal(String),
-    /// Worth calling again: a timeout, a reset, a 5xx, the stream ending.
+    /// Worth calling again: a timeout, a reset, a 5xx, the stream ending or
+    /// stalling.
     Retry(String),
 }
 
@@ -154,23 +158,36 @@ impl From<io::Error> for Fault {
 /// held only to copy in or out, never across I/O. `closed` may be locked
 /// inside `ring`, never the other way round.
 pub(crate) struct Shared {
+    /// The station, for the log.
+    url: String,
+    /// Buffered this much, the stream plays.
+    prebuffer: Duration,
     state: Mutex<StreamState>,
+    /// When the station was last called, and when that call began to play:
+    /// the log's timing, and whether a call that dropped had played long
+    /// enough to earn back its retries.
+    call: Mutex<(Instant, Option<Instant>)>,
     title: Mutex<Option<String>>,
     ring: Mutex<Ring>,
     /// Signalled when the feed takes audio or the stream closes, for a push
     /// waiting on a full ring.
     room: Condvar,
-    /// Set once the stream first plays: until then the feed stays silent,
-    /// so the prebuffer is heard as a cushion, not drained as it fills.
+    /// Set when the stream plays: until then the feed stays silent, so the
+    /// prebuffer is heard as a cushion, not drained as it fills. Through a
+    /// drop it stays set while the buffer plays out, and is cleared when
+    /// the new call's audio arrives.
     started: AtomicBool,
     closed: Mutex<bool>,
     wake: Condvar,
 }
 
 impl Shared {
-    fn new(options: &StreamOptions) -> Shared {
+    fn new(url: &str, options: &StreamOptions) -> Shared {
         Shared {
+            url: url.to_owned(),
+            prebuffer: options.prebuffer,
             state: Mutex::new(StreamState::Connecting),
+            call: Mutex::new((Instant::now(), None)),
             title: Mutex::new(None),
             ring: Mutex::new(Ring::new(options.buffer)),
             room: Condvar::new(),
@@ -180,11 +197,39 @@ impl Shared {
         }
     }
 
+    pub(crate) fn state(&self) -> StreamState {
+        lock(&self.state).clone()
+    }
+
+    /// Logs a failure, and the time from calling to playing; never under a
+    /// lock, so a slow log cannot hold up the game reading the state.
     pub(crate) fn set_state(&self, state: StreamState) {
-        if state == StreamState::Playing {
-            self.started.store(true, Ordering::Release);
+        if let StreamState::Failed(reason) = &state {
+            log::info!("radio: {} failed ({reason})", self.url);
         }
-        *lock(&self.state) = state;
+        let playing = state == StreamState::Playing;
+        let was = mem::replace(&mut *lock(&self.state), state);
+        if playing && was != StreamState::Playing {
+            self.started.store(true, Ordering::Release);
+            let called = {
+                let mut call = lock(&self.call);
+                call.1 = Some(Instant::now());
+                call.0
+            };
+            let after = called.elapsed().as_millis();
+            log::info!("radio: {} playing after {after} ms", self.url);
+        }
+    }
+
+    /// The worker is calling the station, again or for the first time: the
+    /// call's timings start now.
+    pub(crate) fn calling(&self) {
+        *lock(&self.call) = (Instant::now(), None);
+    }
+
+    /// How long the current call has been playing; zero until it plays.
+    pub(crate) fn played(&self) -> Duration {
+        lock(&self.call).1.map_or(Duration::ZERO, |at| at.elapsed())
     }
 
     pub(crate) fn set_title(&self, title: Option<String>) {
@@ -193,7 +238,8 @@ impl Shared {
 
     /// Adds decoded frames at `rate`, which must not be 0, once the ring has
     /// room: the station is read no faster than it is heard, as BASS did.
-    /// Returns at once when the stream closes.
+    /// Returns at once when the stream closes. Plays once the prebuffer is
+    /// buffered.
     pub(crate) fn push(&self, rate: u32, frames: Vec<[f32; 2]>) {
         let ring = lock(&self.ring);
         let mut ring = self
@@ -201,10 +247,16 @@ impl Shared {
             .wait_while(ring, |ring| ring.full() && !self.closed())
             .unwrap_or_else(PoisonError::into_inner);
         ring.push(rate, frames);
-    }
-
-    pub(crate) fn buffered(&self) -> Duration {
-        lock(&self.ring).buffered()
+        let ready = ring.buffered() >= self.prebuffer;
+        drop(ring);
+        if ready {
+            self.set_state(StreamState::Playing);
+        } else if *lock(&self.state) == StreamState::Reconnecting {
+            // Back from a drop, the feed is silent until the prebuffer is
+            // rebuilt, so it is heard as a cushion again rather than played
+            // packet by packet as it lands.
+            self.started.store(false, Ordering::Release);
+        }
     }
 
     /// Every handle is gone: the worker should stop.
@@ -250,12 +302,32 @@ mod tests {
 
     #[test]
     fn the_feed_is_silent_until_the_stream_first_plays() {
-        let shared = Shared::new(&StreamOptions::default());
+        let shared = Shared::new("test", &StreamOptions::default());
         shared.push(1_000, vec![[0.5; 2]; 100]);
         let mut out = [[0.0; 2]; 10];
         assert_eq!(shared.read(&mut out).frames, 0);
         shared.set_state(StreamState::Playing);
         shared.set_state(StreamState::Reconnecting);
         assert_eq!(shared.read(&mut out).frames, 10, "the buffer plays out");
+    }
+
+    #[test]
+    fn a_reconnect_is_heard_once_the_prebuffer_is_rebuilt() {
+        let options = StreamOptions {
+            prebuffer: Duration::from_millis(100),
+            ..StreamOptions::default()
+        };
+        let shared = Shared::new("test", &options);
+        // A tenth of a second at 1 kHz.
+        shared.push(1_000, vec![[0.5; 2]; 100]);
+        assert_eq!(shared.state(), StreamState::Playing);
+        let mut out = [[0.0; 2]; 200];
+        assert_eq!(shared.read(&mut out).frames, 100);
+        shared.set_state(StreamState::Reconnecting);
+        shared.push(1_000, vec![[0.5; 2]; 50]);
+        assert_eq!(shared.read(&mut out).frames, 0, "held");
+        shared.push(1_000, vec![[0.5; 2]; 50]);
+        assert_eq!(shared.state(), StreamState::Playing);
+        assert_eq!(shared.read(&mut out).frames, 100);
     }
 }

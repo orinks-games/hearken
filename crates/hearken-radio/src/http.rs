@@ -84,6 +84,8 @@ fn call(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
             let at = error.url().unwrap_or(&url);
             match error.kind() {
                 ErrorKind::InvalidUrl | ErrorKind::UnknownScheme => Err(bad_url()),
+                // A loop answers the same way however often it is called.
+                ErrorKind::TooManyRedirects => Err(Fault::Fatal("too many redirects".into())),
                 ErrorKind::BadStatus if at.scheme() == "http" => shoutcast_v1(at, opts),
                 kind => Err(Fault::Retry(match io_error(&error) {
                     Some(io) => format!("{kind}: {}", io.kind()),

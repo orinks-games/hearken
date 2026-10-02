@@ -1,5 +1,7 @@
 //! Decoding a station as it arrives, into the ring.
 
+use std::time::Instant;
+
 use symphonia::core::codecs::audio::AudioDecoder;
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::errors::Error;
@@ -7,14 +9,14 @@ use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatReader, TrackType};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 
-use crate::stream::{Fault, Shared, StreamOptions, StreamState};
+use crate::stream::{Fault, Shared, StreamOptions};
 use crate::{codecs, title};
 
 /// Rates a feed may carry; anything else is a broken stream, not audio.
 const RATES: std::ops::RangeInclusive<u32> = 8_000..=384_000;
 
 /// Decodes `source` into `shared`'s ring as stereo until the stream ends,
-/// fails or closes, and returns why it stopped.
+/// fails, stalls or closes, and returns why it stopped.
 pub(crate) fn pump(
     source: Box<dyn MediaSource>,
     hint: Hint,
@@ -45,7 +47,17 @@ pub(crate) fn pump(
         shared.set_title(Some(current));
     }
     let mut samples: Vec<f32> = Vec::new();
+    // When audio last went into the ring. It restarts once a push returns,
+    // so a push waiting for room (a paused game) is not a stall.
+    let mut fed = Instant::now();
     while !shared.closed() {
+        // ponytail: timed between packets only, so a format reader scanning
+        // junk for a frame within one call is not; the socket's own timeout
+        // still ends a silent server. Time the body's reads if a station is
+        // heard sending junk forever.
+        if fed.elapsed() >= opts.stall {
+            return Fault::Retry("stalled".into());
+        }
         let packet = match reader.next_packet() {
             Ok(Some(packet)) if packet.track_id == track => packet,
             Ok(Some(_)) => continue,
@@ -80,9 +92,7 @@ pub(crate) fn pump(
         let right = channels.min(2) - 1;
         let frames = samples.chunks_exact(channels).map(|f| [f[0], f[right]]);
         shared.push(rate, frames.collect());
-        if shared.buffered() >= opts.prebuffer {
-            shared.set_state(StreamState::Playing);
-        }
+        fed = Instant::now();
     }
     closed()
 }

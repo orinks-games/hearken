@@ -621,6 +621,7 @@ version = "0.1.0"
 dependencies = [
  "hearken-audio",
  "icy-metadata",
+ "log",
  "m3u8-rs",
  "mpeg2ts",
  "symphonia",
