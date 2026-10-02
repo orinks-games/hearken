@@ -161,7 +161,8 @@ impl HlsReader {
                 if asked.elapsed() >= self.opts.stall {
                     return Err(Fault::Retry("stalled".into()));
                 }
-                if !self.shared.sleep(self.refresh) {
+                // A long target duration must not outwait the stall clock.
+                if !self.shared.sleep(self.refresh.min(self.opts.stall)) {
                     return Err(closed());
                 }
             }
@@ -203,13 +204,15 @@ impl Read for HlsReader {
 /// The segments of `playlist` after media sequence number `last`, with
 /// their numbers. With no `last`, or one the window has moved past (a long
 /// pause, a slow fetch), the final [`BEHIND_LIVE`]: the segments between
-/// are gone.
+/// are gone. So too with a `last` past the window's end: the packager
+/// restarted its numbering, and nothing it lists would ever be newer.
 fn newer(
     playlist: &MediaPlaylist,
     last: Option<u64>,
 ) -> impl Iterator<Item = (u64, &MediaSegment)> {
     let sequence = playlist.media_sequence;
-    let last = last.filter(|last| last.saturating_add(1) >= sequence);
+    let end = sequence.saturating_add(playlist.segments.len() as u64);
+    let last = last.filter(|last| last.saturating_add(1) >= sequence && *last < end);
     let live = playlist.segments.len().saturating_sub(BEHIND_LIVE) as u64;
     let first = last.map_or(sequence.saturating_add(live), |last| last.saturating_add(1));
     let numbered = playlist.segments.iter().enumerate();
@@ -338,6 +341,14 @@ mod tests {
         let playlist = six(20);
         let (sequence, _) = newer(&playlist, Some(10)).next().unwrap();
         assert_eq!(sequence, 23);
+    }
+
+    #[test]
+    fn a_window_numbered_back_from_the_start_re_anchors_at_the_live_edge() {
+        // The packager restarted: its numbers begin again below the last.
+        let playlist = six(0);
+        let (sequence, _) = newer(&playlist, Some(20)).next().unwrap();
+        assert_eq!(sequence, 3);
     }
 
     #[test]
