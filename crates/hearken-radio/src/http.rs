@@ -87,12 +87,30 @@ fn call(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
                 // A loop answers the same way however often it is called.
                 ErrorKind::TooManyRedirects => Err(Fault::Fatal("too many redirects".into())),
                 ErrorKind::BadStatus if at.scheme() == "http" => shoutcast_v1(at, opts),
-                kind => Err(Fault::Retry(match io_error(&error) {
-                    Some(io) => format!("{kind}: {}", io.kind()),
-                    None => kind.to_string(),
-                })),
+                kind => Err(transport(kind, io_error(&error))),
             }
         }
+    }
+}
+
+/// Why a call that got no reply failed. ureq reports a refused connection
+/// and a failed TLS handshake alike, as a failed connection; of those, only
+/// a slow server may yet answer.
+fn transport(kind: ErrorKind, io: Option<&io::Error>) -> Fault {
+    let reason = match io {
+        Some(io) => format!("{kind}: {}", io.kind()),
+        None => kind.to_string(),
+    };
+    let slow = io.is_some_and(|io| {
+        matches!(
+            io.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        )
+    });
+    match kind {
+        ErrorKind::Dns => Fault::Unreachable(reason),
+        ErrorKind::ConnectionFailed if !slow => Fault::Unreachable(reason),
+        _ => Fault::Retry(reason),
     }
 }
 

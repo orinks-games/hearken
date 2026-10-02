@@ -15,7 +15,9 @@ use crate::stream::{Fault, Shared, StreamOptions, StreamState};
 use crate::{decode, hls, http, playlist, title};
 
 /// Plays `url` until it fails or every handle is dropped, calling it again
-/// after each drop while the retries last. A panic in here is a bug,
+/// after each drop while the retries last. A station that has never played
+/// gets one retry, not the whole schedule, so a dead one is reported in
+/// seconds rather than a minute and more. A panic in here is a bug,
 /// reported as `Failed` rather than taking the game down.
 pub(crate) fn run(url: &str, shared: &Arc<Shared>, opts: &StreamOptions) {
     let mut attempt = 0;
@@ -28,21 +30,24 @@ pub(crate) fn run(url: &str, shared: &Arc<Shared>, opts: &StreamOptions) {
         if shared.closed() {
             return;
         }
+        // Until it first plays, a station is still connecting.
+        let connecting = shared.state() == StreamState::Connecting;
         let reason = match fault {
             Fault::Fatal(reason) => break reason,
-            Fault::Retry(reason) => reason,
+            Fault::Unreachable(reason) if connecting => break reason,
+            Fault::Unreachable(reason) | Fault::Retry(reason) => reason,
         };
         if shared.played() >= opts.healthy_after {
             attempt = 0;
         }
-        let Some(&delay) = opts.retry_delays.get(attempt) else {
+        let delay = opts.retry_delays.get(attempt);
+        let Some(&delay) = delay.filter(|_| !connecting || attempt == 0) else {
             break reason;
         };
         attempt += 1;
         let secs = delay.as_secs_f32();
         log::info!("radio: {url} lost ({reason}); retry {attempt} in {secs} s");
-        // Until it first plays, a station is still connecting.
-        if shared.state() != StreamState::Connecting {
+        if !connecting {
             shared.set_state(StreamState::Reconnecting);
         }
         if !shared.sleep(delay) {

@@ -1,8 +1,9 @@
 //! A station that drops is called again after a wait; one that keeps
-//! failing is reported failed.
+//! failing is reported failed, and one that never played, sooner.
 
 mod support;
 
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -66,27 +67,50 @@ fn a_dropped_stream_reconnects_and_plays_again() {
 }
 
 #[test]
-fn a_server_error_is_retried_then_reported() {
+fn a_server_error_before_playing_is_retried_once_then_reported() {
     let server = TestServer::start(|_| Reply::Body(503, "text/plain", b"busy".to_vec()));
     let stream = Stream::open_with(&server.url("/live.mp3"), fast());
     wait_for("Failed", Duration::from_secs(3), || {
         failed(&stream).is_some()
     });
     assert_eq!(failed(&stream).as_deref(), Some("HTTP 503"));
-    assert_eq!(server.hits("/live.mp3"), 1 + fast().retry_delays.len());
+    assert_eq!(server.hits("/live.mp3"), 2);
 }
 
 #[test]
-fn a_server_that_never_answers_is_retried() {
+fn a_server_that_never_answers_is_retried_once() {
     let server = TestServer::start(|_| Reply::Hang);
     let stream = Stream::open_with(&server.url("/live.mp3"), fast());
-    // Three calls, each given up after the 1 s timeout.
-    wait_for("Failed", Duration::from_secs(6), || {
+    // Two calls, each given up after the 1 s timeout.
+    wait_for("Failed", Duration::from_secs(4), || {
         failed(&stream).is_some()
     });
     let reason = failed(&stream).unwrap();
     assert!(reason.contains("timed out"), "{reason}");
-    assert_eq!(server.hits("/live.mp3"), 1 + fast().retry_delays.len());
+    assert_eq!(server.hits("/live.mp3"), 2);
+}
+
+#[test]
+fn a_refused_connection_fails_without_a_retry() {
+    // A port that was free a moment ago and has nothing listening now.
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    // A retry would wait out a delay longer than the test waits. Windows
+    // takes about 2 s to report a refusal, so the timeout is above that.
+    let options = StreamOptions {
+        timeout: Duration::from_secs(5),
+        retry_delays: vec![Duration::from_secs(10)],
+        ..fast()
+    };
+    let stream = Stream::open_with(&format!("http://127.0.0.1:{port}/live.mp3"), options);
+    wait_for("Failed", Duration::from_secs(4), || {
+        failed(&stream).is_some()
+    });
+    let reason = failed(&stream).unwrap();
+    assert!(reason.contains("refused"), "{reason}");
 }
 
 #[test]
@@ -124,15 +148,15 @@ fn dead_air_before_a_timeout_is_not_good_playback() {
 }
 
 #[test]
-fn the_first_connects_retries_stay_connecting() {
-    let server = station_after(2, || Reply::Body(503, "text/plain", b"busy".to_vec()));
+fn the_first_connects_retry_stays_connecting() {
+    let server = station_after(1, || Reply::Body(503, "text/plain", b"busy".to_vec()));
     let stream = Stream::open_with(&server.url("/live.mp3"), fast());
     let _listener = listen(&stream);
     let seen = states(&stream, Duration::from_secs(5), |seen| {
         seen.last() == Some(&StreamState::Playing) || has_failed(seen)
     });
     assert_eq!(seen, [StreamState::Connecting, StreamState::Playing]);
-    assert_eq!(server.hits("/live.mp3"), 3);
+    assert_eq!(server.hits("/live.mp3"), 2);
 }
 
 #[test]

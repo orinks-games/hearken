@@ -288,7 +288,7 @@ fn demux(ts: &[u8], audio: &mut Option<Pid>) -> Vec<u8> {
 /// whatever goes wrong fetching from it, played yet or not: a CDN missing a
 /// segment for a moment is not the station gone.
 fn retry(fault: Fault) -> Fault {
-    let (Fault::Fatal(reason) | Fault::Retry(reason)) = fault;
+    let (Fault::Fatal(reason) | Fault::Unreachable(reason) | Fault::Retry(reason)) = fault;
     Fault::Retry(reason)
 }
 

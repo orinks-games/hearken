@@ -25,7 +25,7 @@ pub struct Stream(Arc<Handle>);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StreamState {
     /// Connecting and buffering, before the first audio is ready; calling
-    /// again, if the first calls fail.
+    /// once more, if the first call fails for a reason worth retrying.
     Connecting,
     /// Buffered and playing.
     Playing,
@@ -43,6 +43,8 @@ pub struct StreamOptions {
     /// How long connecting, and every read after, may take.
     pub timeout: Duration,
     /// The wait before each reconnect; when they run out, the stream fails.
+    /// A station that has never played gets only the first, and none when
+    /// its host is unknown, refuses the connection or fails TLS.
     pub retry_delays: Vec<Duration>,
     /// Playback this long earns a dropped stream its full set of retries.
     pub healthy_after: Duration,
@@ -141,6 +143,11 @@ impl Drop for Handle {
 pub(crate) enum Fault {
     /// Calling again would not help: a 4xx, nothing playable.
     Fatal(String),
+    /// Nothing answered: no such host, nothing listening, or TLS failed.
+    /// Fatal until the station has played, so a dead or mistyped one is
+    /// reported in seconds; after, a blip in the network, worth calling
+    /// again.
+    Unreachable(String),
     /// Worth calling again: a timeout, a reset, a 5xx, the stream ending or
     /// stalling.
     Retry(String),

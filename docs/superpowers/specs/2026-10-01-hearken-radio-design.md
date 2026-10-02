@@ -168,6 +168,11 @@ audio.stop(sound, 800);
 - **Retry:** timeout, reset connection, HTTP 5xx, the server ending the
   stream, or 10 s with no decoded audio. Back off 1, 2, 4, 8, 16 s, then
   `Failed`. 30 s of good playback resets the count.
+- **Before the station first plays** the schedule is cut short, so a dead
+  or mistyped station is reported in seconds, not after 31 to 91: a DNS
+  failure, a refused connection or a TLS error fails at once, and anything
+  else retryable gets one retry (decided 2026-10-01). Once it has played,
+  any of them gets the full schedule.
 - A corrupt packet is skipped; decoding goes on.
 - **Never blocking:** a failed thread spawn is `Failed` at once. Dropping the
   last handle sets a flag the worker checks after every read and wakes on
