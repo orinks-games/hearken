@@ -169,7 +169,12 @@ fn an_hls_playlist_that_stops_growing_counts_as_a_stall() {
 #[test]
 fn a_ts_station_renumbered_at_a_discontinuity_plays_on() {
     let server = station();
-    let stream = Stream::open_with(&server.url("/renumbered.m3u8"), fast());
+    // No retries: a retry would replay the first segment and hear enough.
+    let options = StreamOptions {
+        retry_delays: Vec::new(),
+        ..fast()
+    };
+    let stream = Stream::open_with(&server.url("/renumbered.m3u8"), options);
     let listener = listen(&stream);
     // Three one-second segments; the first alone is about one second.
     wait_for("2.5 s of audio", Duration::from_secs(5), || {

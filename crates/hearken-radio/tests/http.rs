@@ -18,6 +18,10 @@ const TONE: &[u8] = include_bytes!("fixtures/tone.mp3");
 /// it is made.
 const ADTS: &[u8] = include_bytes!("fixtures/tone.aac");
 
+/// One second of the tone as Ogg Opus, from hearken-audio's tests; see
+/// `crates/hearken-audio/tests/kira.rs` for how it is made.
+const OPUS: &[u8] = include_bytes!("../../hearken-audio/tests/fixtures/tone.opus");
+
 fn station() -> TestServer {
     TestServer::start(|_| Reply::Endless("audio/mpeg", TONE.to_vec(), None))
 }
@@ -27,6 +31,18 @@ fn an_mp3_station_plays() {
     let server = station();
     let stream = Stream::open(&server.url("/live.mp3"));
     wait_for("Playing", Duration::from_secs(5), || playing(&stream));
+    let level = rms(&drain(&stream));
+    assert!(level > 0.1, "rms {level}");
+}
+
+#[test]
+fn an_ogg_opus_station_plays() {
+    let server = TestServer::start(|_| Reply::Endless("audio/ogg", OPUS.to_vec(), None));
+    let stream = Stream::open_with(&server.url("/live.opus"), fast());
+    wait_for("Playing", Duration::from_secs(5), || {
+        playing(&stream) || failed(&stream).is_some()
+    });
+    assert_eq!(failed(&stream), None);
     let level = rms(&drain(&stream));
     assert!(level > 0.1, "rms {level}");
 }

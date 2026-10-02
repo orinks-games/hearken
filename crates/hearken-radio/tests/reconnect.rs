@@ -28,8 +28,7 @@ fn station_after(n: usize, first: impl Fn() -> Reply + Send + Sync + 'static) ->
 }
 
 /// The states `stream` passes through, in order, polled every millisecond
-/// (a retry's wait is 50 ms) until `done` holds of them; panics after
-/// `within`.
+/// until `done` holds of them; panics after `within`.
 fn states(
     stream: &Stream,
     within: Duration,
@@ -56,7 +55,13 @@ fn has_failed(seen: &[StreamState]) -> bool {
 fn a_dropped_stream_reconnects_and_plays_again() {
     // Two seconds at the server's pace, then it hangs up.
     let server = station_after(1, || Reply::Cut("audio/mpeg", TONE.to_vec(), 64 * 1024));
-    let stream = Stream::open_with(&server.url("/live.mp3"), fast());
+    // A wait long enough that polling cannot miss `Reconnecting` on a busy
+    // machine.
+    let options = StreamOptions {
+        retry_delays: vec![Duration::from_millis(500); 2],
+        ..fast()
+    };
+    let stream = Stream::open_with(&server.url("/live.mp3"), options);
     let _listener = listen(&stream);
     wait_for("Playing", Duration::from_secs(5), || playing(&stream));
     let seen = states(&stream, Duration::from_secs(10), |seen| {
