@@ -73,10 +73,11 @@ pub(crate) fn pump(
                 continue;
             }
             Err(Error::IoError(error)) => return error.into(),
-            // A corrupt frame in the container (an ADTS header that resync
-            // landed on, an Ogg page failing its CRC) is skipped like a
-            // corrupt packet; the stall clock ends an endless run of them.
-            Err(Error::DecodeError(_)) => continue,
+            // A false sync in an ADTS stream is read as a header that is
+            // wrong (a decode error) or claims more than the demuxer plays
+            // (unsupported, which most are). It is skipped like a corrupt
+            // packet; the stall clock ends an endless run of them.
+            Err(Error::DecodeError(_) | Error::Unsupported(_)) => continue,
             Err(error) => return Fault::Retry(error.to_string()),
         };
         // A corrupt packet is skipped; the next one decodes on.

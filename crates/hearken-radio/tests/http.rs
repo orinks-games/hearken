@@ -82,9 +82,10 @@ fn a_url_that_is_not_one_fails_without_panicking() {
     assert_eq!(failed(&stream).as_deref(), Some("bad URL"));
 }
 
-#[test]
-fn a_corrupt_adts_frame_header_is_skipped_without_reconnecting() {
-    // The 20th frame's sample rate index set to 15, which ADTS forbids.
+/// The tone's ADTS frames with `bits` set in byte `at` of the 20th frame's
+/// header, served endlessly: heard for two seconds, so past the bad frame
+/// twice, without a failure or a second call.
+fn plays_through_a_corrupt_adts_header(at: usize, bits: u8) {
     let mut body = ADTS.to_vec();
     let mut frame = 0;
     for _ in 0..20 {
@@ -95,16 +96,28 @@ fn a_corrupt_adts_frame_header_is_skipped_without_reconnecting() {
             | usize::from(header[5]) >> 5;
         frame += length;
     }
-    body[frame + 2] |= 0x3C;
+    body[frame + at] |= bits;
     let server = TestServer::start(move |_| Reply::Endless("audio/aac", body.clone(), None));
     let stream = Stream::open_with(&server.url("/live.aac"), fast());
     let listener = listen(&stream);
-    // Two passes over the one-second tone, so past the bad frame twice.
     wait_for("2 s of audio", Duration::from_secs(5), || {
         listener.heard() >= Duration::from_secs(2) || failed(&stream).is_some()
     });
     assert_eq!(failed(&stream), None);
     assert_eq!(server.hits("/live.aac"), 1);
+}
+
+#[test]
+fn a_corrupt_adts_frame_header_is_skipped_without_reconnecting() {
+    // The sample rate index set to 15, which ADTS forbids: a decode error.
+    plays_through_a_corrupt_adts_header(2, 0x3C);
+}
+
+#[test]
+fn an_adts_header_claiming_several_blocks_is_skipped_without_reconnecting() {
+    // The raw data block bits set, which the demuxer reports as unsupported:
+    // what most false syncs in the middle of a payload look like.
+    plays_through_a_corrupt_adts_header(6, 0x03);
 }
 
 #[test]

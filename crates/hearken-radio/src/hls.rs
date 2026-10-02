@@ -204,15 +204,19 @@ impl Read for HlsReader {
 /// The segments of `playlist` after media sequence number `last`, with
 /// their numbers. With no `last`, or one the window has moved past (a long
 /// pause, a slow fetch), the final [`BEHIND_LIVE`]: the segments between
-/// are gone. So too with a `last` past the window's end: the packager
-/// restarted its numbering, and nothing it lists would ever be newer.
+/// are gone. So too with a `last` more than a window past the window's end:
+/// the packager restarted its numbering, and nothing it lists would ever be
+/// newer. A `last` within a window of the end is a lagging edge's older copy,
+/// which has nothing new yet.
 fn newer(
     playlist: &MediaPlaylist,
     last: Option<u64>,
 ) -> impl Iterator<Item = (u64, &MediaSegment)> {
     let sequence = playlist.media_sequence;
-    let end = sequence.saturating_add(playlist.segments.len() as u64);
-    let last = last.filter(|last| last.saturating_add(1) >= sequence && *last < end);
+    let window = playlist.segments.len() as u64;
+    let end = sequence.saturating_add(window);
+    let last = last
+        .filter(|last| last.saturating_add(1) >= sequence && *last < end.saturating_add(window));
     let live = playlist.segments.len().saturating_sub(BEHIND_LIVE) as u64;
     let first = last.map_or(sequence.saturating_add(live), |last| last.saturating_add(1));
     let numbered = playlist.segments.iter().enumerate();
@@ -349,6 +353,13 @@ mod tests {
         let playlist = six(0);
         let (sequence, _) = newer(&playlist, Some(20)).next().unwrap();
         assert_eq!(sequence, 3);
+    }
+
+    #[test]
+    fn a_playlist_one_version_older_than_the_last_served_yields_nothing() {
+        // A lagging CDN edge: its newest segment is the one before `last`.
+        let playlist = six(10);
+        assert_eq!(newer(&playlist, Some(16)).count(), 0);
     }
 
     #[test]

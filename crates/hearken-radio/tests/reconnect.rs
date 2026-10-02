@@ -153,6 +153,31 @@ fn dead_air_before_a_timeout_is_not_good_playback() {
 }
 
 #[test]
+fn a_station_that_played_once_then_fails_is_not_retried_forever() {
+    // Every call counts as healthy at zero; only one that played does.
+    let calls = AtomicUsize::new(0);
+    let server = TestServer::start(move |_| {
+        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Reply::Cut("audio/mpeg", TONE.to_vec(), 16 * 1024)
+        } else {
+            Reply::Body(503, "text/plain", b"busy".to_vec())
+        }
+    });
+    let options = StreamOptions {
+        healthy_after: Duration::ZERO,
+        ..fast()
+    };
+    let stream = Stream::open_with(&server.url("/live.mp3"), options);
+    let _listener = listen(&stream);
+    wait_for("Failed", Duration::from_secs(5), || {
+        failed(&stream).is_some()
+    });
+    assert_eq!(failed(&stream).as_deref(), Some("HTTP 503"));
+    // The call that played, and the two retries.
+    assert_eq!(server.hits("/live.mp3"), 3);
+}
+
+#[test]
 fn the_first_connects_retry_stays_connecting() {
     let server = station_after(1, || Reply::Body(503, "text/plain", b"busy".to_vec()));
     let stream = Stream::open_with(&server.url("/live.mp3"), fast());

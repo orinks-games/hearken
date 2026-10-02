@@ -4,6 +4,7 @@ use std::io::{Cursor, Read};
 use std::num::NonZeroUsize;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
+use std::time::Duration;
 
 use icy_metadata::error::MetadataParseError;
 use symphonia::core::formats::probe::Hint;
@@ -37,7 +38,10 @@ pub(crate) fn run(url: &str, shared: &Arc<Shared>, opts: &StreamOptions) {
             Fault::Unreachable(reason) if connecting => break reason,
             Fault::Unreachable(reason) | Fault::Retry(reason) => reason,
         };
-        if shared.played() >= opts.healthy_after {
+        // A call that never played reports zero, which is not good playback
+        // even at a `healthy_after` of zero.
+        let played = shared.played();
+        if played > Duration::ZERO && played >= opts.healthy_after {
             attempt = 0;
         }
         let delay = opts.retry_delays.get(attempt);
