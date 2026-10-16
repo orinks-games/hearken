@@ -100,9 +100,13 @@ jobs:
           key: vs-atlmfc-${{ runner.os }}-${{ matrix.os }}-${{ steps.msvc.outputs.ver }}
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Feature combinations compile the same everywhere, so they use the
+      # cheapest runner.
       - name: Build without Kira
+        if: runner.os == 'Linux'
         run: cargo check -p hearken --no-default-features --locked
       - name: Build with fdk-aac
+        if: runner.os == 'Linux'
         run: cargo check -p hearken --features fdk-aac --locked
       - name: Tests
         run: cargo test --workspace --locked
