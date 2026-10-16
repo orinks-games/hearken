@@ -26,7 +26,7 @@ env:
 
 jobs:
   fmt:
-    runs-on: blacksmith-2vcpu-ubuntu-2204
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["blacksmith-4vcpu-windows-2025","blacksmith-2vcpu-ubuntu-2204"]' || '["blacksmith-4vcpu-windows-2025","blacksmith-6vcpu-macos-15","blacksmith-2vcpu-ubuntu-2204"]') }}
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["blacksmith-4vcpu-windows-2025","blacksmith-4vcpu-ubuntu-2404"]' || '["blacksmith-4vcpu-windows-2025","blacksmith-6vcpu-macos-15","blacksmith-4vcpu-ubuntu-2404"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
