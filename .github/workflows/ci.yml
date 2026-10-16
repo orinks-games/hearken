@@ -110,8 +110,10 @@ jobs:
       - name: Build without Kira
         if: runner.os == 'Linux'
         run: cargo check -p hearken --no-default-features --locked
+      # fdk-aac compiles a C codec from source, so pull requests skip it;
+      # release tags and manual runs still check it.
       - name: Build with fdk-aac
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: cargo check -p hearken --features fdk-aac --locked
       - name: Tests
         run: cargo test --workspace --locked
