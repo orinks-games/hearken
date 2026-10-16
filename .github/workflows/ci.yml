@@ -9,6 +9,11 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# A new push to a pull request cancels the run it replaces.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   # The bundled SDL2 source declares a cmake_minimum_required older than
