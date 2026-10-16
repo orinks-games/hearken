@@ -29,6 +29,13 @@ pub trait State<G: Game> {
     }
     /// Spoken on F1.
     fn help(&self, ctx: &Ctx<G>) -> String;
+    /// F1 (or a controller's Back) was pressed: speaks [`State::help`] by
+    /// default. A screen whose help depends on what it is doing, or that
+    /// must remember the press (a second press reading more), takes it here.
+    fn help_pressed(&mut self, ctx: &mut Ctx<G>) {
+        let help = self.help(ctx);
+        ctx.say(help);
+    }
 }
 
 /// A change to the stack, queued on the context and applied once the

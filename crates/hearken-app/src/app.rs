@@ -122,9 +122,8 @@ impl<G: Game> App<G> {
             // F1, or a controller's Back button, reads the top screen's
             // help.
             Some(Key::F1) => {
-                let help = self.states.last().map(|top| top.help(&self.ctx));
-                if let Some(help) = help {
-                    self.ctx.say(help);
+                if let Some(top) = self.states.last_mut() {
+                    top.help_pressed(&mut self.ctx);
                 }
                 return;
             }

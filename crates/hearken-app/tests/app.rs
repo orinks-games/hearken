@@ -324,3 +324,35 @@ fn run_ends_when_a_screen_quits_then_saves_settings_and_shuts_speech_down() {
         Some(&["root".to_string()][..])
     );
 }
+
+/// A screen that counts F1 presses: the second press says more.
+struct Counted(u32);
+
+impl State<TestGame> for Counted {
+    fn name(&self) -> &'static str {
+        "counted"
+    }
+
+    fn help(&self, _ctx: &Ctx<TestGame>) -> String {
+        "short help".into()
+    }
+
+    fn help_pressed(&mut self, ctx: &mut Ctx<TestGame>) {
+        self.0 += 1;
+        if self.0 == 1 {
+            let help = self.help(ctx);
+            ctx.say(help);
+        } else {
+            ctx.say("the full list");
+        }
+    }
+}
+
+#[test]
+fn a_screen_can_take_the_f1_press_itself() {
+    let mut h = Headless::<TestGame>::new(TestData::default(), Counted(0));
+    h.clear();
+    h.press(Key::F1);
+    h.press(Key::F1);
+    assert_eq!(h.spoken(), ["short help", "the full list"]);
+}
