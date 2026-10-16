@@ -197,3 +197,63 @@ fn stopping_passes_the_fade_to_the_backend_and_frees_the_handle() {
     ));
     assert!(!audio.is_playing(s));
 }
+
+#[test]
+fn a_released_loop_plays_out_and_frees_its_handle_when_it_ends() {
+    let (mut audio, rec) = pool();
+    let horn = audio.start_loop("sfx/door", None, Bus::EFFECTS);
+    let channel = rec.channel_of("sfx/door").unwrap();
+    audio.release(horn, 150);
+    assert!(matches!(
+        rec.calls().last(),
+        Some(Call::Release { fade_ms: 150, .. })
+    ));
+    audio.update(&no_occlusion);
+    assert!(audio.is_playing(horn), "the tail is still playing");
+    assert!(!audio.live()[0].looping, "and it no longer loops");
+    rec.finish(channel);
+    audio.update(&no_occlusion);
+    assert!(!audio.is_playing(horn), "freed once the tail ends");
+}
+
+#[test]
+fn releasing_a_one_shot_or_releasing_twice_sends_nothing_more() {
+    let (mut audio, rec) = pool();
+    let door = audio.play("sfx/door", Bus::EFFECTS);
+    audio.release(door, 0);
+    let horn = audio.start_loop("sfx/door", None, Bus::EFFECTS);
+    audio.release(horn, 0);
+    audio.release(horn, 0);
+    let releases = rec
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::Release { .. }))
+        .count();
+    assert_eq!(releases, 1);
+}
+
+#[test]
+fn a_loop_region_reaches_the_backend_and_a_bad_one_is_ignored() {
+    let (mut audio, rec) = pool();
+    audio.start_loop_region("sfx/door", LoopRegion::new(0.5, 1.25), None, Bus::EFFECTS);
+    assert!(matches!(
+        rec.calls().last(),
+        Some(Call::SetLoopRegion { region, .. }) if *region == LoopRegion::new(0.5, 1.25)
+    ));
+    rec.clear();
+    let looped = audio.start_loop_region("sfx/door", LoopRegion::new(2.0, 1.0), None, Bus::EFFECTS);
+    assert!(audio.is_playing(looped), "it still loops, the whole clip");
+    assert!(!rec
+        .calls()
+        .iter()
+        .any(|c| matches!(c, Call::SetLoopRegion { .. })));
+}
+
+#[test]
+fn has_clip_answers_without_playing_or_noting_a_miss() {
+    let (mut audio, rec) = pool();
+    assert!(audio.has_clip("sfx/door"));
+    assert!(!audio.has_clip("sfx/horn"));
+    assert!(rec.calls().is_empty());
+    assert!(audio.missing_clips().is_empty());
+}

@@ -5,7 +5,7 @@ use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
 use crate::shell::Shell;
-use crate::state::{StackOp, State};
+use crate::state::{Reveal, StackOp, State};
 
 /// Rounds of stack changes applied at once. An `enter` may queue more, and a
 /// screen that always does would otherwise hang the game.
@@ -122,9 +122,8 @@ impl<G: Game> App<G> {
             // F1, or a controller's Back button, reads the top screen's
             // help.
             Some(Key::F1) => {
-                let help = self.states.last().map(|top| top.help(&self.ctx));
-                if let Some(help) = help {
-                    self.ctx.say(help);
+                if let Some(top) = self.states.last_mut() {
+                    top.help_pressed(&mut self.ctx);
                 }
                 return;
             }
@@ -170,6 +169,12 @@ impl<G: Game> App<G> {
             .unwrap_or_default()
     }
 
+    fn pop_one(&mut self) {
+        if let Some(mut gone) = self.states.pop() {
+            gone.exit(&mut self.ctx);
+        }
+    }
+
     fn apply_pending(&mut self) {
         // A new screen never inherits the last one's held keys.
         if self.ctx.has_pending() {
@@ -179,27 +184,44 @@ impl<G: Game> App<G> {
             if !self.ctx.has_pending() {
                 break;
             }
-            // Whether the last change this round was a `Pop`, revealing the
-            // screen now on top. Resuming it is deferred until the round has
-            // drained: a `Push`, `Replace` or `Reset` later in the same round
-            // covers or removes it, so it must never speak an announcement
-            // for a screen the player never actually lands on.
-            let mut resume = false;
+            // What the screen revealed by the last change this round hears,
+            // when that change was a pop. Resuming it is deferred until the
+            // round has drained: a `Push`, `Replace` or `Reset` later in the
+            // same round covers or removes it, so it must never speak an
+            // announcement for a screen the player never actually lands on.
+            let mut reveal: Option<Reveal> = None;
             for op in self.ctx.take_pending() {
                 match op {
                     StackOp::Push(mut next) => {
                         next.enter(&mut self.ctx);
                         self.states.push(next);
-                        resume = false;
+                        reveal = None;
                     }
                     StackOp::Pop => {
-                        if let Some(mut gone) = self.states.pop() {
-                            gone.exit(&mut self.ctx);
-                        }
+                        self.pop_one();
                         // An empty stack is only judged once the whole queue
                         // has drained: popping the root and pushing its
                         // replacement in one handler is allowed.
-                        resume = true;
+                        reveal = Some(Reveal::Announce);
+                    }
+                    StackOp::PopReveal(how) => {
+                        self.pop_one();
+                        reveal = Some(how);
+                    }
+                    StackOp::PopTo(name, how) => {
+                        let Some(at) = self.states.iter().rposition(|s| s.name() == name) else {
+                            log::warn!("pop_to({name:?}): no such screen on the stack");
+                            continue;
+                        };
+                        let popped = self.states.len() - 1 - at;
+                        for _ in 0..popped {
+                            self.pop_one();
+                        }
+                        // Already on that screen: nothing to reveal, but a
+                        // result line is still the player's answer.
+                        if popped > 0 || matches!(how, Reveal::With(_)) {
+                            reveal = Some(how);
+                        }
                     }
                     StackOp::Replace(mut next) => {
                         if let Some(mut gone) = self.states.pop() {
@@ -207,7 +229,7 @@ impl<G: Game> App<G> {
                         }
                         next.enter(&mut self.ctx);
                         self.states.push(next);
-                        resume = false;
+                        reveal = None;
                     }
                     StackOp::Reset(mut next) => {
                         while let Some(mut gone) = self.states.pop() {
@@ -215,13 +237,16 @@ impl<G: Game> App<G> {
                         }
                         next.enter(&mut self.ctx);
                         self.states.push(next);
-                        resume = false;
+                        reveal = None;
                     }
                 }
             }
-            if resume {
-                if let Some(top) = self.states.last_mut() {
-                    top.resume(&mut self.ctx);
+            if let (Some(how), Some(top)) = (reveal, self.states.last_mut()) {
+                match how {
+                    Reveal::Announce => top.resume(&mut self.ctx),
+                    Reveal::Quiet => top.resume_quiet(&mut self.ctx),
+                    Reveal::With(result) if result.trim().is_empty() => top.resume(&mut self.ctx),
+                    Reveal::With(result) => top.resume_with(&mut self.ctx, &result),
                 }
             }
         }

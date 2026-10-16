@@ -92,6 +92,42 @@ impl Mix {
     };
 }
 
+/// The part of a clip a looping sound repeats, in seconds from the clip's
+/// start: it plays from the start, repeats `start..end` until released, then
+/// plays on through whatever follows `end`. `end: None` loops to the clip's
+/// end. This is how a horn, a bell or an engine is one file with its attack,
+/// its sustain and its release, instead of three files cut by hand.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopRegion {
+    pub start: f64,
+    pub end: Option<f64>,
+}
+
+impl LoopRegion {
+    /// Repeats `start..end` seconds.
+    pub const fn new(start: f64, end: f64) -> LoopRegion {
+        LoopRegion {
+            start,
+            end: Some(end),
+        }
+    }
+
+    /// Repeats from `start` seconds to the clip's end.
+    pub const fn from(start: f64) -> LoopRegion {
+        LoopRegion { start, end: None }
+    }
+
+    /// Whether the region is usable: a finite, non-negative start, and an
+    /// end after it if there is one.
+    pub fn is_valid(&self) -> bool {
+        self.start.is_finite()
+            && self.start >= 0.0
+            && self
+                .end
+                .is_none_or(|end| end.is_finite() && end > self.start)
+    }
+}
+
 /// The listener's position and orientation.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Listener {

@@ -38,7 +38,7 @@ impl<G: Game> Headless<G> {
         let (backend, sounds) = RecordingBackend::new();
         ctx.install_audio(Audio::new(
             Box::new(backend),
-            Box::new(MemoryClips::default()),
+            crate::sound::clip_source::<G>(MemoryClips::default()),
         ));
         Headless {
             app: App::new(ctx, Box::new(first)),

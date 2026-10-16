@@ -33,9 +33,9 @@ pub use hearken_audio as audio;
 #[cfg(feature = "kira")]
 pub use hearken_audio::KiraBackend;
 pub use hearken_audio::{
-    Audio, Backend, BackendError, Bus, Call, Channel, ClipSource, Fades, Listener, LiveSound,
-    LooseClips, MemoryClips, Mix, Recorder, RecordingBackend, SilentBackend, Sound, Source,
-    SpatialConfig, Vec3,
+    Audio, Backend, BackendError, Bus, Call, Channel, ClipSource, Fades, LayeredClips, Listener,
+    LiveSound, LoopRegion, LooseClips, MadeClips, MemoryClips, Mix, Recorder, RecordingBackend,
+    SilentBackend, Sound, Source, SpatialConfig, Vec3,
 };
 pub use hearken_speech::{
     Category, EventPriority, Level, NoCategory, PacerConfig, Rule, Verbosity,
@@ -51,5 +51,5 @@ pub use settings::{default_volume, AudioSettings, ControllerSettings, MenuSettin
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
 pub use speech_delivery::SayEvent;
-pub use state::{StackOp, State};
+pub use state::{Reveal, StackOp, State};
 pub use testing::Headless;

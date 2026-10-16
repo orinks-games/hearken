@@ -562,3 +562,144 @@ fn pause_silences_a_feed() {
     r.b.pause(ch, true);
     assert!(rms(&r.render(2_000)[500..]) < 1e-4);
 }
+
+/// 0.1 s loud, 0.1 s quiet, 0.1 s loud: the quiet middle is the loop.
+fn three_part() -> Vec<f32> {
+    let n = (0.1 * RATE as f32) as usize;
+    tone(440.0, 0.3)
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| if (n..2 * n).contains(&i) { s * 0.1 } else { s })
+        .collect()
+}
+
+/// `samples` as a WAV whose `smpl` chunk loops `start..=end`.
+fn with_smpl(samples: &[f32], start: u32, end: u32) -> Source {
+    let mut wav = hearken_synth::wav_bytes(samples, RATE);
+    let mut smpl = vec![0u8; 36];
+    smpl[28..32].copy_from_slice(&1u32.to_le_bytes());
+    for field in [0, 0, start, end, 0, 0] {
+        smpl.extend(field.to_le_bytes());
+    }
+    wav.extend(b"smpl");
+    wav.extend((smpl.len() as u32).to_le_bytes());
+    wav.extend(smpl);
+    let riff = (wav.len() - 8) as u32;
+    wav[4..8].copy_from_slice(&riff.to_le_bytes());
+    Source::Clip(wav.into())
+}
+
+/// Plays the attack, then checks the loop stays in the quiet middle, then
+/// releases and checks the loud tail plays and the sound ends by itself.
+fn holds_the_middle_then_plays_out(r: &mut Rig, ch: Channel) {
+    let tenth = RATE as usize / 10;
+    assert!(rms(&r.render(tenth / 2)) > 0.2, "the attack plays");
+    r.render(tenth);
+    let held = r.render(5 * tenth);
+    assert!(
+        rms(&held) < 0.1,
+        "the loop repeats only the quiet middle: {}",
+        rms(&held)
+    );
+    r.b.release(ch, 100);
+    let tail = r.render(2 * tenth);
+    assert!(rms(&tail) > 0.2, "the release plays the loud tail");
+    r.render(2 * tenth);
+    r.b.update();
+    assert!(!r.b.is_playing(ch), "a released sound ends by itself");
+}
+
+#[test]
+fn a_wavs_own_loop_points_hold_its_middle_and_release_plays_its_tail() {
+    let mut r = rig();
+    let n = RATE / 10;
+    let ch =
+        r.b.play(
+            "sfx/horn",
+            with_smpl(&three_part(), n, 2 * n - 1),
+            true,
+            Mix::UNITY,
+        )
+        .expect("play");
+    holds_the_middle_then_plays_out(&mut r, ch);
+}
+
+#[test]
+fn a_loop_region_in_seconds_overrides_the_whole_clip() {
+    let mut r = rig();
+    let ch =
+        r.b.play("sfx/horn", clip(&three_part()), true, Mix::UNITY)
+            .expect("play");
+    r.b.set_loop_region(ch, LoopRegion::new(0.1, 0.2));
+    holds_the_middle_then_plays_out(&mut r, ch);
+}
+
+#[test]
+fn an_opus_files_loop_tags_hold_its_middle() {
+    const TAGGED: &[u8] = include_bytes!("fixtures/loop_tagged.opus");
+    let mut r = rig();
+    let ch =
+        r.b.play("sfx/bell", Source::Clip(TAGGED.into()), true, Mix::UNITY)
+            .expect("play");
+    assert!(rms(&r.render(RATE as usize / 5)) > 0.2, "the attack plays");
+    r.render(RATE as usize / 5);
+    let held = r.render(RATE as usize);
+    assert!(
+        rms(&held) < 0.1,
+        "the tagged region repeats: {}",
+        rms(&held)
+    );
+    r.b.release(ch, 0);
+    r.render(RATE as usize / 2);
+    r.render(RATE as usize / 10);
+    r.b.update();
+    assert!(!r.b.is_playing(ch));
+}
+
+#[test]
+fn releasing_a_one_shot_or_a_voice_is_harmless_and_a_voice_stops() {
+    let mut r = rig();
+    let voice =
+        r.b.play("voice", sine_voice(220.0), true, Mix::UNITY)
+            .expect("play");
+    r.b.release(voice, 0);
+    r.b.update();
+    assert!(!r.b.is_playing(voice), "a voice has no tail: it stops");
+    r.b.release(9_999, 0);
+}
+
+#[test]
+fn a_long_clips_loop_points_hold_while_it_streams() {
+    let mut r = rig();
+    // 3 s of 16-bit mono is about 265 KB: over the streaming cut.
+    let second = RATE as usize;
+    let samples: Vec<f32> = tone(440.0, 3.0)
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if (second..2 * second).contains(&i) {
+                s * 0.1
+            } else {
+                s
+            }
+        })
+        .collect();
+    let ch =
+        r.b.play(
+            "sfx/long_horn",
+            with_smpl(&samples, RATE, 2 * RATE - 1),
+            true,
+            Mix::UNITY,
+        )
+        .expect("play");
+    // Through the attack and two passes of the loop, letting the decoder
+    // thread keep up; the last pass must be the quiet middle.
+    let mut rendered = Vec::new();
+    while rendered.len() < 3 * second + second / 2 {
+        rendered.extend(r.render(1_024));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let late = &rendered[rendered.len() - second / 2..];
+    assert!(rms(late) < 0.1, "still in the loop region: {}", rms(late));
+    assert!(r.b.is_playing(ch));
+}

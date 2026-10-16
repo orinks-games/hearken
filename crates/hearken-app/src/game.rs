@@ -1,6 +1,6 @@
 //! What the engine needs to know about one game.
 
-use hearken_audio::{Backend, Vec3};
+use hearken_audio::{Backend, ClipSource, Vec3};
 use hearken_speech::Verbosity;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -67,6 +67,13 @@ pub trait Game: Sized + 'static {
     /// `Some(Err(reason))` reaches the player the same way a failed default
     /// backend would, through the "no sound device" notice.
     fn audio_backend() -> Option<Result<Box<dyn Backend>, String>> {
+        None
+    }
+
+    /// Sounds the game carries inside itself, such as synthesized
+    /// placeholders. A file of the same key in the sounds folder wins, so a
+    /// real recording replaces a built-in sound with no code change.
+    fn builtin_clips() -> Option<Box<dyn ClipSource>> {
         None
     }
 

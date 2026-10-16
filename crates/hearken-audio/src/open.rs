@@ -113,12 +113,13 @@ impl Audio {
             let Some(live) = self.slots[index as usize].live.as_ref() else {
                 continue;
             };
-            let (key, mix, voice, feed, paused) = (
+            let (key, mix, voice, feed, paused, region) = (
                 live.key.clone(),
                 live.sent,
                 live.voice.clone(),
                 live.feed.clone(),
                 live.paused,
+                live.region,
             );
             let source = match (&voice, feed) {
                 (Some((recipe, params)), _) => {
@@ -129,6 +130,9 @@ impl Audio {
             };
             match self.play_with_fallback(&key, source, true, mix) {
                 Some(channel) => {
+                    if let Some(region) = region {
+                        self.backend.set_loop_region(channel, region);
+                    }
                     if paused {
                         self.backend.pause(channel, true);
                     }

@@ -12,7 +12,7 @@ use crate::paths::Paths;
 use crate::settings::Settings;
 use crate::sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
 use crate::speech_delivery::Delivery;
-use crate::state::{StackOp, State};
+use crate::state::{Reveal, StackOp, State};
 
 /// The `log` target every spoken line is written under, so a session log
 /// reads as a transcript of the run.
@@ -52,6 +52,8 @@ pub struct Ctx<G: Game> {
     sound: SoundConfig,
     pub(crate) delivery: Delivery<G::Category>,
     pending: Vec<StackOp<G>>,
+    /// Set while `queued_speech` runs: `say` queues instead of interrupting.
+    hold_interrupt: bool,
 }
 
 impl<G: Game> Ctx<G> {
@@ -84,6 +86,7 @@ impl<G: Game> Ctx<G> {
             sound,
             delivery,
             pending: Vec::new(),
+            hold_interrupt: false,
         };
         // So saved bus volumes are in effect from the very first frame, not
         // just once the real backend has finished opening.
@@ -182,11 +185,21 @@ impl<G: Game> Ctx<G> {
         self.record(text);
     }
 
+    /// Runs `f` with every `say` in it queued behind what is already being
+    /// said instead of cutting it off, so a screen's own announcement can
+    /// follow a line spoken first (a result, a notice) without silencing it.
+    pub fn queued_speech<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let held = std::mem::replace(&mut self.hold_interrupt, true);
+        let out = f(self);
+        self.hold_interrupt = held;
+        out
+    }
+
     fn speak(&mut self, text: String, interrupt: bool) {
         if text.trim().is_empty() {
             return;
         }
-        self.speech.say(&text, interrupt);
+        self.speech.say(&text, interrupt && !self.hold_interrupt);
         self.record(text);
     }
 
@@ -264,8 +277,45 @@ impl<G: Game> Ctx<G> {
         self.pending.push(StackOp::Push(Box::new(screen)));
     }
 
+    /// Close the top screen. The screen revealed announces itself afresh.
     pub fn pop(&mut self) {
         self.pending.push(StackOp::Pop);
+    }
+
+    /// Close the top screen without the one revealed saying anything, for
+    /// a screen that has already said everything the player needs.
+    pub fn pop_quiet(&mut self) {
+        self.pending.push(StackOp::PopReveal(Reveal::Quiet));
+    }
+
+    /// Close the top screen and hand `result` to the one revealed, which
+    /// speaks it first and then its context instead of its whole
+    /// announcement: "Via Ames added.", then the menu's current row.
+    pub fn pop_with(&mut self, result: impl Into<String>) {
+        self.pending
+            .push(StackOp::PopReveal(Reveal::With(result.into())));
+    }
+
+    /// Close screens until the top one's `State::name` is `name`, which
+    /// then announces itself afresh. When no screen on the stack has that
+    /// name, nothing is closed and a warning is logged.
+    pub fn pop_to(&mut self, name: &str) {
+        self.pending
+            .push(StackOp::PopTo(name.to_string(), Reveal::Announce));
+    }
+
+    /// `pop_to`, with the revealed screen saying nothing, as `pop_quiet`.
+    pub fn pop_to_quiet(&mut self, name: &str) {
+        self.pending
+            .push(StackOp::PopTo(name.to_string(), Reveal::Quiet));
+    }
+
+    /// `pop_to`, handing `result` to the revealed screen, as `pop_with`.
+    pub fn pop_to_with(&mut self, name: &str, result: impl Into<String>) {
+        self.pending.push(StackOp::PopTo(
+            name.to_string(),
+            Reveal::With(result.into()),
+        ));
     }
 
     pub fn replace(&mut self, screen: impl State<G> + 'static) {
@@ -282,6 +332,10 @@ impl<G: Game> Ctx<G> {
 
     pub(crate) fn take_pending(&mut self) -> Vec<StackOp<G>> {
         std::mem::take(&mut self.pending)
+    }
+
+    pub(crate) fn pending_len(&self) -> usize {
+        self.pending.len()
     }
 
     pub(crate) fn has_pending(&self) -> bool {

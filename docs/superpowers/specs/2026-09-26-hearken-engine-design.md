@@ -2,7 +2,7 @@
 
 - Date: 2026-09-26; M2 revised 2026-09-27
 - Status: M1 and M1b built from this; M2 approved 2026-09-27
-- Repository: `Orinks/hearken` (local only until the owner says to publish)
+- Repository: `orinks-games/hearken`
 - Sources: Freight Fate `c5d3ef8d` (2026-09-25), Lucky Break `a101970` (2026-09-23)
 
 ## Summary
@@ -34,7 +34,7 @@ shape of its API: a new game should never have to look like Freight Fate.
    parameters, on the same recipes that bake offline sounds.
 5. Headless, transcript-backed testing and the agent-server MCP for every
    game, not only Freight Fate.
-6. Open source under MIT/Apache-2.0 once Lucky Break runs on it and the
+6. Open source under MIT/Apache-2.0 once Locomotive runs on it and the
    template builds from a clean clone.
 7. Every built-in is a default made from the same public pieces the engine
    uses, so a game can tune it, switch it off, or replace it with its own:
@@ -83,6 +83,8 @@ shape of its API: a new game should never have to look like Freight Fate.
 | A `hearken` facade crate is the core a game depends on; extras are its optional features | 2026-10-01 | See `2026-10-01-hearken-radio-design.md` |
 | Internet radio is `hearken-radio`, behind the facade's `radio` feature, not BASS | 2026-10-01 | The point of Kira was no BASS. HE-AAC via `fdk-aac` is opt-in |
 | The speech ladder is generic and comes in M2 | 2026-09-27 | Game-declared categories and levels |
+| Freight Fate: Locomotive is the first game on Hearken; Lucky Break waits until Locomotive ships | 2026-10-16 | Locomotive is ported from Python, and Hearken is fixed wherever the port finds it short. M3 is now Locomotive |
+| A looping clip can repeat a region inside its file, and a release plays out the rest | 2026-10-16 | Loop points from a WAV's `smpl` chunk, `LOOPSTART` tags, or the game; one horn file holds its attack, sustain and release |
 
 ### Evidence behind the sound decision
 
@@ -303,6 +305,9 @@ The shell and everything a menu-driven audio game needs:
   separate `handle_controller`. Presence hooks move to `hearken-online`.
 - **Stack**: Lucky Break's queued `StackOp { Push, Pop, Replace, Reset }`,
   applied between frames, so a state never re-enters itself mid-handler.
+  Pops can reveal the screen beneath quietly or with a result line
+  (`Reveal { Announce, Quiet, With }`, `State::resume_quiet` and
+  `resume_with`), and `PopTo` closes screens down to a named one.
 - **Context**: `Ctx<G>` holds speech, audio, settings, bindings, the stack
   queue, logging, and `game: G::Data`.
 - **Menus**: Lucky Break's `Menu`, `MenuCore`, `MenuItem` and `Label`, which
@@ -414,7 +419,7 @@ vary = { pitch_semitones = 1.0 }
 
 ## Template
 
-`cargo generate --git https://github.com/Orinks/hearken template` produces a
+`cargo generate --git https://github.com/orinks-games/hearken template` produces a
 game that:
 
 - opens a title menu with New Game, Settings, Help, Learn Sounds, Quit;
@@ -483,8 +488,11 @@ Each milestone gets its own implementation plan.
    (tiers, file layers with required provenance, generated credits, the
    pack, `--check`); the spike's recipes, layer helpers and measurement in
    `hearken-synth`; Learn Sounds.
-3. **M3 Lucky Break on Hearken.** Lucky Break drops its `prism`, `prism-sys`,
-   `bass-sys` and shell code for Hearken. Its existing Python-rendered WAVs
+3. **M3 Locomotive on Hearken.** Freight Fate: Locomotive is ported from
+   Python to Rust on Hearken, its rules in an engine-free crate and its
+   screens, cab and sound on Hearken; whatever the port finds missing is
+   added here. Lucky Break follows once Locomotive ships: it drops its
+   `prism`, `prism-sys`, `bass-sys` and shell code for Hearken. Its existing Python-rendered WAVs
    enter the manifest as layers, so nothing sounds different on day one;
    recipes then replace them one sound at a time, each with a listening pass.
 4. **M4 Playtest and template.** Generic agent server; the template complete;

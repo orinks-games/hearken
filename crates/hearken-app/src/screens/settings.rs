@@ -95,6 +95,17 @@ impl<G: Game> SettingsRow<G> {
             item,
         }
     }
+
+    /// Left and Right read back `value` alone (computed after the change,
+    /// such as `"55 percent"` or `"Hard, difficulty"`) instead of the whole
+    /// row and its position. Moving onto the row still reads it all. The
+    /// speech-rate row's read-back still goes through the voice it changed.
+    pub fn value_first(mut self, value: impl Fn(&Ctx<G>) -> String + 'static) -> Self {
+        self.item = self.item.adjusted_text(Label::dynamic(
+            move |_s: &SettingsScreen<G>, ctx: &Ctx<G>| value(ctx),
+        ));
+        self
+    }
 }
 
 pub struct SettingsScreen<G: Game> {
@@ -271,11 +282,11 @@ impl<G: Game> Menu for SettingsScreen<G> {
 
     /// A new rate is read back by the voice whose rate changed.
     fn speak_adjusted(&mut self, ctx: &mut Ctx<G>) {
+        let text = self.adjusted_text(ctx);
         if self.row_ids.get(self.menu.index).map(String::as_str) == Some("speech_rate") {
-            let text = self.current_text(ctx);
             ctx.say_preview("speech_rate", text);
         } else {
-            self.speak_current(ctx);
+            ctx.say(text);
         }
     }
 

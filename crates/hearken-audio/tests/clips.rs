@@ -41,3 +41,34 @@ fn a_miss_is_remembered_so_the_disk_is_not_asked_every_frame() {
         "cached as missing for the run"
     );
 }
+
+#[test]
+fn a_layered_source_takes_the_first_layer_that_has_the_key() {
+    use hearken_audio::{LayeredClips, MemoryClips};
+    let loose = MemoryClips::default().with("horn", b"recording".to_vec());
+    let builtin = MemoryClips::default()
+        .with("horn", b"placeholder".to_vec())
+        .with("bell", b"placeholder bell".to_vec());
+    let mut clips = LayeredClips::new(vec![Box::new(loose), Box::new(builtin)]);
+    assert_eq!(&*clips.load("horn").unwrap(), b"recording");
+    assert_eq!(&*clips.load("bell").unwrap(), b"placeholder bell");
+    assert!(clips.load("whistle").is_none());
+}
+
+#[test]
+fn made_clips_are_made_once_and_cached_misses_included() {
+    use hearken_audio::MadeClips;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let mut clips = MadeClips::new(move |key| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        (key == "tone").then(|| vec![1, 2, 3])
+    });
+    assert_eq!(&*clips.load("tone").unwrap(), &[1, 2, 3]);
+    assert_eq!(&*clips.load("tone").unwrap(), &[1, 2, 3]);
+    assert!(clips.load("none").is_none());
+    assert!(clips.load("none").is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}

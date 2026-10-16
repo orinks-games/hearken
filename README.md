@@ -1,18 +1,33 @@
 # Hearken
 
 Rust crates for audio-first, screen-reader-first games, extracted from
-Freight Fate and Lucky Break Casino. Work in progress: this is milestone 1
+Freight Fate and Lucky Break Casino. Its first game is Freight Fate:
+Locomotive. Work in progress: this is milestone 1
 of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
 
 ## What is here
 
 - `hearken`: the one dependency for a game; it re-exports the rest.
 - `hearken-app`: the window, the screen stack, spoken menus, settings,
-  help and pause screens, and a headless harness for tests.
+  help, pause, confirm and text-entry screens, and a headless harness for
+  tests. Closing a screen can leave the one beneath silent
+  (`ctx.pop_quiet()`), hand it a result to speak before its current row
+  instead of its whole announcement (`ctx.pop_with("Route deleted.")`), or
+  go back several screens to a named one (`ctx.pop_to("routes")`, with
+  `pop_to_quiet` and `pop_to_with`). `ConfirmScreen` speaks its question
+  before its options, Escape picks the cancel option, and an option marked
+  `ends_game` quits without the screen beneath speaking. A menu row, and
+  a Settings row through `SettingsRow::value_first`, can read back only its
+  new value on Left and Right. A text field can go without a label
+  (`TextEntryScreen::unlabelled`) and take the game's own instructions.
 - `hearken-speech`: screen reader, braille and text-to-speech output
   through Prism.
 - `hearken-audio`: a pool of positioned sounds, buses and live voices,
-  played through Kira, which compiles into the game.
+  played through Kira, which compiles into the game. A looping clip can
+  repeat a region inside its file and play out the rest when released, so
+  a horn is one file with its start, loop and release: the loop points come
+  from a WAV's `smpl` chunk, `LOOPSTART` and `LOOPEND` (or `LOOPLENGTH`)
+  tags in an Ogg, Opus or FLAC file, or `Audio::start_loop_region`.
 - `hearken-synth`: fundsp recipes for live voices and the default sound for
   every category, so a game makes sound with no sound files.
 - `hearken-radio`: internet radio, played as a feed: HTTP and ICY stations,
@@ -39,7 +54,9 @@ opt-in:
    the first time. To skip Prism's build, set `PRISM_LIB_DIR` to a folder
    holding a prebuilt Prism library.
 3. On Linux, install ALSA's development files (`libasound2-dev` on Debian
-   and Ubuntu), which Kira's sound output builds against.
+   and Ubuntu), which Kira's sound output builds against, and
+   speech-dispatcher's (`libspeechd-dev`): Prism will not build without at
+   least one Linux speech backend.
 4. `cargo run -p hello-hearken` starts the template game. Turn your screen
    reader on first; without one, Windows' SAPI voices speak instead.
 

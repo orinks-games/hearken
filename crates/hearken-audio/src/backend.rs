@@ -1,7 +1,7 @@
 //! The [`Backend`] trait every sound library implements, and what it plays.
 
 use crate::feed::Feed;
-use crate::types::Mix;
+use crate::types::{LoopRegion, Mix};
 use std::fmt;
 
 /// An opaque, backend-assigned id for one playing sound.
@@ -50,6 +50,21 @@ pub trait Backend: Send {
     /// Fades the channel out over `fade_ms`, then frees it; the backend owns
     /// the fade, not the caller.
     fn stop(&mut self, channel: Channel, fade_ms: u32);
+
+    /// Leaves a looping channel's loop: a clip plays on through the rest of
+    /// its file (a horn's release, say) and then ends by itself. A backend
+    /// that cannot, and any live voice or feed, which has no tail, stops
+    /// with `fade_ms` instead, which is the default.
+    fn release(&mut self, channel: Channel, fade_ms: u32) {
+        self.stop(channel, fade_ms);
+    }
+
+    /// Replaces the region a looping clip repeats, overriding any loop
+    /// points the file itself carries. The default ignores it, so the whole
+    /// clip (or its own loop points) repeats.
+    fn set_loop_region(&mut self, channel: Channel, region: LoopRegion) {
+        let _ = (channel, region);
+    }
 
     /// Pauses or resumes a channel.
     fn pause(&mut self, channel: Channel, paused: bool);
