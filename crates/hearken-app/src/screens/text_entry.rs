@@ -38,6 +38,8 @@ pub struct TextEntryScreen<G: Game> {
     /// A gap from 0 to `chars.len()`, the way a text field's caret works.
     cursor: usize,
     max_len: usize,
+    /// How the field works, spoken on arrival and on F1.
+    instructions: String,
     on_confirm: OnConfirm<G>,
 }
 
@@ -53,8 +55,26 @@ impl<G: Game> TextEntryScreen<G> {
             chars: Vec::new(),
             cursor: 0,
             max_len: MAX_LEN,
+            instructions: INSTRUCTIONS.to_string(),
             on_confirm: Box::new(on_confirm),
         }
+    }
+
+    /// A field with no label of its own, for a heading that already says
+    /// what to type ("Name your route."): arrival speaks the heading, any
+    /// starting text, then the instructions. `new` with an empty label is
+    /// the same.
+    pub fn unlabelled(heading: &str, on_confirm: impl FnMut(&mut Ctx<G>, &str) + 'static) -> Self {
+        TextEntryScreen::new(heading, "", on_confirm)
+    }
+
+    /// Speak `instructions` on arrival and on F1 in place of
+    /// [`INSTRUCTIONS`], such as a shorter line for a player who has heard
+    /// the full one, or one naming what the field accepts. Empty speaks
+    /// none on arrival.
+    pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = instructions.into();
+        self
     }
 
     /// Take up to `max_len` characters.
@@ -154,16 +174,20 @@ impl<G: Game> State<G> for TextEntryScreen<G> {
     }
 
     fn enter(&mut self, ctx: &mut Ctx<G>) {
-        let field = if self.chars.is_empty() {
-            self.label.clone()
-        } else {
-            format!("{}: {}", self.label, self.text())
+        let field = match (self.label.is_empty(), self.chars.is_empty()) {
+            (true, true) => String::new(),
+            (true, false) => self.text(),
+            (false, true) => self.label.clone(),
+            (false, false) => format!("{}: {}", self.label, self.text()),
         };
-        ctx.say(format!(
-            "{} {} {INSTRUCTIONS}",
-            end_sentence(&self.heading),
-            end_sentence(&field)
-        ));
+        let parts = [self.heading.as_str(), field.as_str(), &self.instructions];
+        let line = parts
+            .iter()
+            .filter(|p| !p.trim().is_empty())
+            .map(|p| end_sentence(p))
+            .collect::<Vec<_>>()
+            .join(" ");
+        ctx.say(line);
     }
 
     fn handle_input(&mut self, ctx: &mut Ctx<G>, event: &InputEvent) {
@@ -204,15 +228,24 @@ impl<G: Game> State<G> for TextEntryScreen<G> {
     fn lines(&self, _ctx: &Ctx<G>) -> Vec<String> {
         let before: String = self.chars[..self.cursor].iter().collect();
         let after: String = self.chars[self.cursor..].iter().collect();
+        let field = if self.label.is_empty() {
+            format!("{before}|{after}")
+        } else {
+            format!("{}: {before}|{after}", self.label)
+        };
         vec![
             self.heading.clone(),
             String::new(),
-            format!("{}: {before}|{after}", self.label),
-            INSTRUCTIONS.to_string(),
+            field,
+            self.instructions.clone(),
         ]
     }
 
     fn help(&self, _ctx: &Ctx<G>) -> String {
-        INSTRUCTIONS.to_string()
+        if self.instructions.trim().is_empty() {
+            INSTRUCTIONS.to_string()
+        } else {
+            self.instructions.clone()
+        }
     }
 }

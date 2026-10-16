@@ -172,3 +172,57 @@ fn a_zero_second_message_moves_on_at_the_first_frame() {
     let h = timed(0.0);
     assert_eq!(h.app.top_name(), "course");
 }
+
+fn push_field(screen: TextEntryScreen<TestGame>) -> Headless<TestGame> {
+    let mut h = Headless::new(TestData::default(), Probe::new("root"));
+    h.app.ctx.push(screen);
+    h.frame(0.0);
+    h
+}
+
+#[test]
+fn an_unlabelled_field_speaks_its_heading_then_how_it_works() {
+    let h = push_field(TextEntryScreen::unlabelled(
+        "Name your route",
+        |_ctx: &mut Ctx<TestGame>, _text: &str| {},
+    ));
+    assert_eq!(h.spoken(), [format!("Name your route. {INSTRUCTIONS}")]);
+    assert_eq!(h.app.top_lines()[2], "|");
+
+    let h = push_field(
+        TextEntryScreen::unlabelled("Rename the route", |_ctx: &mut Ctx<TestGame>, _: &str| {})
+            .with_text("Cedar"),
+    );
+    assert_eq!(
+        h.spoken(),
+        [format!("Rename the route. Cedar. {INSTRUCTIONS}")]
+    );
+}
+
+#[test]
+fn a_game_can_give_the_field_its_own_instructions() {
+    let mut h = push_field(
+        TextEntryScreen::new("New player", "Name", |_ctx: &mut Ctx<TestGame>, _: &str| {})
+            .instructions("Type a name and press Enter"),
+    );
+    assert_eq!(
+        h.spoken(),
+        ["New player. Name. Type a name and press Enter."]
+    );
+    h.clear();
+    h.press(Key::F1);
+    assert_eq!(h.spoken(), ["Type a name and press Enter"]);
+    assert_eq!(h.app.top_lines()[3], "Type a name and press Enter");
+}
+
+#[test]
+fn empty_instructions_are_left_out_on_arrival_but_f1_still_explains() {
+    let mut h = push_field(
+        TextEntryScreen::unlabelled("Name your route", |_ctx: &mut Ctx<TestGame>, _: &str| {})
+            .instructions(""),
+    );
+    assert_eq!(h.spoken(), ["Name your route."]);
+    h.clear();
+    h.press(Key::F1);
+    assert_eq!(h.spoken(), [INSTRUCTIONS]);
+}
