@@ -2,7 +2,7 @@
 
 - Date: 2026-09-26; M2 revised 2026-09-27
 - Status: M1 and M1b built from this; M2 approved 2026-09-27
-- Repository: `Orinks/hearken` (local only until the owner says to publish)
+- Repository: `orinks-games/hearken`
 - Sources: Freight Fate `c5d3ef8d` (2026-09-25), Lucky Break `a101970` (2026-09-23)
 
 ## Summary
@@ -419,7 +419,7 @@ vary = { pitch_semitones = 1.0 }
 
 ## Template
 
-`cargo generate --git https://github.com/Orinks/hearken template` produces a
+`cargo generate --git https://github.com/orinks-games/hearken template` produces a
 game that:
 
 - opens a title menu with New Game, Settings, Help, Learn Sounds, Quit;

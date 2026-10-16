@@ -1,51 +1,108 @@
 name: CI
 
 on:
+  # Jobs run on Blacksmith runners. Pull requests run fmt and the tests on
+  # Windows and Linux; macOS minutes cost the most, so macOS runs only on
+  # release tags and workflow_dispatch.
   pull_request:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: always
+  # The bundled SDL2 source declares a cmake_minimum_required older than
+  # CMake 4 accepts; this is CMake's own escape hatch for exactly that.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  # sccache caches compiled crates by content, so a toolchain bump or a
+  # fresh checkout recompiles only what changed.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+
 jobs:
-  rust:
-    name: Rust (Windows)
-    runs-on: windows-latest
+  fmt:
+    runs-on: blacksmith-2vcpu-ubuntu-2204
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo fmt --all --check
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["blacksmith-4vcpu-windows-2025","blacksmith-2vcpu-ubuntu-2204"]' || '["blacksmith-4vcpu-windows-2025","blacksmith-6vcpu-macos-15","blacksmith-2vcpu-ubuntu-2204"]') }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
-      CARGO_TERM_COLOR: always
-      # The hosted runner has no screen reader or voices to test against.
+      # The runners have no screen reader or voices to test against.
       HEARKEN_TEST_NO_SPEECH: "1"
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install the pinned toolchain
-        run: rustup show
-
-      - name: Keep Defender off the build tree
-        shell: pwsh
-        run: |
-          try {
-            Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup" -ErrorAction Stop
-            Write-Host "Defender exclusions added."
-          } catch {
-            Write-Host "Could not add Defender exclusions ($_); building without them."
-          }
-
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-deps
+        if: runner.os == 'Linux'
+      - run: rustup show
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-
-      - name: cargo fmt --check
-        run: cargo fmt --all --check
-
+      # prism-sys asks CMake for C23. The Windows image's CMake does not map
+      # C23 onto MSVC, so use a current CMake that does (/std:clatest).
+      - uses: lukka/get-cmake@latest
+        if: runner.os == 'Windows'
+      # prism-sys's SAPI and screen-reader backends include atlbase.h, and
+      # the Windows image ships Visual Studio without the ATL component.
+      # Restore ATL from the cache when the MSVC version matches; otherwise
+      # add it with the Visual Studio installer and cache it for next time.
+      - name: Find the MSVC tools
+        id: msvc
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "no Visual Studio with the x64 C++ tools" }
+          $ver = (Get-Content "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt").Trim()
+          "vs=$vs" >> $env:GITHUB_OUTPUT
+          "ver=$ver" >> $env:GITHUB_OUTPUT
+          "atl=$vs\VC\Tools\MSVC\$ver\atlmfc" >> $env:GITHUB_OUTPUT
+      - uses: actions/cache/restore@v4
+        id: atl-cache
+        if: runner.os == 'Windows'
+        with:
+          path: ${{ runner.temp }}/atlmfc
+          key: vs-atlmfc-${{ runner.os }}-${{ matrix.os }}-${{ steps.msvc.outputs.ver }}
+      - name: Add ATL to Visual Studio
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VS: ${{ steps.msvc.outputs.vs }}
+          ATL: ${{ steps.msvc.outputs.atl }}
+          CACHED: ${{ runner.temp }}/atlmfc
+        run: |
+          if (Test-Path "$env:ATL\include\atlbase.h") { Write-Host "ATL already present"; exit 0 }
+          if (Test-Path "$env:CACHED\include\atlbase.h") {
+            Copy-Item "$env:CACHED" "$env:ATL" -Recurse -Force
+            if (Test-Path "$env:ATL\include\atlbase.h") { Write-Host "ATL restored from cache"; exit 0 }
+          }
+          $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $p = Start-Process -FilePath $setup -ArgumentList "modify", "--installPath", "`"$env:VS`"", "--add", "Microsoft.VisualStudio.Component.VC.ATL", "--quiet", "--norestart", "--nocache" -Wait -PassThru
+          if ($p.ExitCode -notin 0, 3010) { throw "Visual Studio installer exited $($p.ExitCode)" }
+          if (-not (Test-Path "$env:ATL\include\atlbase.h")) { throw "atlbase.h still missing" }
+          if (-not (Test-Path "$env:CACHED\include\atlbase.h")) { Copy-Item "$env:ATL" "$env:CACHED" -Recurse -Force }
+      - uses: actions/cache/save@v4
+        if: runner.os == 'Windows' && steps.atl-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/atlmfc
+          key: vs-atlmfc-${{ runner.os }}-${{ matrix.os }}-${{ steps.msvc.outputs.ver }}
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
       - name: Build without Kira
         run: cargo check -p hearken --no-default-features --locked
-
       - name: Build with fdk-aac
         run: cargo check -p hearken --features fdk-aac --locked
-
       - name: Tests
         run: cargo test --workspace --locked
