@@ -226,3 +226,46 @@ fn an_empty_menu_says_so_and_ignores_keys() {
     h.press(Key::F1);
     assert_eq!(h.spoken(), [DEFAULT_INTRO_HELP]);
 }
+
+struct Stepper {
+    menu: MenuCore<Self, TestGame>,
+    level: i32,
+}
+
+impl Menu for Stepper {
+    type Game = TestGame;
+    fn name(&self) -> &'static str {
+        "stepper"
+    }
+    fn menu(&self) -> &MenuCore<Self, TestGame> {
+        &self.menu
+    }
+    fn menu_mut(&mut self) -> &mut MenuCore<Self, TestGame> {
+        &mut self.menu
+    }
+    fn build_items(&mut self, _ctx: &mut Ctx<TestGame>) -> Vec<MenuItem<Self, TestGame>> {
+        vec![MenuItem::inert(Label::dynamic(|s: &Stepper, _| {
+            format!("Level: {}", s.level)
+        }))
+        .adjustable(|s: &mut Stepper, _, delta| s.level += delta)
+        .adjusted_text(Label::dynamic(|s: &Stepper, _| {
+            format!("{}, level", s.level)
+        }))]
+    }
+}
+
+#[test]
+fn a_row_with_adjusted_text_reads_that_back_on_left_and_right() {
+    let mut h = Headless::new(
+        TestData::default(),
+        Stepper {
+            menu: MenuCore::new("Steps"),
+            level: 1,
+        },
+    );
+    assert_eq!(h.spoken(), ["Steps.", "Level: 1. 1 of 1."]);
+    h.clear();
+    h.press(Key::Right);
+    h.press(Key::Right);
+    assert_eq!(h.spoken(), ["2, level.", "3, level."]);
+}

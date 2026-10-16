@@ -51,5 +51,5 @@ pub use settings::{default_volume, AudioSettings, ControllerSettings, MenuSettin
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
 pub use speech_delivery::SayEvent;
-pub use state::{StackOp, State};
+pub use state::{Reveal, StackOp, State};
 pub use testing::Headless;

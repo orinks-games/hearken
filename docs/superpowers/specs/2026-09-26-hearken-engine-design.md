@@ -305,6 +305,9 @@ The shell and everything a menu-driven audio game needs:
   separate `handle_controller`. Presence hooks move to `hearken-online`.
 - **Stack**: Lucky Break's queued `StackOp { Push, Pop, Replace, Reset }`,
   applied between frames, so a state never re-enters itself mid-handler.
+  Pops can reveal the screen beneath quietly or with a result line
+  (`Reveal { Announce, Quiet, With }`, `State::resume_quiet` and
+  `resume_with`), and `PopTo` closes screens down to a named one.
 - **Context**: `Ctx<G>` holds speech, audio, settings, bindings, the stack
   queue, logging, and `game: G::Data`.
 - **Menus**: Lucky Break's `Menu`, `MenuCore`, `MenuItem` and `Label`, which

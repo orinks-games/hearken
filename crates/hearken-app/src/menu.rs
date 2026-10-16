@@ -68,6 +68,8 @@ pub struct MenuItem<S, G: Game> {
     /// Whether Left and Right play `UiSound::Move` on this row. `silent_adjust`
     /// turns it off for a row that plays its own sound.
     adjust_sound: bool,
+    /// What Left and Right read back instead of the whole row.
+    adjusted: Option<Label<S, G>>,
 }
 
 impl<S: 'static, G: Game> MenuItem<S, G> {
@@ -82,6 +84,7 @@ impl<S: 'static, G: Game> MenuItem<S, G> {
             adjust: None,
             select: None,
             adjust_sound: true,
+            adjusted: None,
         }
     }
 
@@ -116,8 +119,22 @@ impl<S: 'static, G: Game> MenuItem<S, G> {
         self
     }
 
+    /// What Left and Right read back once they have changed the row, in
+    /// place of the whole row and its position: usually the new value
+    /// first, `"55 percent"` or `"Hard, difficulty"`, so a player stepping
+    /// through values hears each one at once. Computed after the change.
+    pub fn adjusted_text(mut self, text: impl Into<Label<S, G>>) -> Self {
+        self.adjusted = Some(text.into());
+        self
+    }
+
     pub fn text(&self, state: &S, ctx: &Ctx<G>) -> String {
         self.label.text(state, ctx)
+    }
+
+    /// The row's `adjusted_text`, when it has one.
+    pub fn adjusted_text_for(&self, state: &S, ctx: &Ctx<G>) -> Option<String> {
+        self.adjusted.as_ref().map(|l| l.text(state, ctx))
     }
 
     pub fn help_text(&self, state: &S, ctx: &Ctx<G>) -> Option<String> {
@@ -197,6 +214,23 @@ pub trait Menu: Sized + 'static {
     fn resume(&mut self, ctx: &mut Ctx<Self::Game>) {
         self.refresh(ctx, true);
         self.announce(ctx);
+    }
+
+    /// Revealed by a quiet pop: rebuild the rows, keeping the cursor, and
+    /// say nothing.
+    fn resume_quiet(&mut self, ctx: &mut Ctx<Self::Game>) {
+        self.refresh(ctx, true);
+    }
+
+    /// Revealed by a pop carrying `result`: rebuild the rows, keeping the
+    /// cursor, then speak the result and, queued behind it, the current
+    /// row: `"Via Ames added."`, `"Plan: Ames. 2 of 5."`. The title is not
+    /// repeated; a result that should name the screen says so itself.
+    fn resume_with(&mut self, ctx: &mut Ctx<Self::Game>, result: &str) {
+        self.refresh(ctx, true);
+        ctx.say(end_sentence(result));
+        let current = self.current_text(ctx);
+        ctx.say_queued(current);
     }
 
     fn handle_input(&mut self, ctx: &mut Ctx<Self::Game>, event: &InputEvent) {
@@ -279,10 +313,27 @@ pub trait Menu: Sized + 'static {
         ctx.say(text);
     }
 
-    /// How `adjust` reads a changed row back. A screen that must read some
-    /// rows through another voice (a speech-rate preview) overrides this.
+    /// What `adjust` reads back for the row under the cursor: its
+    /// `MenuItem::adjusted_text` as a sentence, else the whole row with its
+    /// position, as `current_text`.
+    fn adjusted_text(&self, ctx: &Ctx<Self::Game>) -> String {
+        let core = self.menu();
+        match core
+            .items
+            .get(core.index)
+            .and_then(|item| item.adjusted_text_for(self, ctx))
+        {
+            Some(text) => end_sentence(&text),
+            None => self.current_text(ctx),
+        }
+    }
+
+    /// How `adjust` reads a changed row back: `adjusted_text`. A screen
+    /// that must read some rows through another voice (a speech-rate
+    /// preview) overrides this.
     fn speak_adjusted(&mut self, ctx: &mut Ctx<Self::Game>) {
-        self.speak_current(ctx)
+        let text = self.adjusted_text(ctx);
+        ctx.say(text);
     }
 
     /// Move the cursor by `delta`, wrapping at both ends.
@@ -439,6 +490,12 @@ impl<M: Menu> State<M::Game> for M {
     }
     fn resume(&mut self, ctx: &mut Ctx<M::Game>) {
         Menu::resume(self, ctx)
+    }
+    fn resume_quiet(&mut self, ctx: &mut Ctx<M::Game>) {
+        Menu::resume_quiet(self, ctx)
+    }
+    fn resume_with(&mut self, ctx: &mut Ctx<M::Game>, result: &str) {
+        Menu::resume_with(self, ctx, result)
     }
     fn handle_input(&mut self, ctx: &mut Ctx<M::Game>, event: &InputEvent) {
         Menu::handle_input(self, ctx, event)

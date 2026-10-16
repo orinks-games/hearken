@@ -199,3 +199,87 @@ fn a_game_with_no_categories_shows_no_speech_detail_row() {
     let rows = row_labels(&h);
     assert!(!rows.iter().any(|r| r.starts_with("Speech detail")));
 }
+
+/// A game whose Master volume and speech-rate rows read back value first,
+/// and whose own Difficulty row does too.
+struct ValueFirstGame;
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Hard(bool);
+
+impl Game for ValueFirstGame {
+    const TITLE: &'static str = "Value First Test";
+    const DATA_DIR: &'static str = "HearkenValueFirstTest";
+    const ENV_PREFIX: &'static str = "HEARKEN_VALUE_FIRST_TEST";
+    type Event = ();
+    type Data = ();
+    type Settings = Hard;
+    type Action = NoAction;
+    type Category = NoCategory;
+
+    fn settings_rows(_ctx: &Ctx<Self>, rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {
+        let mut rows: Vec<_> = rows
+            .into_iter()
+            .map(|row| match row.id.as_str() {
+                "volume.master" => row.value_first(|ctx: &Ctx<Self>| {
+                    format!("{} percent, master volume", ctx.volume_percent(Bus::MASTER))
+                }),
+                "speech_rate" => row.value_first(|ctx: &Ctx<Self>| {
+                    format!("{} percent", (ctx.settings.speech.rate * 100.0).round())
+                }),
+                _ => row,
+            })
+            .collect();
+        rows.push(
+            SettingsRow::new(
+                "difficulty",
+                MenuItem::inert(hearken_app::menu::Label::dynamic(
+                    |_s: &SettingsScreen<Self>, ctx: &Ctx<Self>| {
+                        let hard = ctx.settings.game.0;
+                        format!("Difficulty: {}", if hard { "hard" } else { "normal" })
+                    },
+                ))
+                .adjustable(|_s, ctx: &mut Ctx<Self>, _delta| {
+                    ctx.settings.game.0 = !ctx.settings.game.0;
+                }),
+            )
+            .value_first(|ctx: &Ctx<Self>| {
+                let hard = ctx.settings.game.0;
+                format!("{}, difficulty", if hard { "Hard" } else { "Normal" })
+            }),
+        );
+        rows
+    }
+}
+
+#[test]
+fn a_value_first_row_reads_only_its_new_value_on_left_and_right() {
+    let mut h = Headless::new((), SettingsScreen::<ValueFirstGame>::new());
+    h.frame(0.0);
+    h.press(Key::End);
+    assert_eq!(
+        h.spoken().last().map(String::as_str),
+        Some("Difficulty: normal. 11 of 11.")
+    );
+    h.clear();
+    h.press(Key::Right);
+    h.press(Key::Left);
+    assert_eq!(h.spoken(), ["Hard, difficulty.", "Normal, difficulty."]);
+
+    // Moving onto a value-first row still reads the whole row.
+    h.press(Key::Home);
+    h.press(Key::M);
+    h.clear();
+    h.press(Key::Left);
+    assert_eq!(h.spoken(), ["95 percent, master volume."]);
+
+    // Speech rate stays on the previewing voice, value first.
+    h.press(Key::Home);
+    h.clear();
+    h.press(Key::Right);
+    assert_eq!(
+        h.speech.borrow().previews(),
+        [("speech_rate".to_string(), "55 percent.".to_string(), true)]
+    );
+    assert!(h.spoken().is_empty());
+}

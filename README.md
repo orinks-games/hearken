@@ -9,7 +9,17 @@ of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
 
 - `hearken`: the one dependency for a game; it re-exports the rest.
 - `hearken-app`: the window, the screen stack, spoken menus, settings,
-  help and pause screens, and a headless harness for tests.
+  help, pause, confirm and text-entry screens, and a headless harness for
+  tests. Closing a screen can leave the one beneath silent
+  (`ctx.pop_quiet()`), hand it a result to speak before its current row
+  instead of its whole announcement (`ctx.pop_with("Route deleted.")`), or
+  go back several screens to a named one (`ctx.pop_to("routes")`, with
+  `pop_to_quiet` and `pop_to_with`). `ConfirmScreen` speaks its question
+  before its options, Escape picks the cancel option, and an option marked
+  `ends_game` quits without the screen beneath speaking. A menu row, and
+  a Settings row through `SettingsRow::value_first`, can read back only its
+  new value on Left and Right. A text field can go without a label
+  (`TextEntryScreen::unlabelled`) and take the game's own instructions.
 - `hearken-speech`: screen reader, braille and text-to-speech output
   through Prism.
 - `hearken-audio`: a pool of positioned sounds, buses and live voices,
