@@ -335,6 +335,14 @@ impl Audio {
         self.start(key, None, bus, looping, None, volume)
     }
 
+    /// Whether `key` has a clip of its own, without playing it or noting it
+    /// missing: so a game can play a recording when one is there and fall
+    /// back to a live synth voice of its own, not the category default, when
+    /// it is not.
+    pub fn has_clip(&mut self, key: &str) -> bool {
+        self.clips.load(key).is_some()
+    }
+
     /// `key`'s clip bytes, falling back to its built-in default (and noting
     /// it missing) the same way `start` does -- so a sound replayed on a
     /// newly opened backend gets the same clip it would if started fresh.

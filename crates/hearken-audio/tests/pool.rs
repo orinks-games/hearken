@@ -248,3 +248,12 @@ fn a_loop_region_reaches_the_backend_and_a_bad_one_is_ignored() {
         .iter()
         .any(|c| matches!(c, Call::SetLoopRegion { .. })));
 }
+
+#[test]
+fn has_clip_answers_without_playing_or_noting_a_miss() {
+    let (mut audio, rec) = pool();
+    assert!(audio.has_clip("sfx/door"));
+    assert!(!audio.has_clip("sfx/horn"));
+    assert!(rec.calls().is_empty());
+    assert!(audio.missing_clips().is_empty());
+}
