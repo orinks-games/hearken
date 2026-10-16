@@ -5,7 +5,7 @@ use crate::clips::{ClipSource, LooseClips};
 use crate::feed::Feed;
 use crate::silent::SilentBackend;
 use crate::spatial::{place, SpatialConfig};
-use crate::types::{Bus, Listener, Mix, Vec3};
+use crate::types::{Bus, Listener, LoopRegion, Mix, Vec3};
 use hearken_synth::{builtin_wav, Params, Recipe, Voice};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::Receiver;
@@ -92,6 +92,9 @@ pub(crate) struct Live {
     pub(crate) volume: f32,
     pub(crate) pitch: f32,
     pub(crate) looping: bool,
+    /// The region a looping clip repeats, when the game chose one; `None`
+    /// repeats the file's own loop points, or the whole file.
+    pub(crate) region: Option<LoopRegion>,
     pub(crate) voice: Option<(Recipe, Params)>,
     /// Kept so a deferred backend's replay can hand the new backend the same
     /// feed.
@@ -114,6 +117,7 @@ impl Live {
             volume,
             pitch: 1.0,
             looping,
+            region: None,
             voice: None,
             feed: None,
             paused: false,
@@ -265,6 +269,31 @@ impl Audio {
         self.start(key, pos, bus, true, None, 1.0)
     }
 
+    /// Starts `key` looping only `region` of its clip: the clip plays from its
+    /// start, repeats the region until [`Audio::release`] or
+    /// [`Audio::stop`], and on release plays on through the rest of the
+    /// file. Overrides any loop points the file carries; an invalid region
+    /// is ignored and the clip loops as [`Audio::start_loop`] would.
+    pub fn start_loop_region(
+        &mut self,
+        key: &str,
+        region: LoopRegion,
+        pos: Option<Vec3>,
+        bus: Bus,
+    ) -> Sound {
+        let sound = self.start(key, pos, bus, true, None, 1.0);
+        if !region.is_valid() {
+            log::warn!("sound {key}: ignoring loop region {region:?}");
+            return sound;
+        }
+        if let Some(live) = slot_mut(&mut self.slots, sound) {
+            live.region = Some(region);
+            let channel = live.channel;
+            self.backend.set_loop_region(channel, region);
+        }
+        sound
+    }
+
     /// Starts a live synth voice from `recipe`, looping until stopped.
     pub fn start_voice(
         &mut self,
@@ -408,6 +437,24 @@ impl Audio {
         };
         self.backend.stop(channel, fade_ms);
         self.free_slot(sound.index);
+    }
+
+    /// Lets a looping `sound` go: a clip leaves its loop and plays on to the
+    /// end of its file -- the release a horn or a bell recorded after its
+    /// loop region, or after the loop points the file carries -- then ends
+    /// by itself; the handle stays valid until it does. A live voice or a
+    /// feed, which has no tail, stops over `fade_ms`, as does a clip on a
+    /// backend that cannot play one out. A one-shot is left alone.
+    pub fn release(&mut self, sound: Sound, fade_ms: u32) {
+        let Some(live) = slot_mut(&mut self.slots, sound) else {
+            return;
+        };
+        if !live.looping {
+            return;
+        }
+        live.looping = false;
+        let channel = live.channel;
+        self.backend.release(channel, fade_ms);
     }
 
     /// Pauses `sound`. Clears `paused_by_all`: an explicit pause is the

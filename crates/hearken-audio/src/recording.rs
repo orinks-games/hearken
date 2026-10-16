@@ -1,7 +1,7 @@
 //! A backend that records every call made to it, for tests.
 
 use crate::backend::{Backend, BackendError, Channel, Source};
-use crate::types::Mix;
+use crate::types::{LoopRegion, Mix};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +27,14 @@ pub enum Call {
     Pause {
         channel: Channel,
         paused: bool,
+    },
+    Release {
+        channel: Channel,
+        fade_ms: u32,
+    },
+    SetLoopRegion {
+        channel: Channel,
+        region: LoopRegion,
     },
 }
 
@@ -174,6 +182,20 @@ impl Backend for RecordingBackend {
         self.recorder.with_inner(|inner| {
             inner.playing.remove(&channel);
             inner.calls.push(Call::Stop { channel, fade_ms });
+        });
+    }
+
+    /// Recorded, and the channel keeps playing its tail until
+    /// [`Recorder::finish`] ends it.
+    fn release(&mut self, channel: Channel, fade_ms: u32) {
+        self.recorder.with_inner(|inner| {
+            inner.calls.push(Call::Release { channel, fade_ms });
+        });
+    }
+
+    fn set_loop_region(&mut self, channel: Channel, region: LoopRegion) {
+        self.recorder.with_inner(|inner| {
+            inner.calls.push(Call::SetLoopRegion { channel, region });
         });
     }
 

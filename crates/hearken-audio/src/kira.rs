@@ -26,7 +26,7 @@ use kira::effect::panning_control::{PanningControlBuilder, PanningControlHandle}
 use kira::info::Info;
 use kira::sound::static_sound::StaticSoundHandle;
 use kira::sound::streaming::StreamingSoundHandle;
-use kira::sound::{FromFileError, PlaybackState, Sound, SoundData};
+use kira::sound::{FromFileError, PlaybackPosition, PlaybackState, Region, Sound, SoundData};
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{
     AudioManager, AudioManagerSettings, Capacities, Decibels, DefaultBackend, Frame, Panning,
@@ -34,9 +34,9 @@ use kira::{
 };
 
 use crate::backend::{Backend, BackendError, Channel, Source};
-use crate::decode;
+use crate::decode::{self, LoopPoints};
 use crate::feed::Feed;
-use crate::types::Mix;
+use crate::types::{LoopRegion, Mix};
 
 /// How many sounds can play at once: one Kira sub-track each.
 const CHANNELS: usize = 512;
@@ -178,7 +178,30 @@ fn lowpass(hz: Option<f32>) -> (f64, kira::Mix) {
     }
 }
 
-/// Starts a clip on `track`: decoded whole, or streamed if it is big.
+/// The region a looping clip repeats: its file's own loop points, or all of
+/// it.
+fn file_region(points: Option<LoopPoints>) -> Region {
+    match points {
+        Some(LoopPoints {
+            start,
+            end: Some(end),
+        }) => (PlaybackPosition::Samples(start)..PlaybackPosition::Samples(end)).into(),
+        Some(LoopPoints { start, end: None }) => (PlaybackPosition::Samples(start)..).into(),
+        None => (..).into(),
+    }
+}
+
+/// A game's loop region, in seconds, as Kira's.
+fn region_of(region: LoopRegion) -> Region {
+    let start = PlaybackPosition::Seconds(region.start);
+    match region.end {
+        Some(end) => (start..PlaybackPosition::Seconds(end)).into(),
+        None => (start..).into(),
+    }
+}
+
+/// Starts a clip on `track`: decoded whole, or streamed if it is big. A
+/// looping clip repeats its file's loop points, or all of it.
 fn play_clip(
     track: &mut TrackHandle,
     bytes: Arc<[u8]>,
@@ -186,19 +209,17 @@ fn play_clip(
     pitch: f32,
 ) -> Result<Playing, BackendError> {
     if bytes.len() > STREAM_OVER_BYTES {
-        let mut data = decode::stream(bytes)
-            .map_err(backend_error)?
-            .playback_rate(rate(pitch));
+        let (data, points) = decode::stream(bytes).map_err(backend_error)?;
+        let mut data = data.playback_rate(rate(pitch));
         if looping {
-            data = data.loop_region(..);
+            data = data.loop_region(file_region(points));
         }
         track.play(data).map(Playing::Stream).map_err(backend_error)
     } else {
-        let mut data = decode::decode_whole(bytes)
-            .map_err(backend_error)?
-            .playback_rate(rate(pitch));
+        let (data, points) = decode::decode_whole(bytes).map_err(backend_error)?;
+        let mut data = data.playback_rate(rate(pitch));
         if looping {
-            data = data.loop_region(..);
+            data = data.loop_region(file_region(points));
         }
         track.play(data).map(Playing::Clip).map_err(backend_error)
     }
@@ -290,6 +311,30 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
             entry.track.set_volume(Decibels::SILENCE, ramp(fade_ms));
             let due = Instant::now() + Duration::from_millis(fade_ms.into());
             self.fading.push((channel, due));
+        }
+    }
+
+    /// A clip leaves its loop and plays out the rest of its file; a voice or
+    /// a feed, which has no rest, fades out.
+    fn release(&mut self, channel: Channel, fade_ms: u32) {
+        let Some(entry) = self.channels.get_mut(&channel) else {
+            return;
+        };
+        match &mut entry.playing {
+            Playing::Clip(h) => h.set_loop_region(None),
+            Playing::Stream(h) => h.set_loop_region(None),
+            Playing::Voice(_) | Playing::Feed(_) => self.stop(channel, fade_ms),
+        }
+    }
+
+    fn set_loop_region(&mut self, channel: Channel, region: LoopRegion) {
+        let Some(entry) = self.channels.get_mut(&channel) else {
+            return;
+        };
+        match &mut entry.playing {
+            Playing::Clip(h) => h.set_loop_region(region_of(region)),
+            Playing::Stream(h) => h.set_loop_region(region_of(region)),
+            Playing::Voice(_) | Playing::Feed(_) => {}
         }
     }
 

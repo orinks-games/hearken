@@ -40,6 +40,11 @@ impl Backend for SilentBackend {
         self.looping.remove(&channel);
     }
 
+    /// A released loop has its tail to play out, which takes no time here.
+    fn release(&mut self, channel: Channel, _fade_ms: u32) {
+        self.looping.remove(&channel);
+    }
+
     fn pause(&mut self, _channel: Channel, _paused: bool) {}
 
     fn is_playing(&mut self, channel: Channel) -> bool {
