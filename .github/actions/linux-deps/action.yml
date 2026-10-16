@@ -5,7 +5,7 @@ runs:
   steps:
     # SDL2 is compiled in (`bundled` + `static-link`), and a video or audio
     # backend whose headers are missing here is compiled out for every
-    # player. Prism needs gcc 13's libstdc++, which Ubuntu 24.04 ships, (linked statically by build.rs)
+    # player. Prism needs gcc 13's libstdc++ (linked statically by build.rs; Ubuntu 24.04 ships it)
     # and builds its Speech Dispatcher backend only when libspeechd-dev is
     # present.
     - shell: bash
