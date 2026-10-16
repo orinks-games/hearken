@@ -102,3 +102,16 @@ impl Default for SoundConfig {
         }
     }
 }
+
+/// The clips a game plays: `loose` first, then the game's built-in clips.
+pub(crate) fn clip_source<G: crate::game::Game>(
+    loose: impl hearken_audio::ClipSource + 'static,
+) -> Box<dyn hearken_audio::ClipSource> {
+    match G::builtin_clips() {
+        Some(builtin) => Box::new(hearken_audio::LayeredClips::new(vec![
+            Box::new(loose),
+            builtin,
+        ])),
+        None => Box::new(loose),
+    }
+}

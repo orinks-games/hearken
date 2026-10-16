@@ -107,7 +107,7 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     let mut ctx = Ctx::new(Box::new(start_speech::<G>()), settings, paths, game);
     ctx.install_audio(Audio::deferred(
         open_backend::<G>,
-        Box::new(LooseClips::discover(G::ENV_PREFIX)),
+        crate::sound::clip_source::<G>(LooseClips::discover(G::ENV_PREFIX)),
     ));
     ctx.controller = ControllerManager::new(
         ctx.settings.controller.enabled,

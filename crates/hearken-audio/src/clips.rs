@@ -1,4 +1,5 @@
-//! Loose sound files on disk, and an in-memory clip source for tests.
+//! Loose sound files on disk, an in-memory clip source, and a layering of
+//! sources so a game's built-in sounds give way to files of the same key.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -131,5 +132,55 @@ impl MemoryClips {
 impl ClipSource for MemoryClips {
     fn load(&mut self, key: &str) -> Option<Arc<[u8]>> {
         self.clips.get(key).cloned()
+    }
+}
+
+/// Several sources asked in order; the first that has a key wins.
+///
+/// The engine puts the loose sounds folder first and the game's built-in
+/// clips after it, so dropping a recording named for a key into the folder
+/// is all it takes to replace that sound.
+pub struct LayeredClips {
+    layers: Vec<Box<dyn ClipSource>>,
+}
+
+impl LayeredClips {
+    pub fn new(layers: Vec<Box<dyn ClipSource>>) -> LayeredClips {
+        LayeredClips { layers }
+    }
+}
+
+impl ClipSource for LayeredClips {
+    fn load(&mut self, key: &str) -> Option<Arc<[u8]>> {
+        self.layers.iter_mut().find_map(|layer| layer.load(key))
+    }
+}
+
+/// Clips a function makes on first request, such as synthesized
+/// placeholders, cached for the run (misses included).
+type Make = Box<dyn FnMut(&str) -> Option<Vec<u8>> + Send>;
+
+pub struct MadeClips {
+    make: Make,
+    cache: HashMap<String, Option<Arc<[u8]>>>,
+}
+
+impl MadeClips {
+    pub fn new(make: impl FnMut(&str) -> Option<Vec<u8>> + Send + 'static) -> MadeClips {
+        MadeClips {
+            make: Box::new(make),
+            cache: HashMap::new(),
+        }
+    }
+}
+
+impl ClipSource for MadeClips {
+    fn load(&mut self, key: &str) -> Option<Arc<[u8]>> {
+        if let Some(cached) = self.cache.get(key) {
+            return cached.clone();
+        }
+        let made = (self.make)(key).map(Arc::from);
+        self.cache.insert(key.to_string(), made.clone());
+        made
     }
 }

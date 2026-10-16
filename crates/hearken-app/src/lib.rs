@@ -33,9 +33,9 @@ pub use hearken_audio as audio;
 #[cfg(feature = "kira")]
 pub use hearken_audio::KiraBackend;
 pub use hearken_audio::{
-    Audio, Backend, BackendError, Bus, Call, Channel, ClipSource, Fades, Listener, LiveSound,
-    LoopRegion, LooseClips, MemoryClips, Mix, Recorder, RecordingBackend, SilentBackend, Sound,
-    Source, SpatialConfig, Vec3,
+    Audio, Backend, BackendError, Bus, Call, Channel, ClipSource, Fades, LayeredClips, Listener,
+    LiveSound, LoopRegion, LooseClips, MadeClips, MemoryClips, Mix, Recorder, RecordingBackend,
+    SilentBackend, Sound, Source, SpatialConfig, Vec3,
 };
 pub use hearken_speech::{
     Category, EventPriority, Level, NoCategory, PacerConfig, Rule, Verbosity,

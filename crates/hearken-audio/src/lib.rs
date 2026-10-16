@@ -23,7 +23,7 @@ mod types;
 #[cfg(feature = "kira")]
 pub use self::kira::KiraBackend;
 pub use backend::{Backend, BackendError, Channel, Source};
-pub use clips::{ClipSource, LooseClips, MemoryClips};
+pub use clips::{ClipSource, LayeredClips, LooseClips, MadeClips, MemoryClips};
 pub use feed::{Feed, FeedRead};
 pub use open::{NO_SOUND_NOTICE, SHUTDOWN_WAIT};
 pub use pool::{Audio, Fades, LiveSound, Sound};
