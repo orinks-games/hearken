@@ -61,10 +61,10 @@ opt-in:
    reader on first; without one, Windows' SAPI voices speak instead.
 
 Every game needs a `build.rs` like `template/build.rs`. It passes on the link
-arguments hearken-speech works out for Prism: the screen reader DLLs
-delay-loaded, so the game still starts on a machine that lacks some of them,
-and Prism's delay-load failure hook kept, so a missing DLL is reported
-unavailable instead of crashing the game. The game must list `hearken` as a
+arguments hearken-speech works out for Prism. Since Prism 0.1.4 there are
+none (Prism loads the screen reader DLLs at run time, so a game still starts
+on a machine that lacks some of them), but the build.rs keeps any future
+argument reaching the game with no change to it. The game must list `hearken` as a
 direct dependency, which is all it needs: Cargo hands a build script those
 arguments only from a direct dependency, and `hearken` passes them on.
 

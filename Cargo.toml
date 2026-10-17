@@ -18,7 +18,7 @@ serde_json = "1"
 tempfile = "3"
 dirs = "6"
 sdl2 = "0.38"
-prismer = { version = "0.1.3", features = ["static"] }
+prismer = { version = "0.1.4", features = ["static"] }
 hearken-speech = { path = "crates/hearken-speech" }
 hearken = { path = "crates/hearken" }
 hearken-app = { path = "crates/hearken-app", default-features = false }

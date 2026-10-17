@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# Publishes Prism's delay-load list to games (see build.rs).
+# Publishes Prism's link arguments to games (see build.rs).
 links = "hearken_speech"
 build = "build.rs"
 
