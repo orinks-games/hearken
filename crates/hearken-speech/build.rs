@@ -1,54 +1,34 @@
-//! Work out the link arguments Prism needs, pass them on to games, apply
-//! them to this crate's own binaries, and link Prism's system libraries on
-//! macOS and Linux.
+//! Publish the link arguments Prism needs to games, and link Prism's system
+//! libraries on macOS and Linux.
 //!
-//! On MSVC Prism's Windows screen-reader client DLLs must be delay-loaded,
-//! or a binary will not start on a machine missing one of them, and Prism's
-//! delay-load failure hook must be forced into the link, or a missing DLL
-//! crashes the game instead of Prism reporting that backend unavailable.
-//! A link argument only takes effect on the final link, which a library
-//! cannot do for a game, so this crate publishes the arguments as
-//! `DEP_HEARKEN_SPEECH_LINK_ARGS` (Cargo hands a `links` crate's metadata
-//! to its direct dependents only) and each game's build.rs passes them on.
-//! This crate's own tests, benches and examples ARE a final link, so the
-//! same arguments are applied directly too; `rustc-link-arg` from a build
-//! script never reaches a dependent's binaries.
+//! Prism 0.1.4 loads the Windows screen-reader client DLLs at run time
+//! (LoadLibrary) instead of importing them, so a missing screen reader no
+//! longer needs delay-loading or a delay-load failure hook, and Prism needs
+//! no link arguments on any platform today. The channel stays: a link
+//! argument only takes effect on the final link, which a library cannot do
+//! for a game, so this crate publishes them as `DEP_HEARKEN_SPEECH_LINK_ARGS`
+//! (Cargo hands a `links` crate's metadata to its direct dependents only),
+//! the `hearken` facade passes them on, and each game's build.rs applies
+//! them. An argument added here reaches every game with no game changing.
 
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=DEP_PRISMER_DELAY_LOAD_DLLS");
-    let args = prism_link_args(&env::var("DEP_PRISMER_DELAY_LOAD_DLLS").unwrap_or_default());
+    let args = prism_link_args();
     println!("cargo:link_args={}", args.join(";"));
+    // This crate's own tests, benches and examples are a final link too;
+    // `rustc-link-arg` from a build script never reaches a dependent's.
     for arg in &args {
         println!("cargo:rustc-link-arg={arg}");
     }
     link_prism_system_libraries();
 }
 
-/// What a binary linking Prism needs on MSVC: every screen-reader DLL
-/// delay-loaded, and Prism's delay-load failure hook kept.
-///
-/// The hook (prism-sys's source/delayimp.cpp) substitutes stub functions
-/// when a screen-reader client DLL is missing, instead of MSVC's default of
-/// raising an unhandled SEH exception (0xC06D007E) the first time a
-/// delay-loaded call fails. Nothing else references that translation
-/// unit's symbols, so the static-archive linker drops it unless forced in
-/// -- the same problem Prism's own PrismBackends.cmake solves for backend
-/// registrars with `/include:`. Nothing is needed off MSVC.
-fn prism_link_args(dlls: &str) -> Vec<String> {
-    if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
-        return Vec::new();
-    }
-    let mut args: Vec<String> = dlls
-        .split(';')
-        .filter(|dll| !dll.is_empty())
-        .map(|dll| format!("/DELAYLOAD:{dll}"))
-        .collect();
-    args.push("/INCLUDE:__pfnDliFailureHook2".to_string());
-    args
+/// The arguments every binary linking Prism needs: none since Prism 0.1.4.
+fn prism_link_args() -> Vec<String> {
+    Vec::new()
 }
 
 /// Link what Prism's macOS and Linux backends import.
