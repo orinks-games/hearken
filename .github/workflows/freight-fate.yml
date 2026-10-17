@@ -85,12 +85,16 @@ jobs:
           save-cache: "false"
 
       # Every Hearken crate from this checkout, in a cargo config outside
-      # the Freight Fate tree. The lockfile's Hearken entries change with
+      # the Freight Fate tree. The checkout moves out of the Freight Fate
+      # directory first: Cargo looks for a crate's workspace upward from it,
+      # and inside Freight Fate's tree it takes the game's workspace for
+      # Hearken's and fails to inherit Hearken's dependencies. The lockfile's Hearken entries change with
       # the patch, so the cargo calls below do not pass --locked.
       - name: Point Freight Fate at this Hearken
         shell: bash
         run: |
-          root="$(pwd)/_hearken/crates"
+          mv _hearken "$RUNNER_TEMP/hearken"
+          root="$RUNNER_TEMP/hearken/crates"
           if [ "$RUNNER_OS" = "Windows" ]; then root="$(cygpath -m "$root")"; fi
           home="${CARGO_HOME:-$HOME/.cargo}"
           mkdir -p "$home"
