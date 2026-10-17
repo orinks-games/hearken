@@ -1,0 +1,119 @@
+name: Freight Fate
+
+# Builds and tests Freight Fate against this Hearken checkout, on Windows,
+# Linux and macOS. Freight Fate is public, so it needs no token here, and
+# Hearken comes from this checkout rather than from GitHub, so a Hearken
+# change can be proved downstream before it merges.
+#
+# It costs a full game build per platform, so pull requests run it only when
+# they carry the `freight-fate` label. A manual run picks the Freight Fate
+# ref; a pull request uses the Freight Fate branch of the same name if there
+# is one, and dev otherwise.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      ff_ref:
+        description: Freight Fate branch, tag or commit
+        required: false
+        default: dev
+
+concurrency:
+  group: freight-fate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+jobs:
+  test:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'freight-fate')
+    name: Freight Fate (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: blacksmith-4vcpu-windows-2025
+          - name: Linux
+            os: blacksmith-4vcpu-ubuntu-2404
+          - name: macOS
+            os: blacksmith-6vcpu-macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    env:
+      FREIGHT_FATE_NO_SPEECH: "1"
+      HEARKEN_TEST_NO_SPEECH: "1"
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      RUSTFLAGS: --cfg ci_quick
+    steps:
+      - name: Pick the Freight Fate ref
+        id: ref
+        shell: bash
+        env:
+          INPUT: ${{ inputs.ff_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          ref="${INPUT:-}"
+          if [ -z "$ref" ]; then
+            if [ -n "$HEAD" ] && git ls-remote --exit-code --heads https://github.com/orinks-games/Freight-Fate "$HEAD" >/dev/null; then
+              ref="$HEAD"
+            else
+              ref=dev
+            fi
+          fi
+          echo "Freight Fate at $ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      # Freight Fate at the root, so its own composite actions resolve.
+      - uses: actions/checkout@v4
+        with:
+          repository: orinks-games/Freight-Fate
+          ref: ${{ steps.ref.outputs.ref }}
+
+      - uses: actions/checkout@v4
+        with:
+          path: _hearken
+
+      - uses: ./.github/actions/rust-setup
+        with:
+          cache-key: hearken-downstream
+          save-cache: "false"
+
+      # Every Hearken crate from this checkout, in a cargo config outside
+      # the Freight Fate tree. The lockfile's Hearken entries change with
+      # the patch, so the cargo calls below do not pass --locked.
+      - name: Point Freight Fate at this Hearken
+        shell: bash
+        run: |
+          root="$(pwd)/_hearken/crates"
+          if [ "$RUNNER_OS" = "Windows" ]; then root="$(cygpath -m "$root")"; fi
+          home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$home"
+          {
+            echo '[patch."https://github.com/orinks-games/hearken"]'
+            for c in hearken hearken-app hearken-speech hearken-audio hearken-radio hearken-synth; do
+              echo "$c = { path = \"$root/$c\" }"
+            done
+          } >> "$home/config.toml"
+          cat "$home/config.toml"
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build the test binaries
+        run: cargo test -p ff-core -p freight-fate --no-run
+
+      - name: cargo test
+        run: cargo test -p ff-core -p freight-fate
+
+      - name: cargo test (agent server)
+        run: cargo test -p freight-fate --test agent_server
+
+      - name: Speech backends Prism registered
+        shell: bash
+        run: cargo run -p freight-fate --bin freightfate -- --list-speech-backends
