@@ -1,8 +1,8 @@
 //! A backend that records every call made to it, for tests.
 
 use crate::backend::{Backend, BackendError, Channel, Source};
-use crate::types::{LoopRegion, Mix};
-use std::collections::HashSet;
+use crate::types::{LoopRegion, Mix, Ramps};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// One call made to a [`RecordingBackend`].
@@ -14,11 +14,20 @@ pub enum Call {
         looping: bool,
         clip: Option<Arc<[u8]>>,
         mix: Mix,
+        /// Seconds into the clip it started from; `0.0` from the top.
+        from_s: f64,
     },
     SetMix {
         channel: Channel,
         mix: Mix,
         ramp_ms: u32,
+    },
+    /// A [`Backend::set_mix_ramped`] call: the whole mix, and each part's
+    /// own ramp.
+    SetMixRamped {
+        channel: Channel,
+        mix: Mix,
+        ramps: Ramps,
     },
     Stop {
         channel: Channel,
@@ -44,6 +53,12 @@ struct Inner {
     playing: HashSet<Channel>,
     next: Channel,
     fail_next: Option<String>,
+    /// Keys whose clips refuse to play, as an undecodable file would.
+    refused: HashSet<String>,
+    /// Clip lengths by key, for [`Backend::length_s`].
+    lengths: HashMap<String, f64>,
+    /// The key each channel was started with.
+    keys: HashMap<Channel, String>,
 }
 
 /// A handle to a [`RecordingBackend`]'s recorded calls, for assertions.
@@ -75,7 +90,8 @@ impl Recorder {
             .collect()
     }
 
-    /// The most recent mix sent for `channel`, from a `Play` or `SetMix` call.
+    /// The most recent mix sent for `channel`, from a `Play`, `SetMix` or
+    /// `SetMixRamped` call.
     pub fn last_mix(&self, channel: Channel) -> Option<Mix> {
         self.calls().into_iter().rev().find_map(|call| match call {
             Call::Play {
@@ -84,8 +100,27 @@ impl Recorder {
             Call::SetMix {
                 channel: c, mix, ..
             } if c == channel => Some(mix),
+            Call::SetMixRamped {
+                channel: c, mix, ..
+            } if c == channel => Some(mix),
             _ => None,
         })
+    }
+
+    /// Whether `channel` is still playing, as the backend would answer.
+    pub fn is_playing(&self, channel: Channel) -> bool {
+        self.with_inner(|inner| inner.playing.contains(&channel))
+    }
+
+    /// Makes every later `play` of `key` fail, as an undecodable clip does.
+    pub fn refuse(&self, key: &str) {
+        self.with_inner(|inner| inner.refused.insert(key.to_string()));
+    }
+
+    /// Gives `key`'s clip a length, which [`Backend::length_s`] reports for
+    /// any channel playing it.
+    pub fn set_length(&self, key: &str, seconds: f64) {
+        self.with_inner(|inner| inner.lengths.insert(key.to_string(), seconds));
     }
 
     /// The channel of the latest `Play` call for `key`.
@@ -146,13 +181,28 @@ impl Backend for RecordingBackend {
         looping: bool,
         mix: Mix,
     ) -> Result<Channel, BackendError> {
+        self.play_from(key, source, looping, mix, 0.0)
+    }
+
+    fn play_from(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+    ) -> Result<Channel, BackendError> {
         self.recorder.with_inner(|inner| {
             if let Some(reason) = inner.fail_next.take() {
                 return Err(BackendError(reason));
             }
+            if matches!(source, Source::Clip(_)) && inner.refused.contains(key) {
+                return Err(BackendError(format!("{key}: refused")));
+            }
             let channel = inner.next;
             inner.next += 1;
             inner.playing.insert(channel);
+            inner.keys.insert(channel, key.to_string());
             let clip = match source {
                 Source::Clip(bytes) => Some(bytes),
                 Source::Voice(_) | Source::Feed(_) => None,
@@ -163,6 +213,7 @@ impl Backend for RecordingBackend {
                 looping,
                 clip,
                 mix,
+                from_s,
             });
             Ok(channel)
         })
@@ -176,6 +227,23 @@ impl Backend for RecordingBackend {
                 ramp_ms,
             });
         });
+    }
+
+    fn set_mix_ramped(&mut self, channel: Channel, mix: Mix, ramps: Ramps) {
+        self.recorder.with_inner(|inner| {
+            inner.calls.push(Call::SetMixRamped {
+                channel,
+                mix,
+                ramps,
+            });
+        });
+    }
+
+    fn length_s(&mut self, channel: Channel) -> Option<f64> {
+        self.recorder.with_inner(|inner| {
+            let key = inner.keys.get(&channel)?;
+            inner.lengths.get(key).copied()
+        })
     }
 
     fn stop(&mut self, channel: Channel, fade_ms: u32) {

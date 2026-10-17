@@ -44,6 +44,17 @@ fn rig() -> Rig {
     rig_with(Capacities::default())
 }
 
+/// A rig whose channels fade in straight lines and pan as a balance, the
+/// way BASS does.
+fn bass_like_rig() -> Rig {
+    let Rig { b, heard } = rig();
+    Rig {
+        b: b.with_gain_curve(GainCurve::Linear)
+            .with_pan_law(PanLaw::Balance),
+        heard,
+    }
+}
+
 impl Rig {
     /// Renders at least `frames` frames of output and returns them.
     fn render(&mut self, frames: usize) -> Vec<Frame> {
@@ -702,4 +713,269 @@ fn a_long_clips_loop_points_hold_while_it_streams() {
     let late = &rendered[rendered.len() - second / 2..];
     assert!(rms(late) < 0.1, "still in the loop region: {}", rms(late));
     assert!(r.b.is_playing(ch));
+}
+
+/// How long a stream started `from_s` seconds into `bytes` takes to make
+/// sound, rendering as fast as the mock allows.
+fn time_to_sound(bytes: &[u8], from_s: f64) -> Duration {
+    let mut r = rig();
+    let started = std::time::Instant::now();
+    r.b.play_from(
+        "music/long",
+        Source::Clip(bytes.into()),
+        false,
+        Mix::UNITY,
+        from_s,
+    )
+    .expect("play");
+    while rms(&r.render(1_024)) < 0.05 {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "no sound a minute after a seek to {from_s} s"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    started.elapsed()
+}
+
+/// The H5 measurement: a stream started 10 minutes into a 15-minute Opus
+/// programme, the way a station rotation tunes in mid-show. Needs a long
+/// file, which the repository does not carry; make one with
+///   ffmpeg -f lavfi -i sine=frequency=440:duration=900:sample_rate=48000 -ac 2 -c:a libopus -b:a 96k prog15.opus
+/// and run with `HEARKEN_LONG_OPUS=prog15.opus cargo test -p hearken-audio
+/// --test kira -- --ignored --nocapture`.
+#[test]
+#[ignore = "needs HEARKEN_LONG_OPUS, a 15-minute Opus file"]
+fn a_ten_minute_seek_into_a_long_opus_is_measured() {
+    let path = std::env::var("HEARKEN_LONG_OPUS").expect("HEARKEN_LONG_OPUS");
+    let bytes = std::fs::read(path).expect("read HEARKEN_LONG_OPUS");
+    let top = time_to_sound(&bytes, 0.0);
+    let ten = time_to_sound(&bytes, 600.0);
+    eprintln!("time to sound: from the top {top:?}, 10 minutes in {ten:?}");
+    assert!(ten < Duration::from_millis(500), "{ten:?}");
+}
+
+/// `seconds` of mono silence and then `seconds` of a constant 0.5, as a WAV.
+fn silence_then_dc(seconds: f32) -> Vec<f32> {
+    let n = (seconds * RATE as f32) as usize;
+    let mut samples = vec![0.0; n];
+    samples.extend(std::iter::repeat_n(0.5, n));
+    samples
+}
+
+#[test]
+fn a_balance_pan_keeps_the_centre_at_unity_and_only_lowers_the_far_ear() {
+    let mut r = bass_like_rig();
+    let ch =
+        r.b.play("sfx/dc", clip(&[0.5; 44_100]), false, Mix::UNITY)
+            .expect("play");
+    let f = r.render(1_000)[500];
+    assert!(
+        (f.left - 0.5).abs() < 1e-6 && (f.right - 0.5).abs() < 1e-6,
+        "a centred mono clip is at unity in both ears: {f:?}"
+    );
+    // BASS's balance law: left = min(1, 1 - pan), right = min(1, 1 + pan).
+    for (pan, left, right) in [
+        (1.0, 0.0, 1.0),
+        (-1.0, 1.0, 0.0),
+        (0.5, 0.5, 1.0),
+        (-0.25, 1.0, 0.75),
+    ] {
+        r.b.set_mix(ch, mix(1.0, pan, 1.0, None), 0);
+        let f = r.render(1_000)[500];
+        assert!(
+            (f.left - 0.5 * left).abs() < 1e-5 && (f.right - 0.5 * right).abs() < 1e-5,
+            "pan {pan}: {f:?}"
+        );
+    }
+}
+
+#[test]
+fn a_pan_given_at_the_start_is_there_from_the_first_frame() {
+    let mut r = bass_like_rig();
+    r.b.play(
+        "sfx/dc",
+        clip(&[0.5; 4_410]),
+        false,
+        mix(1.0, -1.0, 1.0, None),
+    )
+    .expect("play");
+    let frames = r.render(512);
+    assert!(
+        frames[..256].iter().all(|f| f.right == 0.0),
+        "no swing in from the centre"
+    );
+}
+
+#[test]
+fn a_linear_fade_out_is_at_half_volume_half_way() {
+    for (curve, expect) in [(GainCurve::Linear, 0.25), (GainCurve::Decibels, 0.0158)] {
+        let Rig { b, heard } = rig();
+        let mut r = Rig {
+            b: b.with_gain_curve(curve),
+            heard,
+        };
+        let ch =
+            r.b.play("sfx/dc", clip(&[0.5; 88_200]), false, Mix::UNITY)
+                .expect("play");
+        r.render(512);
+        r.b.stop(ch, 1_000);
+        let faded = r.render(RATE as usize / 2);
+        let half_way = faded[RATE as usize / 2 - 1].left;
+        // Linear: 0.5 x 0.5. Kira's decibels: -30 dB of 0.5 half way down
+        // a 0 -> -60 dB tween.
+        assert!(
+            (half_way - expect).abs() < 0.01,
+            "{curve:?}: {half_way} half way through the fade"
+        );
+    }
+}
+
+#[test]
+fn a_linear_volume_ramp_moves_in_a_straight_line() {
+    let mut r = bass_like_rig();
+    let ch =
+        r.b.play(
+            "sfx/dc",
+            clip(&[0.5; 88_200]),
+            true,
+            mix(0.0, 0.0, 1.0, None),
+        )
+        .expect("play");
+    r.render(512);
+    r.b.set_mix_ramped(
+        ch,
+        mix(1.0, 0.0, 1.0, None),
+        Ramps {
+            gain_ms: 1_000,
+            ..Ramps::default()
+        },
+    );
+    let ramp = r.render(RATE as usize);
+    for (at, expect) in [(0.25, 0.125), (0.5, 0.25), (0.75, 0.375)] {
+        let f = ramp[(at * RATE as f32) as usize];
+        assert!((f.left - expect).abs() < 0.005, "{at}: {f:?}");
+    }
+    r.b.set_mix_ramped(ch, mix(0.2, 0.0, 1.0, None), Ramps::default());
+    let f = r.render(256)[200];
+    assert!((f.left - 0.1).abs() < 1e-5, "a zero ramp is at once: {f:?}");
+}
+
+#[test]
+fn a_ramped_change_to_the_volume_leaves_a_pitch_slide_under_way() {
+    let mut r = rig();
+    let ch =
+        r.b.play("sfx/tone", clip(&tone(441.0, 4.0)), true, Mix::UNITY)
+            .expect("play");
+    r.render(4_410);
+    r.b.set_mix_ramped(
+        ch,
+        mix(1.0, 0.0, 2.0, None),
+        Ramps {
+            pitch_ms: 2_000,
+            ..Ramps::default()
+        },
+    );
+    // A volume change at once, mid slide: it must not snap the pitch.
+    r.render(RATE as usize / 2);
+    r.b.set_mix_ramped(ch, mix(0.8, 0.0, 2.0, None), Ramps::default());
+    let frames = r.render(4_410);
+    let n = crossings(&frames[..4_410]);
+    // A quarter of the way into a 1 -> 2 slide is about 1.25x 441 Hz, ~110
+    // crossings in 0.1 s; snapped to 2x it would be ~176.
+    assert!((100..=135).contains(&n), "{n} crossings");
+}
+
+#[test]
+fn a_clip_starts_from_an_offset_decoded_whole_or_streamed() {
+    // 1 s of silence then 1 s of DC decodes whole; 6 s and 6 s streams.
+    for seconds in [1.0, 6.0] {
+        let mut r = rig();
+        let samples = silence_then_dc(seconds);
+        let bytes = hearken_synth::wav_bytes(&samples, RATE);
+        let streams = bytes.len() > 256 * 1024;
+        assert_eq!(streams, seconds > 3.0);
+        let ch =
+            r.b.play_from(
+                "music/c3k",
+                Source::Clip(bytes.into()),
+                false,
+                Mix::UNITY,
+                f64::from(seconds) + 0.5,
+            )
+            .expect("play");
+        let mut heard = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while heard.len() < 2_048 && std::time::Instant::now() < deadline {
+            heard.extend(r.render(1_024));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // A stream may hand over a few frames of its prefill first.
+        let sounding = heard.iter().skip(1_024).take(512);
+        assert!(
+            sounding.clone().all(|f| (f.left - 0.5).abs() < 1e-3),
+            "{seconds} s clip, started in its second half, is sounding"
+        );
+        assert_eq!(
+            r.b.length_s(ch).map(|s| s.round()),
+            Some(f64::from(seconds) * 2.0)
+        );
+    }
+}
+
+#[test]
+fn a_live_voice_has_no_length() {
+    let mut r = rig();
+    let ch =
+        r.b.play("voice", sine_voice(441.0), true, Mix::UNITY)
+            .expect("play");
+    assert_eq!(r.b.length_s(ch), None);
+}
+
+/// A 0.2 s, 440 Hz stereo tone in each container a player's own music might
+/// come in, made with:
+///   ffmpeg -f lavfi -i sine=frequency=440:duration=0.2 -af volume=12dB -ac 2 -c:a aac -b:a 64k tone.m4a
+///   ffmpeg -f lavfi -i sine=frequency=440:duration=0.2 -af volume=12dB -ac 2 tone.aiff
+#[test]
+fn aac_in_mp4_and_aiff_decode() {
+    for (name, bytes) in [
+        ("m4a", &include_bytes!("fixtures/tone.m4a")[..]),
+        ("aiff", &include_bytes!("fixtures/tone.aiff")[..]),
+    ] {
+        let mut r = rig();
+        r.b.play("music/file", Source::Clip(bytes.into()), false, Mix::UNITY)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let frames = r.render(RATE as usize / 10);
+        assert!(rms(&frames[2_000..]) > 0.1, "{name} makes sound");
+    }
+}
+
+#[test]
+fn a_long_opus_started_part_way_plays_only_what_is_left() {
+    let mut r = rig();
+    let ch =
+        r.b.play_from(
+            "music/opus",
+            Source::Clip(OPUS_LONG.into()),
+            false,
+            Mix::UNITY,
+            3.0,
+        )
+        .expect("play");
+    let mut rendered = 0;
+    while rendered < RATE as usize {
+        rendered += r.render(1_024).len();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    r.b.update();
+    assert!(r.b.is_playing(ch), "1 s in, 0.5 s of the clip is left");
+    while rendered < 2 * RATE as usize {
+        rendered += r.render(1_024).len();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    r.b.update();
+    assert!(
+        !r.b.is_playing(ch),
+        "3 s + 2 s is past the 4.5 s clip's end"
+    );
 }

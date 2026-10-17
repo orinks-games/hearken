@@ -1,7 +1,7 @@
 //! The [`Backend`] trait every sound library implements, and what it plays.
 
 use crate::feed::Feed;
-use crate::types::{LoopRegion, Mix};
+use crate::types::{LoopRegion, Mix, Ramps};
 use std::fmt;
 
 /// An opaque, backend-assigned id for one playing sound.
@@ -44,8 +44,39 @@ pub trait Backend: Send {
         mix: Mix,
     ) -> Result<Channel, BackendError>;
 
+    /// Starts playing `source` `from_s` seconds in. A live voice or a feed
+    /// has no position and starts as [`Backend::play`] would; so does a clip
+    /// on a backend that cannot seek, which is the default.
+    fn play_from(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+    ) -> Result<Channel, BackendError> {
+        let _ = from_s;
+        self.play(key, source, looping, mix)
+    }
+
     /// Changes a playing channel's mix, ramping over `ramp_ms`.
     fn set_mix(&mut self, channel: Channel, mix: Mix, ramp_ms: u32);
+
+    /// Changes a playing channel's mix with a ramp of its own for each part,
+    /// touching only the parts that changed, so a ramp already under way on
+    /// one part (a pitch slide) is not restarted by a change to another (a
+    /// volume set at once). The default sends the whole mix over the gain's
+    /// ramp.
+    fn set_mix_ramped(&mut self, channel: Channel, mix: Mix, ramps: Ramps) {
+        self.set_mix(channel, mix, ramps.gain_ms);
+    }
+
+    /// How long the clip on `channel` runs, in seconds, when the backend
+    /// knows; `None` for a live voice, a feed, or a backend that cannot tell.
+    fn length_s(&mut self, channel: Channel) -> Option<f64> {
+        let _ = channel;
+        None
+    }
 
     /// Fades the channel out over `fade_ms`, then frees it; the backend owns
     /// the fade, not the caller.

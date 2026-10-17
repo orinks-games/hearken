@@ -113,22 +113,30 @@ impl Audio {
             let Some(live) = self.slots[index as usize].live.as_ref() else {
                 continue;
             };
-            let (key, mix, voice, feed, paused, region) = (
+            let (key, mix, voice, feed, clip, paused, region) = (
                 live.key.clone(),
                 live.sent,
                 live.voice.clone(),
                 live.feed.clone(),
+                live.clip.clone(),
                 live.paused,
                 live.region,
             );
-            let source = match (&voice, feed) {
-                (Some((recipe, params)), _) => {
+            let source = match (&voice, feed, clip) {
+                (Some((recipe, params)), _, _) => {
                     Source::Voice(Voice::with_params(*recipe, params.clone()))
                 }
-                (None, Some(feed)) => Source::Feed(feed),
-                (None, None) => Source::Clip(self.clip_or_default(&key)),
+                (None, Some(feed), _) => Source::Feed(feed),
+                (None, None, Some(clip)) => Source::Clip(clip),
+                (None, None, None) => match self.clip_or_default(&key) {
+                    Some(bytes) => Source::Clip(bytes),
+                    None => {
+                        self.free_slot(index);
+                        continue;
+                    }
+                },
             };
-            match self.play_with_fallback(&key, source, true, mix) {
+            match self.play_with_fallback(&key, source, true, mix, 0.0) {
                 Some(channel) => {
                     if let Some(region) = region {
                         self.backend.set_loop_region(channel, region);

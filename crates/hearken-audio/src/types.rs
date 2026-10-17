@@ -134,3 +134,93 @@ pub struct Listener {
     pub pos: Vec3,
     pub facing: f32, // degrees clockwise from north
 }
+
+/// How long each part of a mix change ramps, in milliseconds; zero is
+/// instant. A game that sets a sound's pitch every frame over one length and
+/// its volume at once (an engine) needs the two apart, which a single ramp
+/// for the whole [`Mix`] cannot give.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Ramps {
+    pub gain_ms: u32,
+    pub pan_ms: u32,
+    pub pitch_ms: u32,
+    pub filter_ms: u32,
+}
+
+impl Ramps {
+    /// Every part over the same `ms`.
+    pub const fn all(ms: u32) -> Ramps {
+        Ramps {
+            gain_ms: ms,
+            pan_ms: ms,
+            pitch_ms: ms,
+            filter_ms: ms,
+        }
+    }
+}
+
+/// How a sound starts, for [`Audio::start_with`](crate::Audio::start_with)
+/// and [`Audio::play_clip`](crate::Audio::play_clip): its own volume, pan
+/// and pitch from the first sample (no ramp from unity), whether it loops,
+/// the region a loop repeats, and how far into the clip it starts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Start {
+    /// `0..=1`, before the bus volume.
+    pub volume: f32,
+    /// `-1` (left) to `1` (right). Ignored for a positioned sound, which
+    /// takes its pan from where it is.
+    pub pan: f32,
+    pub pitch: f32,
+    pub looping: bool,
+    /// Only for a looping sound; see [`Audio::start_loop_region`](crate::Audio::start_loop_region).
+    pub region: Option<LoopRegion>,
+    /// Seconds into the clip to start from; `0` is the top.
+    pub from_s: f64,
+}
+
+impl Start {
+    /// Once, at unity, centred, from the top.
+    pub const ONCE: Start = Start {
+        volume: 1.0,
+        pan: 0.0,
+        pitch: 1.0,
+        looping: false,
+        region: None,
+        from_s: 0.0,
+    };
+
+    /// Looping, at unity, centred, from the top.
+    pub const LOOP: Start = Start {
+        looping: true,
+        ..Start::ONCE
+    };
+
+    pub const fn volume(self, volume: f32) -> Start {
+        Start { volume, ..self }
+    }
+
+    pub const fn pan(self, pan: f32) -> Start {
+        Start { pan, ..self }
+    }
+
+    pub const fn pitch(self, pitch: f32) -> Start {
+        Start { pitch, ..self }
+    }
+
+    pub const fn region(self, region: LoopRegion) -> Start {
+        Start {
+            region: Some(region),
+            ..self
+        }
+    }
+
+    pub const fn from_s(self, from_s: f64) -> Start {
+        Start { from_s, ..self }
+    }
+}
+
+impl Default for Start {
+    fn default() -> Start {
+        Start::ONCE
+    }
+}

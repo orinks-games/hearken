@@ -21,13 +21,13 @@ mod spatial;
 mod types;
 
 #[cfg(feature = "kira")]
-pub use self::kira::KiraBackend;
+pub use self::kira::{GainCurve, KiraBackend, PanLaw};
 pub use backend::{Backend, BackendError, Channel, Source};
 pub use clips::{ClipSource, LayeredClips, LooseClips, MadeClips, MemoryClips};
 pub use feed::{Feed, FeedRead};
 pub use open::{NO_SOUND_NOTICE, SHUTDOWN_WAIT};
-pub use pool::{Audio, Fades, LiveSound, Sound};
+pub use pool::{Audio, Fades, LiveSound, PlayError, Sound};
 pub use recording::{Call, Recorder, RecordingBackend};
 pub use silent::SilentBackend;
 pub use spatial::{place, Placement, SpatialConfig};
-pub use types::{Bus, Listener, LoopRegion, Mix, Vec3};
+pub use types::{Bus, Listener, LoopRegion, Mix, Ramps, Start, Vec3};
