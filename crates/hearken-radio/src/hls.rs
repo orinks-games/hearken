@@ -14,7 +14,7 @@ use url::Url;
 
 use crate::decode::{self, closed, no_audio};
 use crate::http::{self, bad_url};
-use crate::stream::{Fault, Shared, StreamOptions};
+use crate::stream::{Fault, RawTitle, Shared, StreamOptions};
 use crate::title;
 use crate::worker::{read_up_to, MAX_PLAYLIST};
 
@@ -172,6 +172,10 @@ impl HlsReader {
         // to arrive than the buffer lasts is heard; prefetch if that happens.
         let fetched = fetch(&url, MAX_SEGMENT, &self.shared, &self.opts);
         let (_, bytes) = fetched.map_err(retry)?;
+        // ponytail: fMP4/CMAF segments (an #EXT-X-MAP init segment and
+        // `moof` fragments) are not read, only MPEG-TS and raw ADTS; add
+        // Symphonia's isomp4 reader over the init segment if stations are
+        // heard sending them.
         // Every MPEG-TS packet starts with 0x47.
         let ts = bytes.first() == Some(&0x47) || url.path().ends_with(".ts");
         // ponytail: a codec change at #EXT-X-DISCONTINUITY is not re-probed;
@@ -185,6 +189,12 @@ impl HlsReader {
             bytes
         };
         self.served = 0;
+        let extinf = format!(
+            "{},{}",
+            segment.duration,
+            segment.title.as_deref().unwrap_or("")
+        );
+        self.shared.set_raw_title(RawTitle::Extinf(extinf));
         if let Some(title) = segment.title.as_deref().and_then(title::hls) {
             self.shared.set_title(Some(title));
         }

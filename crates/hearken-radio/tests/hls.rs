@@ -5,7 +5,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use hearken_radio::{Stream, StreamOptions};
+use hearken_radio::{RawTitle, Stream, StreamOptions};
 use support::{drain, failed, fast, listen, playing, rms, wait_for, Reply, TestServer};
 
 /// One second of a 440 Hz tone at half scale, as AAC in ADTS frames:
@@ -114,6 +114,10 @@ fn a_live_hls_station_with_adts_segments_plays_with_its_title() {
     let stream = Stream::open(&server.url("/live.m3u8"));
     wait_for("Playing", Duration::from_secs(5), || playing(&stream));
     assert_eq!(stream.title().as_deref(), Some("Hearken - Live"));
+    assert_eq!(
+        stream.raw_title(),
+        Some(RawTitle::Extinf("1,Hearken - Live".into()))
+    );
     let level = rms(&drain(&stream));
     assert!(level > 0.1, "rms {level}");
 }

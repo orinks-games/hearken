@@ -14,4 +14,4 @@ mod stream;
 mod title;
 mod worker;
 
-pub use stream::{Stream, StreamOptions, StreamState};
+pub use stream::{RawTitle, Stream, StreamOptions, StreamState, DEFAULT_USER_AGENT};

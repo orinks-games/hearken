@@ -9,7 +9,7 @@ use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatReader, TrackType};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 
-use crate::stream::{Fault, Shared, StreamOptions};
+use crate::stream::{Fault, RawTitle, Shared, StreamOptions};
 use crate::{codecs, title};
 
 /// Rates a feed may carry; anything else is a broken stream, not audio.
@@ -43,7 +43,7 @@ pub(crate) fn pump(
         return no_audio();
     };
     // Not cleared when there is none: an ICY title may already have arrived.
-    if let Some(current) = comments_title(&mut *reader) {
+    if let Some(current) = comments_title(&mut *reader, shared, false) {
         shared.set_title(Some(current));
     }
     let mut samples: Vec<f32> = Vec::new();
@@ -69,7 +69,7 @@ pub(crate) fn pump(
                     return no_audio();
                 };
                 (decoder, track) = next;
-                shared.set_title(comments_title(&mut *reader));
+                shared.set_title(comments_title(&mut *reader, shared, true));
                 continue;
             }
             Err(Error::IoError(error)) => return error.into(),
@@ -115,10 +115,25 @@ fn open_track(reader: &dyn FormatReader) -> Option<(Box<dyn AudioDecoder>, u32)>
 }
 
 /// The newest tags' artist and title. Vorbis comment keys have no fixed
-/// case, so they match any.
-fn comments_title(reader: &mut dyn FormatReader) -> Option<String> {
+/// case, so they match any. The tags themselves go to `shared` as the raw
+/// title; a new track with none clears the last one's when `new_track`.
+fn comments_title(
+    reader: &mut dyn FormatReader,
+    shared: &Shared,
+    new_track: bool,
+) -> Option<String> {
     let mut metadata = reader.metadata();
-    let tags = &metadata.skip_to_latest()?.media.tags;
+    let Some(latest) = metadata.skip_to_latest() else {
+        if new_track {
+            shared.set_raw_title(RawTitle::Comments(Vec::new()));
+        }
+        return None;
+    };
+    let tags = &latest.media.tags;
+    let comments = tags
+        .iter()
+        .map(|tag| format!("{}={}", tag.raw.key, tag.raw.value));
+    shared.set_raw_title(RawTitle::Comments(comments.collect()));
     let tag = |key: &str| {
         let tag = tags
             .iter()

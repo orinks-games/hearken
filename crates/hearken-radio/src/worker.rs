@@ -6,13 +6,13 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
 
-use icy_metadata::error::MetadataParseError;
+use icy_metadata::IcyMetadata;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::ReadOnlySource;
 
 use crate::icy::IcyReader;
 use crate::playlist::Kind;
-use crate::stream::{Fault, Shared, StreamOptions, StreamState};
+use crate::stream::{Fault, RawTitle, Shared, StreamOptions, StreamState};
 use crate::{decode, hls, http, playlist, title};
 
 /// Plays `url` until it fails or every handle is dropped, calling it again
@@ -125,10 +125,14 @@ fn listen(
     // Title blocks come out of the body before the decoder reads it.
     let titles = shared.clone();
     let body = IcyReader::new(body, icy_metaint, move |block| {
-        let current = match block {
-            Ok(metadata) => metadata.stream_title().and_then(title::tidy),
-            Err(MetadataParseError::InvalidUtf8(error)) => title::icy(&error.into_bytes()),
-            Err(MetadataParseError::Empty(_)) => return,
+        titles.set_raw_title(RawTitle::Icy(block.to_vec()));
+        let current = match str::from_utf8(block) {
+            Ok(text) => match text.parse::<IcyMetadata>() {
+                Ok(metadata) => metadata.stream_title().and_then(title::tidy),
+                // Nothing in it to read; the last title stands.
+                Err(_) => return,
+            },
+            Err(_) => title::icy(block),
         };
         titles.set_title(current);
     });

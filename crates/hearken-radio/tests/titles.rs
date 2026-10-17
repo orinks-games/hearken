@@ -5,7 +5,7 @@ mod support;
 
 use std::time::Duration;
 
-use hearken_radio::Stream;
+use hearken_radio::{RawTitle, Stream};
 use support::{fast, wait_for, Reply, TestServer};
 
 /// The tone from `tests/http.rs`; see there for how it is made.
@@ -57,4 +57,36 @@ fn a_chained_ogg_station_reports_each_tracks_title() {
         Duration::from_secs(5),
         titled(&stream, "Hearken - Second"),
     );
+}
+
+#[test]
+fn an_icy_station_hands_over_its_block_as_sent() {
+    // Latin-1, unparsed, the zero padding gone: a game with its own reading
+    // of a title gets the bytes the station sent.
+    let server = icy_station(b"Caf\xe9 - title=\"x\"");
+    let stream = Stream::open(&server.url("/live.mp3"));
+    wait_for("the raw title", Duration::from_secs(5), || {
+        stream.raw_title().is_some()
+    });
+    assert_eq!(
+        stream.raw_title(),
+        Some(RawTitle::Icy(
+            b"StreamTitle='Caf\xe9 - title=\"x\"';".to_vec()
+        ))
+    );
+}
+
+#[test]
+fn an_ogg_station_hands_over_its_comments() {
+    let server = TestServer::start(move |_| Reply::Body(200, "application/ogg", FIRST.to_vec()));
+    let stream = Stream::open_with(&server.url("/live.ogg"), fast());
+    wait_for("the raw title", Duration::from_secs(5), || {
+        stream.raw_title().is_some()
+    });
+    let Some(RawTitle::Comments(comments)) = stream.raw_title() else {
+        panic!("{:?}", stream.raw_title());
+    };
+    let has = |want: &str| comments.iter().any(|c| c.eq_ignore_ascii_case(want));
+    assert!(has("artist=Hearken"), "{comments:?}");
+    assert!(has("title=First"), "{comments:?}");
 }

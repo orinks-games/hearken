@@ -11,8 +11,6 @@ use url::{Position, Url};
 
 use crate::stream::{Fault, Shared, StreamOptions};
 
-const USER_AGENT: &str = concat!("Hearken/", env!("CARGO_PKG_VERSION"));
-
 /// The most a Shoutcast v1 reply's head may hold before it is not one.
 const MAX_HEAD: u64 = 16 * 1024;
 
@@ -65,7 +63,7 @@ fn call(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
         .timeout_connect(opts.timeout)
         .timeout_read(opts.timeout)
         .redirects(10)
-        .user_agent(USER_AGENT)
+        .user_agent(&opts.user_agent)
         .build();
     match agent
         .request_url("GET", &url)
@@ -156,9 +154,10 @@ fn request(mut socket: TcpStream, url: &Url, opts: &StreamOptions) -> Result<Res
     socket.set_write_timeout(Some(opts.timeout))?;
     write!(
         socket,
-        "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\nIcy-MetaData: 1\r\n\r\n",
+        "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: {}\r\nIcy-MetaData: 1\r\n\r\n",
         &url[Position::BeforePath..Position::AfterQuery],
         &url[Position::BeforeHost..Position::AfterPort],
+        opts.user_agent,
     )?;
     let mut reader = BufReader::new(socket);
     let mut head = Vec::new();

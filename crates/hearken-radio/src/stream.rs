@@ -59,6 +59,29 @@ pub struct StreamOptions {
     /// further until the feed makes room, so a paused stream resumes where
     /// it paused.
     pub buffer: Duration,
+    /// Who is calling, sent as the `User-Agent` of every request: a game
+    /// names itself, so a station's logs say who its listeners are.
+    pub user_agent: String,
+}
+
+/// The `User-Agent` a stream sends unless its options say otherwise.
+pub const DEFAULT_USER_AGENT: &str = concat!("Hearken/", env!("CARGO_PKG_VERSION"));
+
+/// The now-playing metadata exactly as the station last sent it, for a game
+/// with its own rules for reading a title out of it. [`Stream::title`] is
+/// Hearken's own reading of the same thing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RawTitle {
+    /// The latest ICY metadata block, its zero padding removed, in whatever
+    /// bytes the station sent (UTF-8 from most, Latin-1 from some):
+    /// `StreamTitle='Band - Song';StreamUrl='';`.
+    Icy(Vec<u8>),
+    /// The current Ogg, Opus or FLAC track's comments, each `KEY=value` with
+    /// the key as the encoder wrote it.
+    Comments(Vec<String>),
+    /// The current HLS segment's `#EXTINF` after the colon:
+    /// `duration,title`, the title empty when the segment has none.
+    Extinf(String),
 }
 
 impl Default for StreamOptions {
@@ -68,9 +91,12 @@ impl Default for StreamOptions {
             retry_delays: [1, 2, 4, 8, 16].map(Duration::from_secs).to_vec(),
             healthy_after: Duration::from_secs(30),
             stall: Duration::from_secs(10),
-            // Freight Fate's BASS pre-buffer.
+            // A cushion against a slow network. A game that wants a quicker
+            // tune-in lowers it: Freight Fate plays after 300 ms, in a
+            // 1.5 s buffer.
             prebuffer: Duration::from_millis(1_500),
             buffer: Duration::from_secs(4),
+            user_agent: DEFAULT_USER_AGENT.to_owned(),
         }
     }
 }
@@ -109,6 +135,12 @@ impl Stream {
     /// The latest now-playing title, where the station sends one.
     pub fn title(&self) -> Option<String> {
         lock(&self.0.shared.title).clone()
+    }
+
+    /// The latest now-playing metadata as the station sent it, before
+    /// Hearken reads a title out of it; `None` until any arrives.
+    pub fn raw_title(&self) -> Option<RawTitle> {
+        lock(&self.0.shared.raw_title).clone()
     }
 
     /// The audio, for `Audio::start_feed`. Silent until the stream first
@@ -189,6 +221,7 @@ pub(crate) struct Shared {
     /// that dropped had played long enough to earn back its retries.
     call: Mutex<(Instant, Option<(Instant, Instant)>)>,
     title: Mutex<Option<String>>,
+    raw_title: Mutex<Option<RawTitle>>,
     ring: Mutex<Ring>,
     /// Signalled when the feed takes audio or the stream closes, for a push
     /// waiting on a full ring.
@@ -210,6 +243,7 @@ impl Shared {
             state: Mutex::new(StreamState::Connecting),
             call: Mutex::new((Instant::now(), None)),
             title: Mutex::new(None),
+            raw_title: Mutex::new(None),
             ring: Mutex::new(Ring::new(options.buffer)),
             room: Condvar::new(),
             started: AtomicBool::new(false),
@@ -259,6 +293,10 @@ impl Shared {
 
     pub(crate) fn set_title(&self, title: Option<String>) {
         *lock(&self.title) = title;
+    }
+
+    pub(crate) fn set_raw_title(&self, raw: RawTitle) {
+        *lock(&self.raw_title) = Some(raw);
     }
 
     /// Adds decoded frames at `rate`, which must not be 0, once the ring has
