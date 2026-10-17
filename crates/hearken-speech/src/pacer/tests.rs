@@ -854,6 +854,12 @@ fn test_busy_follows_the_projection() {
     assert!(!pacer.busy());
 }
 
+#[test]
+fn test_priorities_order_by_urgency() {
+    assert!(EventPriority::Critical > EventPriority::Important);
+    assert!(EventPriority::Important > EventPriority::Ambient);
+}
+
 // -- tuning: the critical budget and wide characters -----------------------
 
 #[test]
