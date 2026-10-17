@@ -81,7 +81,8 @@ pub use capture::{
 };
 pub use live::{Speech, SpeechConfig};
 pub use pacer::{
-    monotonic_seconds, Clock, Cut, EventPriority, EventSpeechPacer, PacerConfig, Valid,
+    monotonic_seconds, Clock, Cut, DeliveryStatus, EventPriority, EventSpeechPacer, PacerConfig,
+    Protect, Valid,
 };
 pub use spoken::{terse_silent, SpokenMessage};
 pub use threaded::ThreadedSpeech;

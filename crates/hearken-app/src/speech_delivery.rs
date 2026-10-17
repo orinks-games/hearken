@@ -13,7 +13,8 @@ use std::rc::Rc;
 
 use hearken_audio::Bus;
 use hearken_speech::{
-    Category, Cut, EventPriority, EventSpeechPacer, Level, PacerConfig, Rule, Valid, Verbosity,
+    Category, Cut, EventPriority, EventSpeechPacer, Level, PacerConfig, Protect, Rule, Valid,
+    Verbosity,
 };
 
 use crate::ctx::{Ctx, TRANSCRIPT_TARGET};
@@ -237,10 +238,10 @@ impl<G: Game> Ctx<G> {
             }
             pacer.note_spoken(&text, key);
             if interrupt {
-                cut = pacer.note_interrupt(&text, priority, valid);
+                cut = pacer.note_interrupt(&text, priority, Protect::Yes, valid);
             } else if !separate {
-                pacer.note_queued(&text, priority, valid);
-            } else if pacer.should_flush(&text, priority, valid) {
+                pacer.note_queued(&text, priority, Protect::Yes, valid);
+            } else if pacer.should_flush(&text, priority, Protect::Yes, valid) {
                 // The backlog has gone stale: purging it and speaking now is
                 // this line's honest delivery.
                 log::info!(target: TRANSCRIPT_TARGET, "[pacer] stale event backlog flushed");
@@ -293,7 +294,7 @@ impl<G: Game> Ctx<G> {
             if interrupt {
                 pacer.note_ahead(&text);
             } else {
-                pacer.note_queued(&text, priority, None);
+                pacer.note_queued(&text, priority, Protect::Yes, None);
             }
         }
         if self.speech.has_separate_event_voice() {
