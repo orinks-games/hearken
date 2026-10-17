@@ -1,9 +1,11 @@
 name: CI
 
 on:
-  # Jobs run on Blacksmith runners. Pull requests run fmt and the tests on
-  # Windows and Linux; macOS minutes cost the most, so macOS runs only on
-  # release tags and workflow_dispatch.
+  # Jobs run on GitHub's hosted runners, free for this public repository
+  # (Blacksmith's paid minutes stay with the private ones). Pull requests
+  # run fmt and the tests on Windows and Linux; macOS runners are the
+  # slowest and fewest at once, so macOS runs only on release tags and
+  # workflow_dispatch.
   pull_request:
   push:
     tags: ["v*"]
@@ -26,7 +28,7 @@ env:
 
 jobs:
   fmt:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
@@ -37,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["blacksmith-4vcpu-windows-2025","blacksmith-4vcpu-ubuntu-2404"]' || '["blacksmith-4vcpu-windows-2025","blacksmith-6vcpu-macos-15","blacksmith-4vcpu-ubuntu-2404"]') }}
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["windows-2025","ubuntu-24.04"]' || '["windows-2025","macos-15","ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:

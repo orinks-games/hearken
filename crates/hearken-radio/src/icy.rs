@@ -3,11 +3,8 @@
 use std::io::{self, Read};
 use std::num::NonZeroUsize;
 
-use icy_metadata::error::MetadataParseError;
-use icy_metadata::IcyMetadata;
-
 /// Reads a station's audio with its metadata blocks taken out, handing each
-/// non-empty block to `on_block`. The station sends a length byte (in
+/// non-empty block to `on_block`, its zero padding removed. The station sends a length byte (in
 /// 16-byte units) and that many bytes of metadata after every `interval`
 /// bytes of audio; none at all when the interval is `None`.
 ///
@@ -25,7 +22,7 @@ pub(crate) struct IcyReader<R, F> {
 impl<R, F> IcyReader<R, F>
 where
     R: Read,
-    F: Fn(Result<IcyMetadata, MetadataParseError>),
+    F: Fn(&[u8]),
 {
     pub(crate) fn new(inner: R, interval: Option<NonZeroUsize>, on_block: F) -> Self {
         let interval = interval.map(NonZeroUsize::get);
@@ -46,15 +43,12 @@ where
         }
         let mut block = vec![0; usize::from(units[0]) * 16];
         self.inner.read_exact(&mut block)?;
-        (self.on_block)(
-            String::from_utf8(block)
-                .map_err(MetadataParseError::InvalidUtf8)
-                .and_then(|text| {
-                    // A block is padded with zeros to a multiple of 16 bytes.
-                    let text = text.trim_end_matches('\0');
-                    text.parse().map_err(MetadataParseError::Empty)
-                }),
-        );
+        // A block is padded with zeros to a multiple of 16 bytes.
+        let end = block
+            .iter()
+            .rposition(|&byte| byte != 0)
+            .map_or(0, |at| at + 1);
+        (self.on_block)(&block[..end]);
         Ok(())
     }
 }
@@ -62,7 +56,7 @@ where
 impl<R, F> Read for IcyReader<R, F>
 where
     R: Read,
-    F: Fn(Result<IcyMetadata, MetadataParseError>),
+    F: Fn(&[u8]),
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let Some(interval) = self.interval else {
@@ -120,15 +114,12 @@ mod tests {
             let mut reader = IcyReader::new(
                 Dribble(&wire, at_most),
                 NonZeroUsize::new(12),
-                move |block| {
-                    let title = block.unwrap().stream_title().map(str::to_owned);
-                    seen.lock().unwrap().push(title);
-                },
+                move |block| seen.lock().unwrap().push(block.to_vec()),
             );
             let mut heard = Vec::new();
             reader.read_to_end(&mut heard).unwrap();
             assert_eq!(heard, audio, "{at_most} bytes at a time");
-            assert_eq!(*titles.lock().unwrap(), [Some("A".to_owned())]);
+            assert_eq!(*titles.lock().unwrap(), [b"StreamTitle='A';".to_vec()]);
         }
     }
 

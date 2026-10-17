@@ -107,7 +107,7 @@ fn capture_default_answers_as_if_speech_were_disabled() {
     assert!(!capture.event_supports_rate());
     assert!(capture.event_backend_options().is_empty());
     assert!(capture.voice_names().is_empty());
-    assert!(!capture.refresh(true));
+    assert!(!capture.refresh());
     capture.select_event_backend(Some("SAPI"));
     assert!(!capture.has_separate_event_voice()); // nothing to bind headless
     assert_eq!(capture.event_backend_name(), "none");
@@ -226,7 +226,7 @@ fn null_speech_swallows_everything() {
     assert_eq!(null.backend_name(), "none");
     assert!(!null.has_separate_event_voice());
     assert!(!null.say_adjustment_preview("speech_rate", "x", true));
-    assert!(!null.refresh(true));
+    assert!(!null.refresh());
     null.shutdown();
 }
 

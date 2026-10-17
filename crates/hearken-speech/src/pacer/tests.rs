@@ -41,15 +41,15 @@ fn make_pacer() -> (EventSpeechPacer, FakeClock) {
 }
 
 fn flush(pacer: &mut EventSpeechPacer, text: &str) -> bool {
-    pacer.should_flush(text, EventPriority::Ambient, None)
+    pacer.should_flush(text, EventPriority::Ambient, Protect::Yes, None)
 }
 
 fn flush_at(pacer: &mut EventSpeechPacer, text: &str, priority: EventPriority) -> bool {
-    pacer.should_flush(text, priority, None)
+    pacer.should_flush(text, priority, Protect::Yes, None)
 }
 
 fn interrupt(pacer: &mut EventSpeechPacer, text: &str) -> Option<Cut> {
-    pacer.note_interrupt(text, EventPriority::Critical, None)
+    pacer.note_interrupt(text, EventPriority::Critical, Protect::Yes, None)
 }
 
 fn cut(text: &str, priority: EventPriority) -> Option<Cut> {
@@ -420,7 +420,7 @@ fn test_a_line_cut_before_it_started_is_handed_back_whatever_its_age() {
     let (mut pacer, clock) = make_pacer();
     flush(&mut pacer, LONG_LINE); // ~10 s of chatter at the voice
     let warning = "Emergency vehicle approaching from behind. Move right.";
-    pacer.note_queued(warning, EventPriority::Critical, None);
+    pacer.note_queued(warning, EventPriority::Critical, Protect::Yes, None);
     clock.advance(8.0); // older than its own duration, and not yet begun
     assert_eq!(
         interrupt(&mut pacer, HAZARD),
@@ -437,9 +437,9 @@ fn test_a_stale_flush_drops_a_critical_call_in_its_last_words() {
     let clock = FakeClock::at(0.0);
     let mut pacer = EventSpeechPacer::with_clock(PacerConfig::default(), clock.clock());
     let brake = "Brake now! Stopped traffic ahead in both lanes, and a marshal on the shoulder.";
-    pacer.note_interrupt(brake, EventPriority::Critical, None);
+    pacer.note_interrupt(brake, EventPriority::Critical, Protect::Yes, None);
     // Chatter queued behind it: a real backlog.
-    pacer.note_queued(CHATTER, EventPriority::Ambient, None);
+    pacer.note_queued(CHATTER, EventPriority::Ambient, Protect::Yes, None);
     heard(&pacer, &clock, brake, 0.8);
     assert!(flush_at(
         &mut pacer,
@@ -462,7 +462,7 @@ fn test_an_important_line_waits_out_the_one_line_still_speaking() {
         let mut pacer = EventSpeechPacer::with_clock(PacerConfig::default(), clock.clock());
         let take = "Gate speed 49. You take gate 113 for Barrow Bend. A quarter mile of pier, \
                     traffic light at the end.";
-        pacer.note_interrupt(take, EventPriority::Critical, None);
+        pacer.note_interrupt(take, EventPriority::Critical, Protect::Yes, None);
         heard(&pacer, &clock, take, fraction);
         assert!(
             !flush_at(&mut pacer, "Light red.", EventPriority::Important),
@@ -488,7 +488,12 @@ fn test_a_superseded_line_is_flushed_and_never_handed_back() {
     let waiting = Rc::new(Cell::new(true));
     let hold = "Stopped at the yield. A car crossing from the left; assistance is holding for \
                 your gap.";
-    pacer.should_flush(hold, EventPriority::Important, always(Rc::clone(&waiting)));
+    pacer.should_flush(
+        hold,
+        EventPriority::Important,
+        Protect::Yes,
+        always(Rc::clone(&waiting)),
+    );
     clock.advance(0.1);
     waiting.set(false); // the gap came
     assert!(flush_at(
@@ -533,7 +538,7 @@ fn test_a_rescued_line_is_not_rescued_again_by_the_next_cut() {
                 rescues += 1;
                 // the caller requeues the rescue behind the warning,
                 // re-protecting it
-                pacer.note_queued(&text, priority, None);
+                pacer.note_queued(&text, priority, Protect::Yes, None);
             }
         }
     }
@@ -549,7 +554,7 @@ fn test_the_same_words_minutes_later_earn_a_fresh_rescue() {
     let rescued = interrupt(&mut pacer, HAZARD);
     assert_eq!(rescued, cut(STOP_LINE, EventPriority::Important));
     let (text, priority) = rescued.unwrap();
-    pacer.note_queued(&text, priority, None);
+    pacer.note_queued(&text, priority, Protect::Yes, None);
     clock.advance(pacer.config().rescue_once_window_s + 1.0);
     flush_at(&mut pacer, STOP_LINE, EventPriority::Important);
     assert_eq!(
@@ -574,9 +579,10 @@ fn test_a_stale_flush_never_steps_on_a_critical_call() {
     pacer.note_interrupt(
         "Brake now! Stopped traffic ahead.",
         EventPriority::Critical,
+        Protect::Yes,
         None,
     );
-    pacer.note_queued(CHATTER, EventPriority::Ambient, None);
+    pacer.note_queued(CHATTER, EventPriority::Ambient, Protect::Yes, None);
     // An important line arrives while it is still mid-sentence, far enough
     // behind the projection to flush.
     clock.advance(0.05);
@@ -602,10 +608,10 @@ fn test_a_stale_flush_still_discards_an_aged_important_backlog() {
     let mut pacer = EventSpeechPacer::with_clock(PacerConfig::default(), clock.clock());
 
     let stop = "Next stop in 5 miles: service plaza."; // ~3.2 s spoken
-    pacer.note_queued(stop, EventPriority::Important, None);
-    pacer.note_queued(CHATTER, EventPriority::Ambient, None); // and chatter behind it
-                                                              // Well past the pre-utterance pause: the voice has been reading this
-                                                              // line aloud, and it is still mid-sentence when the flush lands.
+    pacer.note_queued(stop, EventPriority::Important, Protect::Yes, None);
+    pacer.note_queued(CHATTER, EventPriority::Ambient, Protect::Yes, None); // and chatter behind it
+                                                                            // Well past the pre-utterance pause: the voice has been reading this
+                                                                            // line aloud, and it is still mid-sentence when the flush lands.
     clock.advance(2.0);
     assert!(
         flush_at(
@@ -633,7 +639,7 @@ fn test_a_burst_of_important_lines_in_one_instant_queues_whole() {
     let briefing = "Off the pier and onto harbour lanes: start on unnamed \
                         public dock. Then turn right now onto Harbour Lanes. \
                         1 mile to the facility gate.";
-    pacer.note_queued(briefing, EventPriority::Important, None);
+    pacer.note_queued(briefing, EventPriority::Important, Protect::Yes, None);
     // The next important lines land in the same frame and the one after.
     clock.advance(0.022);
     let zone = "Speed limit 25.";
@@ -658,8 +664,13 @@ fn test_a_backlog_older_than_the_pause_still_flushes() {
     let clock = FakeClock::at(0.0);
     let mut pacer = EventSpeechPacer::with_clock(PacerConfig::default(), clock.clock());
     let stop = "Next stop in 5 miles: service plaza.";
-    pacer.note_queued(stop, EventPriority::Important, None);
-    pacer.note_queued("Speed limit 45.", EventPriority::Important, None);
+    pacer.note_queued(stop, EventPriority::Important, Protect::Yes, None);
+    pacer.note_queued(
+        "Speed limit 45.",
+        EventPriority::Important,
+        Protect::Yes,
+        None,
+    );
     clock.advance(pacer.config().base_utterance_s + 0.1);
     assert!(flush_at(
         &mut pacer,
@@ -687,7 +698,7 @@ fn test_a_construction_zone_line_is_rescued_once_like_any_other() {
         if let Some((text, priority)) = interrupt(&mut pacer, warning) {
             if text == work_zone {
                 rescues += 1;
-                pacer.note_queued(&text, priority, None);
+                pacer.note_queued(&text, priority, Protect::Yes, None);
             }
         }
     }
@@ -711,7 +722,7 @@ fn test_the_merge_taper_line_is_rescued_once_too() {
         if let Some((text, priority)) = interrupt(&mut pacer, &format!("Hazard {n}!")) {
             if text == taper {
                 rescues += 1;
-                pacer.note_queued(&text, priority, None);
+                pacer.note_queued(&text, priority, Protect::Yes, None);
             }
         }
     }
@@ -730,6 +741,7 @@ fn test_a_rescued_line_dies_when_its_moment_has_passed() {
     pacer.track(
         gate_line,
         EventPriority::Important,
+        Protect::Yes,
         always(Rc::clone(&still_ahead)),
     );
     // Cut while the gate is still ahead: handed back, as it should be.
@@ -745,6 +757,7 @@ fn test_a_rescued_line_dies_when_its_moment_has_passed() {
     pacer2.track(
         gate_line,
         EventPriority::Important,
+        Protect::Yes,
         always(Rc::clone(&still_ahead)),
     );
     assert_eq!(interrupt(&mut pacer2, "Brake lights ahead!"), None);
@@ -764,6 +777,7 @@ fn test_a_hazard_call_does_not_come_back_once_the_hazard_is_clear() {
     pacer.track(
         hazard_line,
         EventPriority::Critical,
+        Protect::Yes,
         always(Rc::clone(&live)),
     );
     // Still live: cut by something louder, handed back to finish.
@@ -779,6 +793,7 @@ fn test_a_hazard_call_does_not_come_back_once_the_hazard_is_clear() {
     pacer2.track(
         hazard_line,
         EventPriority::Critical,
+        Protect::Yes,
         always(Rc::clone(&live)),
     );
     assert_eq!(interrupt(&mut pacer2, "Deer in the path!"), None);
@@ -797,6 +812,7 @@ fn test_an_enforcement_stop_instruction_dies_once_the_player_has_stopped() {
         pacer.track(
             line,
             EventPriority::Critical,
+            Protect::Yes,
             Some(Box::new(move || stop_live)),
         );
         interrupt(&mut pacer, "Deer in the path!")
@@ -819,7 +835,7 @@ fn test_the_overspeed_nag_dies_once_the_player_has_slowed() {
     let over = Rc::new(Cell::new(false));
     let (mut pacer, _) = make_pacer();
     flush_at(&mut pacer, nag, EventPriority::Important);
-    pacer.track(nag, EventPriority::Important, always(over));
+    pacer.track(nag, EventPriority::Important, Protect::Yes, always(over));
     assert_eq!(interrupt(&mut pacer, "Brake now!"), None);
 }
 
@@ -836,4 +852,161 @@ fn test_busy_follows_the_projection() {
     flush(&mut pacer, CHATTER);
     pacer.reset();
     assert!(!pacer.busy());
+}
+
+#[test]
+fn test_priorities_order_by_urgency() {
+    assert!(EventPriority::Critical > EventPriority::Important);
+    assert!(EventPriority::Important > EventPriority::Ambient);
+}
+
+// -- tuning: the critical budget and wide characters -----------------------
+
+#[test]
+fn test_a_queued_critical_line_never_waits_by_default() {
+    let (mut pacer, _) = make_pacer();
+    assert_eq!(pacer.wait_budget_s(EventPriority::Critical), 0.0);
+    flush(&mut pacer, CHATTER);
+    assert!(flush_at(&mut pacer, "Brake now!", EventPriority::Critical));
+}
+
+#[test]
+fn test_a_critical_budget_lets_a_queued_warning_wait_behind_a_short_line() {
+    let clock = FakeClock::at(100.0);
+    let config = PacerConfig {
+        critical_wait_s: 3.0,
+        ..PacerConfig::DEFAULT
+    };
+    let mut pacer = EventSpeechPacer::with_clock(config, clock.clock());
+    assert_eq!(pacer.wait_budget_s(EventPriority::Critical), 3.0);
+    flush(&mut pacer, "Toll ahead.");
+    assert!(!flush_at(&mut pacer, "Brake now!", EventPriority::Critical));
+}
+
+#[test]
+fn test_wide_characters_count_by_their_weight() {
+    let plain = EventSpeechPacer::with_clock(PacerConfig::default(), Box::new(|| 0.0));
+    let wide = EventSpeechPacer::with_clock(
+        PacerConfig {
+            wide_char_weight: 3.0,
+            ..PacerConfig::DEFAULT
+        },
+        Box::new(|| 0.0),
+    );
+    // Kana, a CJK ideograph and a Hangul syllable, then Latin letters.
+    let line = "かカ漢한ab";
+    let base = PacerConfig::DEFAULT.base_utterance_s;
+    let rate = PacerConfig::DEFAULT.chars_per_s;
+    assert!((plain.duration_s(line) - (base + 6.0 / rate)).abs() < 1e-9);
+    assert!((wide.duration_s(line) - (base + 14.0 / rate)).abs() < 1e-9);
+}
+
+#[test]
+fn test_the_default_pacer_uses_the_default_tuning() {
+    let pacer = EventSpeechPacer::default();
+    assert_eq!(*pacer.config(), PacerConfig::default());
+    assert_eq!(PacerConfig::default(), PacerConfig::DEFAULT);
+    assert_eq!(Protect::default(), Protect::Yes);
+}
+
+// -- delivery receipts -------------------------------------------------------
+
+#[test]
+fn test_a_receipt_completes_once_the_line_has_been_spoken() {
+    let (mut pacer, clock) = make_pacer();
+    flush(&mut pacer, "Low fuel.");
+    pacer.track_delivery("fuel", "Low fuel.");
+    assert!(pacer.delivery_pending());
+    assert_eq!(pacer.delivery_status("fuel"), Some(DeliveryStatus::Pending));
+    clock.advance(10.0);
+    assert!(!pacer.delivery_pending());
+    assert_eq!(
+        pacer.delivery_status("fuel"),
+        Some(DeliveryStatus::Completed)
+    );
+    // Consumed.
+    assert_eq!(pacer.delivery_status("fuel"), None);
+}
+
+#[test]
+fn test_every_purge_interrupts_a_pending_receipt() {
+    type Purge = fn(&mut EventSpeechPacer);
+    let purges: [(&str, Purge); 6] = [
+        ("interrupt", |p| {
+            p.note_interrupt("Brake now!", EventPriority::Critical, Protect::Yes, None);
+        }),
+        ("flush", |p| {
+            p.should_flush(LONG_LINE, EventPriority::Ambient, Protect::Yes, None);
+            p.should_flush("Exit now.", EventPriority::Important, Protect::Yes, None);
+        }),
+        ("channel purged", |p| {
+            p.note_channel_purged();
+        }),
+        ("reset", EventSpeechPacer::reset),
+        ("pause", EventSpeechPacer::pause),
+        ("resume", EventSpeechPacer::resume),
+    ];
+    for (name, purge) in purges {
+        let (mut pacer, _) = make_pacer();
+        flush(&mut pacer, "Low fuel.");
+        pacer.track_delivery("fuel", "Low fuel.");
+        purge(&mut pacer);
+        assert_eq!(
+            pacer.delivery_status("fuel"),
+            Some(DeliveryStatus::Interrupted),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn test_a_resumed_delivery_completes_with_its_requeue() {
+    let (mut pacer, clock) = make_pacer();
+    flush(&mut pacer, "Low fuel.");
+    pacer.track_delivery("fuel", "Low fuel.");
+    pacer.reset();
+    pacer.note_queued("Low fuel.", EventPriority::Important, Protect::Yes, None);
+    pacer.resume_delivery("Low fuel.");
+    assert_eq!(pacer.delivery_status("fuel"), Some(DeliveryStatus::Pending));
+    clock.advance(10.0);
+    assert_eq!(
+        pacer.delivery_status("fuel"),
+        Some(DeliveryStatus::Completed)
+    );
+}
+
+#[test]
+fn test_a_completed_or_forgotten_delivery() {
+    let (mut pacer, _) = make_pacer();
+    pacer.complete_delivery("fuel", "Low fuel.");
+    assert!(!pacer.delivery_pending());
+    assert_eq!(
+        pacer.delivery_status("fuel"),
+        Some(DeliveryStatus::Completed)
+    );
+    flush(&mut pacer, "Low fuel.");
+    pacer.track_delivery("fuel", "Low fuel.");
+    pacer.forget_condition("fuel");
+    assert_eq!(pacer.delivery_status("fuel"), None);
+}
+
+// -- Protect::No ---------------------------------------------------------------
+
+#[test]
+fn test_an_unprotected_line_empties_the_slot_when_it_interrupts() {
+    let (mut pacer, _) = make_pacer();
+    flush_at(&mut pacer, STOP_LINE, EventPriority::Important);
+    pacer.note_interrupt("Cruise set.", EventPriority::Critical, Protect::No, None);
+    assert_eq!(interrupt(&mut pacer, "Brake now!"), None);
+}
+
+#[test]
+fn test_an_unprotected_queued_line_leaves_the_slot_alone() {
+    let (mut pacer, _) = make_pacer();
+    flush_at(&mut pacer, STOP_LINE, EventPriority::Important);
+    pacer.should_flush("Cruise set.", EventPriority::Critical, Protect::No, None);
+    assert_eq!(
+        interrupt(&mut pacer, "Brake now!"),
+        cut(STOP_LINE, EventPriority::Important)
+    );
 }

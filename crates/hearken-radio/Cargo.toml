@@ -20,8 +20,11 @@ icy-metadata.workspace = true
 log.workspace = true
 m3u8-rs.workspace = true
 mpeg2ts.workspace = true
-# AAC also registers Symphonia's ADTS reader, the format most AAC stations send.
-symphonia = { workspace = true, features = ["aac"] }
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+# AAC also registers Symphonia's ADTS reader, the format most AAC stations send;
+# isomp4 reads fMP4 (CMAF) HLS segments.
+symphonia = { workspace = true, features = ["aac", "isomp4"] }
 symphonia-adapter-fdk-aac = { workspace = true, optional = true }
 symphonia-adapter-libopus.workspace = true
 ureq.workspace = true

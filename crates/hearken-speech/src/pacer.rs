@@ -49,12 +49,17 @@
 //! could; a slower one flushes a little late but stays bounded -- either way
 //! the player never again waits through a paragraph of expired narration.
 //!
-//! Ported from Freight Fate's `speech_pacing.rs` (commit `c5d3ef8d`), itself
-//! a port of `freight_fate/speech_pacing.py`, generalised for Hearken: no
+//! Ported from Freight Fate's `speech_pacing.rs`, itself a port of
+//! `freight_fate/speech_pacing.py`, generalised for Hearken: no
 //! `SpeechCategory`/`Disposition` verbosity ladder (a per-game concern, not
-//! part of this engine), no delivery receipts (`DeliveryStatus` and the
-//! methods that tracked it), and every tuning value that was a private
-//! associated constant is now a field on [`PacerConfig`] a game can change.
+//! part of this engine; the one rule the pacer needs from it, that an
+//! outcome report never takes the hand-back slot, is [`Protect::No`]), and
+//! every tuning value that was a private associated constant is now a field
+//! on [`PacerConfig`] a game can change.
+
+mod receipts;
+use receipts::DeliveryReceipts;
+pub use receipts::DeliveryStatus;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -95,12 +100,24 @@ pub struct PacerConfig {
     /// The same wait budget for an `Important` line -- much shorter, so it
     /// goes ahead of chatter rather than behind it.
     pub important_wait_s: f64,
+    /// The wait budget for a `Critical` line that a caller delivers queued
+    /// rather than interrupting. `0.0` means it never waits: any backlog at
+    /// all flushes ahead of it. A game that queues some warnings behind the
+    /// line already speaking gives them the ambient patience instead.
+    pub critical_wait_s: f64,
     /// Per-utterance pause before the voice gets going, folded into the
     /// estimated duration of every line.
     pub base_utterance_s: f64,
     /// Estimated speaking rate used to project a line's duration from its
     /// length, at a conservative default voice.
     pub chars_per_s: f64,
+    /// How many characters' worth of speaking time one kana, CJK ideograph
+    /// or Hangul syllable counts as. Such a character carries a syllable or
+    /// more, about as long to say as three English letters, so a game that
+    /// speaks Chinese, Japanese or Korean sets this near `3.0` and a
+    /// translated line is not mistaken for a short one. `1.0` counts every
+    /// character the same.
+    pub wide_char_weight: f64,
     /// Two identical lines this close together are one thing happening, not
     /// two, whichever code path noticed it.
     pub repeat_window_s: f64,
@@ -122,20 +139,47 @@ pub struct PacerConfig {
     pub mostly_heard_fraction: f64,
 }
 
+impl PacerConfig {
+    /// The default tuning, usable in a `const` (`..PacerConfig::DEFAULT`).
+    pub const DEFAULT: PacerConfig = PacerConfig {
+        ambient_wait_s: 3.0,
+        important_wait_s: 0.8,
+        critical_wait_s: 0.0,
+        base_utterance_s: 0.4,
+        chars_per_s: 13.0,
+        wide_char_weight: 1.0,
+        repeat_window_s: 2.5,
+        recent_limit: 256,
+        recent_memory_s: 300.0,
+        rescue_once_window_s: 30.0,
+        mostly_heard_fraction: 0.5,
+    };
+}
+
 impl Default for PacerConfig {
     fn default() -> Self {
-        PacerConfig {
-            ambient_wait_s: 3.0,
-            important_wait_s: 0.8,
-            base_utterance_s: 0.4,
-            chars_per_s: 13.0,
-            repeat_window_s: 2.5,
-            recent_limit: 256,
-            recent_memory_s: 300.0,
-            rescue_once_window_s: 30.0,
-            mostly_heard_fraction: 0.5,
-        }
+        PacerConfig::DEFAULT
     }
+}
+
+/// Whether a line may take the hand-back slot (see [`EventSpeechPacer`]).
+///
+/// `No` is for an outcome report: a confirmation of something the player
+/// just did. Such a line has usually finished, and its outcome may since
+/// have been contradicted, so handing it back after the line that cut it
+/// would resurface it after, and possibly bury, the line the player had
+/// just asked for. Delivered interrupting (or through
+/// [`EventSpeechPacer::track`]), a `No` line empties the slot. Delivered
+/// queued through [`EventSpeechPacer::should_flush`], it plays after the
+/// protected line rather than replacing it, so it leaves the slot alone: a
+/// warning still speaking ahead of it is rescued if an interrupt cuts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Protect {
+    /// The line takes the slot when it is `Important` or `Critical`.
+    #[default]
+    Yes,
+    /// The line never takes the slot.
+    No,
 }
 
 /// A source of monotonic seconds; injectable so tests can drive the
@@ -219,11 +263,19 @@ pub struct EventSpeechPacer {
     /// heard most of it; collected once by `take_mostly_heard` so the
     /// caller can name it. See `mostly_heard_fraction`.
     mostly_heard: Option<String>,
+    receipts: DeliveryReceipts,
     /// When the voice last went from quiet to speaking: the start of the
     /// backlog `clear_at` projects the end of. See `should_flush`.
     busy_since: f64,
     /// Whether every line in that backlog is `Important` or `Critical`.
     backlog_urgent: bool,
+}
+
+impl Default for EventSpeechPacer {
+    /// A pacer with the default tuning on the monotonic clock.
+    fn default() -> Self {
+        Self::new(PacerConfig::default())
+    }
 }
 
 impl EventSpeechPacer {
@@ -246,6 +298,7 @@ impl EventSpeechPacer {
             flush_cut: None,
             rescued_until: HashMap::new(),
             mostly_heard: None,
+            receipts: DeliveryReceipts::default(),
             busy_since: 0.0,
             backlog_urgent: false,
         }
@@ -266,21 +319,36 @@ impl EventSpeechPacer {
         (self.clock)()
     }
 
-    fn duration_s(&self, text: &str) -> f64 {
-        self.config.base_utterance_s + text.chars().count() as f64 / self.config.chars_per_s
+    /// The estimated speaking time of `text`: the pre-utterance pause plus
+    /// its length at `chars_per_s`, with wide characters weighted by
+    /// `wide_char_weight`.
+    pub fn duration_s(&self, text: &str) -> f64 {
+        self.config.base_utterance_s + self.spoken_length(text) / self.config.chars_per_s
+    }
+
+    /// A line's length in English characters' worth of speaking time: kana,
+    /// CJK ideographs and Hangul syllables count `wide_char_weight` each.
+    fn spoken_length(&self, text: &str) -> f64 {
+        let wide = self.config.wide_char_weight;
+        text.chars()
+            .map(|c| match c as u32 {
+                0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF => wide,
+                _ => 1.0,
+            })
+            .sum()
     }
 
     /// How long a line of each priority will wait behind a backlog before it
     /// is better to purge the channel and speak now. An `Important` line has
     /// almost no patience: a line the player needs and a piece of chatter
     /// cut off mid-word both cost something, but the chatter costs less. A
-    /// `Critical` line never consults this at all -- it is always delivered
-    /// interrupting -- so its budget is zero.
+    /// `Critical` line is normally delivered interrupting and never consults
+    /// this; one delivered queued waits `critical_wait_s`.
     pub fn wait_budget_s(&self, priority: EventPriority) -> f64 {
         match priority {
             EventPriority::Ambient => self.config.ambient_wait_s,
             EventPriority::Important => self.config.important_wait_s,
-            EventPriority::Critical => 0.0,
+            EventPriority::Critical => self.config.critical_wait_s,
         }
     }
 
@@ -373,6 +441,7 @@ impl EventSpeechPacer {
         if let Some(text) = self.silenced_conditions.remove(key) {
             self.silenced_recent.remove(&text);
         }
+        self.receipts.forget(key);
     }
 
     // -- what the caller silenced (earcon-only or fully quiet) --------------
@@ -437,9 +506,24 @@ impl EventSpeechPacer {
 
     /// Remember the newest line worth rescuing if an interrupt lands on it.
     ///
+    /// A [`Protect::No`] line never takes the slot, whatever priority it was
+    /// spoken at, and empties it: the slot exists to rescue a warning cut
+    /// off mid-sentence, and an outcome report that already finished is not
+    /// that.
+    ///
     /// Public because a caller may re-arm the slot with a liveness check
     /// after a plain submission.
-    pub fn track(&mut self, text: &str, priority: EventPriority, valid: Option<Valid>) {
+    pub fn track(
+        &mut self,
+        text: &str,
+        priority: EventPriority,
+        protect: Protect,
+        valid: Option<Valid>,
+    ) {
+        if protect == Protect::No {
+            self.protected = None;
+            return;
+        }
         if priority >= EventPriority::Important {
             self.protected = Some(Protected {
                 text: text.to_string(),
@@ -447,6 +531,22 @@ impl EventSpeechPacer {
                 done_at: self.clear_at,
                 valid,
             });
+        }
+    }
+
+    /// `track` for a line delivered queued behind whatever is already in the
+    /// voice. A [`Protect::No`] line neither takes the slot nor empties it:
+    /// it plays after the protected line rather than replacing it, so a line
+    /// still speaking ahead of it is rescued if an interrupt cuts it.
+    fn track_queued(
+        &mut self,
+        text: &str,
+        priority: EventPriority,
+        protect: Protect,
+        valid: Option<Valid>,
+    ) {
+        if protect != Protect::No {
+            self.track(text, priority, protect, valid);
         }
     }
 
@@ -561,13 +661,15 @@ impl EventSpeechPacer {
         &mut self,
         text: &str,
         priority: EventPriority,
+        protect: Protect,
         valid: Option<Valid>,
     ) -> Option<Cut> {
         let cut = self.take_protected(Some(text));
+        self.interrupt_deliveries();
         self.purge_next = false;
         let now = self.now();
         self.restart_projection(now, text, priority);
-        self.track(text, priority, valid);
+        self.track(text, priority, protect, valid);
         cut
     }
 
@@ -576,18 +678,73 @@ impl EventSpeechPacer {
     /// For deliveries that must never flush: a rescued cut-off line (it has
     /// to fall in BEHIND the line that cut it, never purge it) and lines
     /// riding a shared channel, where the backlog belongs to something else.
-    pub fn note_queued(&mut self, text: &str, priority: EventPriority, valid: Option<Valid>) {
+    pub fn note_queued(
+        &mut self,
+        text: &str,
+        priority: EventPriority,
+        protect: Protect,
+        valid: Option<Valid>,
+    ) {
         let now = self.now();
         self.extend_projection(now, text, priority);
-        self.track(text, priority, valid);
+        self.track(text, priority, protect, valid);
+    }
+
+    // -- delivery receipts ----------------------------------------------------
+
+    /// Track a line whose acknowledgement (a saved "already warned" marker,
+    /// say) must wait until the player has actually heard it. The receipt
+    /// completes when the projection says the line finished, and turns
+    /// interrupted if a purge lands on it first. Call right after the
+    /// line's submission, so its finish is the projection's clear time.
+    pub fn track_delivery(&mut self, key: &str, text: &str) {
+        self.receipts.track(key, text, self.clear_at);
+    }
+
+    /// Mark a line the caller deliberately did not speak as handled now.
+    pub fn complete_delivery(&mut self, key: &str, text: &str) {
+        let now = self.now();
+        self.receipts.track(key, text, now);
+    }
+
+    /// Consume a completed or interrupted receipt; pending receipts remain.
+    pub fn delivery_status(&mut self, key: &str) -> Option<DeliveryStatus> {
+        let now = self.now();
+        self.receipts.status(key, now)
+    }
+
+    /// Whether one receipt-tracked line is still reaching the player.
+    pub fn delivery_pending(&mut self) -> bool {
+        let now = self.now();
+        self.receipts.has_pending(now)
+    }
+
+    /// A rescued line is the same delivery, now queued to finish.
+    pub fn resume_delivery(&mut self, text: &str) {
+        self.receipts.resume_text(text, self.clear_at);
+    }
+
+    fn interrupt_deliveries(&mut self) {
+        let now = self.now();
+        self.receipts.interrupt_pending(now);
     }
 
     /// A handed-back line spoken AHEAD of the line that flushed it: the
     /// channel is busy for its length too, but the flushing line stays the
     /// newest protected one, so a later flush rescues that line rather than
     /// this one a second time.
+    ///
+    /// The flushing line now starts after this one, so its projected finish
+    /// moves with the channel's. Left where the flush put it, the line would
+    /// read as speaking since the flush, and a second flush or an interrupt
+    /// while the hand-back still played would drop it as heard -- a line the
+    /// player never heard a word of.
     pub fn note_ahead(&mut self, text: &str) {
-        self.clear_at += self.duration_s(text);
+        let duration = self.duration_s(text);
+        self.clear_at += duration;
+        if let Some(held) = self.protected.as_mut() {
+            held.done_at += duration;
+        }
     }
 
     /// Speech outside the pacer's view purged the channel these lines ride
@@ -598,6 +755,7 @@ impl EventSpeechPacer {
     /// (the interrupting speech itself is not the pacer's to time).
     pub fn note_channel_purged(&mut self) -> Option<Cut> {
         let cut = self.take_protected(None);
+        self.interrupt_deliveries();
         self.clear_at = 0.0;
         cut
     }
@@ -646,10 +804,14 @@ impl EventSpeechPacer {
     /// `priority` sets how long this line is willing to wait: an important
     /// line gives a backlog of chatter under a second before it goes in
     /// front of it.
+    ///
+    /// A [`Protect::No`] line delivered here leaves the slot alone (see
+    /// [`Protect`]).
     pub fn should_flush(
         &mut self,
         text: &str,
         priority: EventPriority,
+        protect: Protect,
         valid: Option<Valid>,
     ) -> bool {
         let now = self.now();
@@ -660,9 +822,10 @@ impl EventSpeechPacer {
             // line back purges it -- and that one really is stale, so it is
             // dropped rather than rescued.
             self.purge_next = false;
+            self.interrupt_deliveries();
             self.restart_projection(now, text, priority);
             self.protected = None;
-            self.track(text, priority, valid);
+            self.track_queued(text, priority, protect, valid);
             return true;
         }
         let start = now.max(self.clear_at);
@@ -677,7 +840,7 @@ impl EventSpeechPacer {
             // the same wait -- and anything older than that newest line
             // would be lost without a word. It queues instead.
             self.extend_projection(now, text, priority);
-            self.track(text, priority, valid);
+            self.track_queued(text, priority, protect, valid);
             return false;
         }
         if start - now > budget && self.only_a_live_line_ahead(now, text) {
@@ -688,7 +851,7 @@ impl EventSpeechPacer {
             // drop its tail. Waiting it out is shorter than the replay, and
             // it is heard once.
             self.extend_projection(now, text, priority);
-            self.track(text, priority, valid);
+            self.track_queued(text, priority, protect, valid);
             return false;
         }
         if start - now > budget {
@@ -725,17 +888,19 @@ impl EventSpeechPacer {
             } else {
                 self.protected = None;
             }
+            self.interrupt_deliveries();
             self.restart_projection(now, text, priority);
-            self.track(text, priority, valid);
+            self.track_queued(text, priority, protect, valid);
             return true;
         }
         self.extend_projection(now, text, priority);
-        self.track(text, priority, valid);
+        self.track_queued(text, priority, protect, valid);
         false
     }
 
     /// The channel was silenced outside the pacer's view.
     pub fn reset(&mut self) {
+        self.interrupt_deliveries();
         self.clear_at = 0.0;
         self.purge_next = false;
         self.protected = None;
@@ -749,6 +914,7 @@ impl EventSpeechPacer {
     /// it and arms the purge, so the first line spoken back cannot arrive
     /// behind a backlog describing a moment that has passed.
     pub fn pause(&mut self) {
+        self.interrupt_deliveries();
         self.clear_at = 0.0;
         self.purge_next = true;
         self.protected = None;
@@ -756,6 +922,7 @@ impl EventSpeechPacer {
 
     /// Back in gameplay. Nothing from before the pause is news.
     pub fn resume(&mut self) {
+        self.interrupt_deliveries();
         self.clear_at = 0.0;
         self.purge_next = true;
         self.protected = None;

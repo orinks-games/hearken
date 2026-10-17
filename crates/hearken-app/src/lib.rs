@@ -21,6 +21,7 @@ pub mod single_instance;
 pub mod sound;
 pub mod speech_delivery;
 pub mod state;
+#[cfg(feature = "testing")]
 pub mod testing;
 pub mod text;
 
@@ -52,4 +53,5 @@ pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
 pub use speech_delivery::SayEvent;
 pub use state::{Reveal, StackOp, State};
+#[cfg(feature = "testing")]
 pub use testing::Headless;

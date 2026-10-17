@@ -10,8 +10,11 @@ authors.workspace = true
 build = "build.rs"
 
 [features]
-default = ["kira"]
+default = ["kira", "testing"]
 kira = ["hearken-audio/kira"]
+# `Headless`, the in-memory app a game's tests drive. A game that tests
+# through its own harness turns default features off and skips `tempfile`.
+testing = ["dep:tempfile"]
 
 [dependencies]
 hearken-speech.workspace = true
@@ -22,7 +25,7 @@ env_logger.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
-tempfile.workspace = true
+tempfile = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 sdl2.workspace = true
@@ -33,3 +36,9 @@ sdl2 = { workspace = true, features = ["bundled", "static-link"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 sdl2 = { workspace = true, features = ["bundled", "static-link"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+sdl2 = { workspace = true, features = ["bundled", "static-link"] }
+
+[dev-dependencies]
+tempfile.workspace = true

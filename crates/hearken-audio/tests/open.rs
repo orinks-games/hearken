@@ -207,3 +207,21 @@ fn a_feed_moves_over_when_the_device_opens() {
     );
     assert!(audio.is_playing(radio), "the handle survives the swap");
 }
+
+#[test]
+fn a_feed_can_start_silent_and_moves_over_at_its_own_level() {
+    let (backend, rec) = RecordingBackend::new();
+    let (mut audio, go) = opened(backend);
+    let radio = audio.start_feed_at_volume(Arc::new(Quiet), None, Bus::MUSIC, 0.0);
+    go.send(()).unwrap();
+    wait_for_open(&mut audio);
+    let Some(Call::Play { mix, looping, .. }) = rec.calls().last().cloned() else {
+        panic!("{:?}", rec.calls());
+    };
+    assert!(looping);
+    assert_eq!(
+        mix.gain, 0.0,
+        "it starts silent, and stays so over the swap"
+    );
+    assert!(audio.is_playing(radio));
+}

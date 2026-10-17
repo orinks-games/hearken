@@ -16,13 +16,14 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hearken_synth::Voice;
 use kira::effect::filter::{FilterBuilder, FilterHandle};
 use kira::effect::panning_control::{PanningControlBuilder, PanningControlHandle};
+use kira::effect::Effect;
 use kira::info::Info;
 use kira::sound::static_sound::StaticSoundHandle;
 use kira::sound::streaming::StreamingSoundHandle;
@@ -36,7 +37,7 @@ use kira::{
 use crate::backend::{Backend, BackendError, Channel, Source};
 use crate::decode::{self, LoopPoints};
 use crate::feed::Feed;
-use crate::types::{LoopRegion, Mix};
+use crate::types::{LoopRegion, Mix, Ramps};
 
 /// How many sounds can play at once: one Kira sub-track each.
 const CHANNELS: usize = 512;
@@ -47,6 +48,38 @@ const CHANNELS: usize = 512;
 // ponytail: one cut by encoded size; key it to decoded length if a long WAV
 // or a dense OGG under the cut is ever heard to stall a frame.
 const STREAM_OVER_BYTES: usize = 256 * 1024;
+
+/// A looping clip decodes whole up to this size, so the loops a game keeps
+/// running for minutes (an engine, road noise, a bed) wrap in memory, sample
+/// exact, instead of re-opening a decoder at every wrap; past it, it streams
+/// like any long clip.
+const LOOP_STREAM_OVER_BYTES: usize = 2 * 1024 * 1024;
+
+/// How a channel's gain moves when it changes, and the shape of a fade-out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GainCurve {
+    /// Kira's own: tweened in decibels, so a fade spends its first half
+    /// barely quieter and drops off at the end.
+    #[default]
+    Decibels,
+    /// Straight lines in amplitude, as BASS slides its volume: a 1 s fade to
+    /// silence is at half volume half way through.
+    Linear,
+}
+
+/// How a channel's pan splits a sound between the ears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PanLaw {
+    /// Kira's: constant power, unity in each ear at the centre and both
+    /// ears' energy kept as it moves, so hard to one side is 3 dB louder in
+    /// that ear than the centre.
+    #[default]
+    ConstantPower,
+    /// A balance control, as BASS pans: unity in both ears at the centre,
+    /// and moving toward one side only lowers the other ear, linearly, to
+    /// silence at the edge. `left = min(1, 1 - pan)`, `right = min(1, 1 + pan)`.
+    Balance,
+}
 
 /// The low-pass filter's resonance: Kira's state-variable filter at this
 /// setting has a Q of about 0.707, the Butterworth shape Lucky Break's BASS
@@ -66,8 +99,51 @@ enum Playing {
 struct Entry {
     track: TrackHandle,
     filter: FilterHandle,
-    panner: PanningControlHandle,
+    /// Kira's panner, under [`PanLaw::ConstantPower`].
+    panner: Option<PanningControlHandle>,
+    /// The linear gain, the balance, or both, when the backend uses either.
+    amp: Option<Arc<AmpControl>>,
+    curve: GainCurve,
+    law: PanLaw,
+    /// The mix last sent, so a ramped change touches only what moved.
+    sent: Mix,
+    /// The clip's length, when it is a clip.
+    length_s: Option<f64>,
     playing: Playing,
+}
+
+impl Entry {
+    fn set_gain(&mut self, gain: f32, ms: u32) {
+        match (&self.amp, self.curve) {
+            (Some(amp), GainCurve::Linear) => amp.gain.store(pack(gain, ms), Ordering::Relaxed),
+            _ => self.track.set_volume(decibels(gain), ramp(ms)),
+        }
+    }
+
+    fn set_pan(&mut self, pan: f32, ms: u32) {
+        let pan = panning(pan);
+        match (&self.amp, &mut self.panner) {
+            (Some(amp), _) if self.law == PanLaw::Balance => {
+                amp.pan.store(pack(pan.0, ms), Ordering::Relaxed)
+            }
+            (_, Some(panner)) => panner.set_panning(pan, ramp(ms)),
+            _ => {}
+        }
+    }
+
+    fn set_filter(&mut self, hz: Option<f32>, ms: u32) {
+        let (cutoff, wet) = lowpass(hz);
+        self.filter.set_cutoff(cutoff, ramp(ms));
+        self.filter.set_mix(wet, ramp(ms));
+    }
+
+    fn set_pitch(&mut self, pitch: f32, ms: u32) {
+        match &mut self.playing {
+            Playing::Clip(h) => h.set_playback_rate(rate(pitch), ramp(ms)),
+            Playing::Stream(h) => h.set_playback_rate(rate(pitch), ramp(ms)),
+            Playing::Voice(p) | Playing::Feed(p) => p.store(pitch.to_bits(), Ordering::Relaxed),
+        }
+    }
 }
 
 impl Entry {
@@ -90,6 +166,8 @@ pub struct KiraBackend<B: kira::backend::Backend = DefaultBackend> {
     /// Channels mid fade-out, and when each one is due to be dropped.
     fading: Vec<(Channel, Instant)>,
     next: Channel,
+    curve: GainCurve,
+    law: PanLaw,
 }
 
 impl KiraBackend {
@@ -118,7 +196,21 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
             channels: HashMap::new(),
             fading: Vec::new(),
             next: 1,
+            curve: GainCurve::default(),
+            law: PanLaw::default(),
         })
+    }
+
+    /// How gain changes and fades move on channels started from now on.
+    pub fn with_gain_curve(mut self, curve: GainCurve) -> Self {
+        self.curve = curve;
+        self
+    }
+
+    /// The pan law of channels started from now on.
+    pub fn with_pan_law(mut self, law: PanLaw) -> Self {
+        self.law = law;
+        self
     }
 
     /// Kira's manager, to drive a mock output in tests or for diagnostics.
@@ -200,28 +292,145 @@ fn region_of(region: LoopRegion) -> Region {
     }
 }
 
-/// Starts a clip on `track`: decoded whole, or streamed if it is big. A
-/// looping clip repeats its file's loop points, or all of it.
+/// Starts a clip on `track` `from_s` seconds in: decoded whole, or
+/// streamed if it is big. A looping clip repeats its file's loop points, or
+/// all of it, and decodes whole up to a bigger size than a one-shot does.
+/// Returns what plays and the clip's length in seconds.
 fn play_clip(
     track: &mut TrackHandle,
     bytes: Arc<[u8]>,
     looping: bool,
     pitch: f32,
-) -> Result<Playing, BackendError> {
-    if bytes.len() > STREAM_OVER_BYTES {
+    from_s: f64,
+) -> Result<(Playing, f64), BackendError> {
+    let stream_over = if looping {
+        LOOP_STREAM_OVER_BYTES
+    } else {
+        STREAM_OVER_BYTES
+    };
+    let from = PlaybackPosition::Seconds(from_s.max(0.0));
+    if bytes.len() > stream_over {
         let (data, points) = decode::stream(bytes).map_err(backend_error)?;
-        let mut data = data.playback_rate(rate(pitch));
+        let mut data = data.playback_rate(rate(pitch)).start_position(from);
         if looping {
             data = data.loop_region(file_region(points));
         }
-        track.play(data).map(Playing::Stream).map_err(backend_error)
+        let length = data.duration().as_secs_f64();
+        track
+            .play(data)
+            .map(|h| (Playing::Stream(h), length))
+            .map_err(backend_error)
     } else {
         let (data, points) = decode::decode_whole(bytes).map_err(backend_error)?;
-        let mut data = data.playback_rate(rate(pitch));
+        let mut data = data.playback_rate(rate(pitch)).start_position(from);
         if looping {
             data = data.loop_region(file_region(points));
         }
-        track.play(data).map(Playing::Clip).map_err(backend_error)
+        let length = data.duration().as_secs_f64();
+        track
+            .play(data)
+            .map(|h| (Playing::Clip(h), length))
+            .map_err(backend_error)
+    }
+}
+
+/// A target value and its ramp in milliseconds, in one word, so the audio
+/// thread never reads one without the other.
+fn pack(value: f32, ms: u32) -> u64 {
+    (u64::from(value.to_bits()) << 32) | u64::from(ms)
+}
+
+fn unpack(word: u64) -> (f32, u32) {
+    (f32::from_bits((word >> 32) as u32), word as u32)
+}
+
+/// What the game thread asks of a channel's [`Amp`]: a gain and a pan,
+/// each with the ramp to reach it over.
+struct AmpControl {
+    gain: AtomicU64,
+    pan: AtomicU64,
+}
+
+/// One value moving in a straight line toward its target.
+struct LinearRamp {
+    current: f32,
+    target: f32,
+    step: f32,
+    frames_left: u64,
+    /// The request last taken up, so an unchanged one is not restarted.
+    seen: u64,
+}
+
+impl LinearRamp {
+    fn new(word: u64) -> LinearRamp {
+        let (value, _) = unpack(word);
+        LinearRamp {
+            current: value,
+            target: value,
+            step: 0.0,
+            frames_left: 0,
+            seen: word,
+        }
+    }
+
+    /// Takes up a new request, if there is one.
+    fn poll(&mut self, word: u64, dt: f64) {
+        if word == self.seen {
+            return;
+        }
+        self.seen = word;
+        let (target, ms) = unpack(word);
+        let frames = (f64::from(ms) / 1000.0 / dt).round() as u64;
+        self.target = target;
+        if frames == 0 {
+            self.current = target;
+            self.frames_left = 0;
+        } else {
+            self.step = (target - self.current) / frames as f32;
+            self.frames_left = frames;
+        }
+    }
+
+    fn next(&mut self) -> f32 {
+        if self.frames_left > 0 {
+            self.frames_left -= 1;
+            self.current = if self.frames_left == 0 {
+                self.target
+            } else {
+                self.current + self.step
+            };
+        }
+        self.current
+    }
+}
+
+/// A channel's gain in straight lines ([`GainCurve::Linear`]) and its pan
+/// as a balance ([`PanLaw::Balance`]), whichever of the two the backend
+/// uses; the other is left to Kira.
+struct Amp {
+    control: Arc<AmpControl>,
+    gain: LinearRamp,
+    pan: LinearRamp,
+    linear: bool,
+    balance: bool,
+}
+
+impl Effect for Amp {
+    fn process(&mut self, input: &mut [Frame], dt: f64, _info: &Info) {
+        self.gain
+            .poll(self.control.gain.load(Ordering::Relaxed), dt);
+        self.pan.poll(self.control.pan.load(Ordering::Relaxed), dt);
+        for frame in input {
+            let gain = if self.linear { self.gain.next() } else { 1.0 };
+            let (left, right) = if self.balance {
+                let pan = self.pan.next();
+                ((1.0 - pan).min(1.0), (1.0 + pan).min(1.0))
+            } else {
+                (1.0, 1.0)
+            };
+            frame.left *= gain * left;
+            frame.right *= gain * right;
+        }
     }
 }
 
@@ -232,30 +441,68 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
 
     fn play(
         &mut self,
-        _key: &str,
+        key: &str,
         source: Source,
         looping: bool,
         mix: Mix,
     ) -> Result<Channel, BackendError> {
+        self.play_from(key, source, looping, mix, 0.0)
+    }
+
+    fn play_from(
+        &mut self,
+        _key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+    ) -> Result<Channel, BackendError> {
+        let (curve, law) = (self.curve, self.law);
         let manager = self
             .manager
             .as_mut()
             .ok_or_else(|| BackendError("the sound device is shut down".into()))?;
         let (cutoff, wet) = lowpass(mix.lowpass_hz);
+        let linear = curve == GainCurve::Linear;
+        let balance = law == PanLaw::Balance;
         let mut builder = TrackBuilder::new()
             .sound_capacity(1)
             .sub_track_capacity(0)
-            .volume(decibels(mix.gain));
+            .volume(if linear {
+                Decibels::IDENTITY
+            } else {
+                decibels(mix.gain)
+            });
         let filter = builder.add_effect(
             FilterBuilder::new()
                 .cutoff(cutoff)
                 .resonance(RESONANCE)
                 .mix(wet),
         );
-        let panner = builder.add_effect(PanningControlBuilder(Value::Fixed(panning(mix.pan))));
+        let panner = (!balance)
+            .then(|| builder.add_effect(PanningControlBuilder(Value::Fixed(panning(mix.pan)))));
+        let amp = (linear || balance).then(|| {
+            let control = Arc::new(AmpControl {
+                gain: AtomicU64::new(pack(mix.gain.max(0.0), 0)),
+                pan: AtomicU64::new(pack(panning(mix.pan).0, 0)),
+            });
+            builder.add_built_effect(Box::new(Amp {
+                gain: LinearRamp::new(control.gain.load(Ordering::Relaxed)),
+                pan: LinearRamp::new(control.pan.load(Ordering::Relaxed)),
+                control: control.clone(),
+                linear,
+                balance,
+            }));
+            control
+        });
         let mut track = manager.add_sub_track(builder).map_err(backend_error)?;
+        let mut length_s = None;
         let playing = match source {
-            Source::Clip(bytes) => play_clip(&mut track, bytes, looping, mix.pitch)?,
+            Source::Clip(bytes) => {
+                let (playing, length) = play_clip(&mut track, bytes, looping, mix.pitch, from_s)?;
+                length_s = Some(length);
+                playing
+            }
             Source::Voice(voice) => {
                 let pitch = Arc::new(AtomicU32::new(mix.pitch.to_bits()));
                 track
@@ -279,6 +526,11 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
                 track,
                 filter,
                 panner,
+                amp,
+                curve,
+                law,
+                sent: mix,
+                length_s,
                 playing,
             },
         );
@@ -289,26 +541,42 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
         let Some(entry) = self.channels.get_mut(&channel) else {
             return;
         };
-        let tween = ramp(ramp_ms);
-        let (cutoff, wet) = lowpass(mix.lowpass_hz);
-        entry.track.set_volume(decibels(mix.gain), tween);
-        entry.panner.set_panning(panning(mix.pan), tween);
-        entry.filter.set_cutoff(cutoff, tween);
-        entry.filter.set_mix(wet, tween);
-        match &mut entry.playing {
-            Playing::Clip(h) => h.set_playback_rate(rate(mix.pitch), tween),
-            Playing::Stream(h) => h.set_playback_rate(rate(mix.pitch), tween),
-            Playing::Voice(pitch) | Playing::Feed(pitch) => {
-                pitch.store(mix.pitch.to_bits(), Ordering::Relaxed)
-            }
+        entry.set_gain(mix.gain, ramp_ms);
+        entry.set_pan(mix.pan, ramp_ms);
+        entry.set_filter(mix.lowpass_hz, ramp_ms);
+        entry.set_pitch(mix.pitch, ramp_ms);
+        entry.sent = mix;
+    }
+
+    fn set_mix_ramped(&mut self, channel: Channel, mix: Mix, ramps: Ramps) {
+        let Some(entry) = self.channels.get_mut(&channel) else {
+            return;
+        };
+        let sent = entry.sent;
+        if mix.gain != sent.gain {
+            entry.set_gain(mix.gain, ramps.gain_ms);
         }
+        if mix.pan != sent.pan {
+            entry.set_pan(mix.pan, ramps.pan_ms);
+        }
+        if mix.lowpass_hz != sent.lowpass_hz {
+            entry.set_filter(mix.lowpass_hz, ramps.filter_ms);
+        }
+        if mix.pitch != sent.pitch {
+            entry.set_pitch(mix.pitch, ramps.pitch_ms);
+        }
+        entry.sent = mix;
+    }
+
+    fn length_s(&mut self, channel: Channel) -> Option<f64> {
+        self.channels.get(&channel)?.length_s
     }
 
     fn stop(&mut self, channel: Channel, fade_ms: u32) {
         if fade_ms == 0 {
             self.channels.remove(&channel);
         } else if let Some(entry) = self.channels.get_mut(&channel) {
-            entry.track.set_volume(Decibels::SILENCE, ramp(fade_ms));
+            entry.set_gain(0.0, fade_ms);
             let due = Instant::now() + Duration::from_millis(fade_ms.into());
             self.fading.push((channel, due));
         }
@@ -554,5 +822,38 @@ impl SoundData for FeedSound {
 
     fn into_sound(self) -> Result<(Box<dyn Sound>, ()), Infallible> {
         Ok((Box::new(self), ()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kira::backend::mock::MockBackend;
+
+    /// A clip between the one-shot and the loop cut: 8 s of mono 16-bit
+    /// silence at 44.1 kHz, about 700 KiB.
+    fn mid_sized_clip() -> Arc<[u8]> {
+        let bytes: Arc<[u8]> = hearken_synth::wav_bytes(&vec![0.0; 8 * 44_100], 44_100).into();
+        assert!(bytes.len() > STREAM_OVER_BYTES && bytes.len() < LOOP_STREAM_OVER_BYTES);
+        bytes
+    }
+
+    #[test]
+    fn a_loop_up_to_the_loop_cut_decodes_whole_and_a_one_shot_that_size_streams() {
+        let mut b = KiraBackend::<MockBackend>::with_settings(AudioManagerSettings::default())
+            .expect("the mock output always opens");
+        let looped = b
+            .play(
+                "engine/idle",
+                Source::Clip(mid_sized_clip()),
+                true,
+                Mix::UNITY,
+            )
+            .unwrap();
+        let once = b
+            .play("music/x", Source::Clip(mid_sized_clip()), false, Mix::UNITY)
+            .unwrap();
+        assert!(matches!(b.channels[&looped].playing, Playing::Clip(_)));
+        assert!(matches!(b.channels[&once].playing, Playing::Stream(_)));
     }
 }

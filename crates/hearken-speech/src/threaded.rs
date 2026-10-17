@@ -77,6 +77,13 @@ const QUEUE_DEPTH: usize = 256;
 const HEALTH_POLL: Duration = Duration::from_secs(3);
 /// Bounded wait for the two calls that need an answer.
 const REPLY_WAIT: Duration = Duration::from_secs(2);
+/// How long a pumped quit lets the utterance in flight finish before the
+/// backend is released anyway: long enough for "Installing the update. The
+/// game closes and restarts by itself." to play out.
+const FINISH_LINE_BOUND: Duration = Duration::from_secs(5);
+/// The main-thread wait bound on a pumped shutdown: the line finishes,
+/// then the release itself gets the same three seconds it always had.
+const SHUTDOWN_PUMPED_BOUND: Duration = FINISH_LINE_BOUND.saturating_add(Duration::from_secs(3));
 
 enum Command {
     ReplayComplete,
@@ -93,7 +100,6 @@ enum Command {
     Stop,
     RequestRefresh,
     Refresh {
-        announce: bool,
         reply: mpsc::Sender<bool>,
     },
     Configure {
@@ -116,6 +122,13 @@ enum Command {
     },
     Shutdown {
         done: mpsc::Sender<()>,
+        /// Let the line in flight finish (bounded by
+        /// [`FINISH_LINE_BOUND`]) before releasing the backend. Only the
+        /// pumped quit path asks for it: an unpumped `stop()` used to
+        /// deadlock into the three-second timeout, which incidentally let
+        /// the line play out; now that the pump drains the main queue,
+        /// `stop()` lands immediately and would cut it off.
+        finish_line: bool,
     },
 }
 
@@ -428,6 +441,14 @@ impl ThreadedSpeech {
                 let beat = || {
                     *worker_heartbeat.lock().expect("speech heartbeat lock") = Instant::now();
                 };
+                // Lines sent meanwhile wait in the queue and are coalesced
+                // like any other batch, so the player hears the screen that
+                // is current when the hold ends.
+                let hold = call!(inner.startup_hold());
+                if !after_wedge && !hold.is_zero() {
+                    beat();
+                    std::thread::sleep(hold);
+                }
                 let mut last_health_poll = Instant::now();
                 loop {
                     active!();
@@ -517,8 +538,8 @@ impl ThreadedSpeech {
                                 ));
                                 last_health_poll = Instant::now();
                             }
-                            Command::Refresh { announce, reply } => {
-                                let changed = call!(inner.refresh(announce));
+                            Command::Refresh { reply } => {
+                                let changed = call!(inner.refresh());
                                 call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
                                 let _ = reply.send(changed);
                             }
@@ -549,7 +570,15 @@ impl ThreadedSpeech {
                             Command::Flush { done } => {
                                 let _ = done.send(());
                             }
-                            Command::Shutdown { done } => {
+                            Command::Shutdown { done, finish_line } => {
+                                if finish_line {
+                                    let started = Instant::now();
+                                    while call!(inner.is_speaking())
+                                        && started.elapsed() < FINISH_LINE_BOUND
+                                    {
+                                        std::thread::sleep(Duration::from_millis(20));
+                                    }
+                                }
                                 call!(inner.shutdown());
                                 let _ = done.send(());
                                 return;
@@ -846,12 +875,9 @@ impl SpeechSink for ThreadedSpeech {
         })
     }
 
-    fn refresh(&mut self, announce: bool) -> bool {
+    fn refresh(&mut self) -> bool {
         let (reply_tx, reply_rx) = mpsc::channel();
-        self.send_lossy(Command::Refresh {
-            announce,
-            reply: reply_tx,
-        });
+        self.send_lossy(Command::Refresh { reply: reply_tx });
         // Re-detection really can take a beat; give it longer than the
         // preview, still bounded.
         reply_rx
@@ -867,7 +893,10 @@ impl SpeechSink for ThreadedSpeech {
         self.shutting_down
             .store(true, std::sync::atomic::Ordering::Relaxed);
         let (done_tx, done_rx) = mpsc::channel();
-        match self.commands.try_send(Command::Shutdown { done: done_tx }) {
+        match self.commands.try_send(Command::Shutdown {
+            done: done_tx,
+            finish_line: false,
+        }) {
             // Give the backend a bounded chance to release cleanly; a
             // wedged one is abandoned, which is exactly what quitting a
             // frozen game by hand used to do -- minus freezing the game.
@@ -875,6 +904,53 @@ impl SpeechSink for ThreadedSpeech {
                 Ok(()) => log::info!("speech worker finished"),
                 Err(_) => log::warn!("speech worker did not finish within 3 s; leaving it"),
             },
+            Err(TrySendError::Full(_)) => {
+                log::warn!("speech queue full at shutdown; leaving the worker")
+            }
+            Err(TrySendError::Disconnected(_)) => log::info!("speech worker already finished"),
+        }
+    }
+
+    fn shutdown_pumping(&mut self, pump: &mut dyn FnMut()) {
+        log::info!("speech shutdown requested (pumped)");
+        // The flag first, then the command: the worker skips every say
+        // still queued ahead of it, so the wait below covers the utterance
+        // in flight finishing (bounded by FINISH_LINE_BOUND), not the whole
+        // backlog.
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (done_tx, done_rx) = mpsc::channel();
+        match self.commands.try_send(Command::Shutdown {
+            done: done_tx,
+            finish_line: true,
+        }) {
+            // Give the backend a bounded chance to release cleanly; a
+            // wedged one is abandoned, which is exactly what quitting a
+            // frozen game by hand used to do -- minus freezing the game.
+            // The wait is sliced so quit can pump events between slices
+            // and macOS never reads the window as not responding.
+            Ok(()) => {
+                let started = Instant::now();
+                loop {
+                    match done_rx.recv_timeout(Duration::from_millis(10)) {
+                        Ok(()) => {
+                            log::info!("speech worker finished");
+                            break;
+                        }
+                        Err(RecvTimeoutError::Disconnected) => break,
+                        Err(RecvTimeoutError::Timeout) => {
+                            if started.elapsed() >= SHUTDOWN_PUMPED_BOUND {
+                                log::warn!(
+                                    "speech worker did not finish within {} s; leaving it",
+                                    SHUTDOWN_PUMPED_BOUND.as_secs()
+                                );
+                                break;
+                            }
+                            pump();
+                        }
+                    }
+                }
+            }
             Err(TrySendError::Full(_)) => {
                 log::warn!("speech queue full at shutdown; leaving the worker")
             }

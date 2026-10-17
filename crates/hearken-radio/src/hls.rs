@@ -6,7 +6,10 @@ use std::io::{self, Read};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use m3u8_rs::{KeyMethod, MasterPlaylist, MediaPlaylist, MediaSegment, Playlist, VariantStream};
+use m3u8_rs::{
+    AlternativeMediaType, ByteRange, KeyMethod, MasterPlaylist, MediaPlaylist, MediaSegment,
+    Playlist,
+};
 use mpeg2ts::ts::{Pid, ReadTsPacket, TsPacketReader, TsPayload};
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::ReadOnlySource;
@@ -14,7 +17,7 @@ use url::Url;
 
 use crate::decode::{self, closed, no_audio};
 use crate::http::{self, bad_url};
-use crate::stream::{Fault, Shared, StreamOptions};
+use crate::stream::{Fault, RawTitle, Shared, StreamOptions};
 use crate::title;
 use crate::worker::{read_up_to, MAX_PLAYLIST};
 
@@ -73,6 +76,11 @@ struct HlsReader {
     audio: Option<Pid>,
     /// Why the reader failed, for [`play`] to report.
     fault: Arc<Mutex<Option<Fault>>>,
+    /// The fMP4 init segment (`#EXT-X-MAP`) the segments since have named,
+    /// and whether the decoder has been sent it. The decoder takes one init
+    /// segment, ahead of the first fragment.
+    map: Option<(Url, Option<ByteRange>)>,
+    map_sent: bool,
 }
 
 impl HlsReader {
@@ -87,8 +95,8 @@ impl HlsReader {
         let mut url = Url::parse(url).map_err(|_| bad_url())?;
         let mut playlist = parse(text.as_bytes())?;
         if let Playlist::MasterPlaylist(master) = &playlist {
-            let variant = audio_variant(master).ok_or_else(no_audio)?;
-            let variant = url.join(&variant.uri).map_err(|_| bad_url())?;
+            let variant = audio_uri(master).ok_or_else(no_audio)?;
+            let variant = url.join(variant).map_err(|_| bad_url())?;
             let (at, text) = fetch(&variant, MAX_PLAYLIST, shared, opts)?;
             (url, playlist) = (at, parse(&text)?);
         }
@@ -104,6 +112,8 @@ impl HlsReader {
             served: 0,
             audio: None,
             fault: Arc::default(),
+            map: None,
+            map_sent: false,
         };
         reader.enqueue(&media(playlist)?);
         Ok(reader)
@@ -114,6 +124,14 @@ impl HlsReader {
         let half_target = Duration::from_secs(playlist.target_duration) / 2;
         self.refresh = half_target.max(MIN_REFRESH);
         self.ended = playlist.end_list;
+        // `#EXT-X-MAP` applies to every segment after it, but the parser
+        // keeps it on the one it precedes, which the live edge may skip.
+        let mut maps = playlist.segments.iter().filter_map(|s| s.map.as_ref());
+        if let Some(map) = maps.next_back() {
+            if let Ok(at) = self.url.join(&map.uri) {
+                self.map = Some((at, map.byte_range.clone()));
+            }
+        }
         for (sequence, segment) in newer(playlist, self.last) {
             self.last = Some(sequence);
             self.queue.push_back(segment.clone());
@@ -172,6 +190,10 @@ impl HlsReader {
         // to arrive than the buffer lasts is heard; prefetch if that happens.
         let fetched = fetch(&url, MAX_SEGMENT, &self.shared, &self.opts);
         let (_, bytes) = fetched.map_err(retry)?;
+        let bytes = match &segment.byte_range {
+            Some(range) => slice(bytes, range),
+            None => bytes,
+        };
         // Every MPEG-TS packet starts with 0x47.
         let ts = bytes.first() == Some(&0x47) || url.path().ends_with(".ts");
         // ponytail: a codec change at #EXT-X-DISCONTINUITY is not re-probed;
@@ -184,7 +206,30 @@ impl HlsReader {
         } else {
             bytes
         };
+        // An fMP4 (CMAF) station's fragments mean nothing without its init
+        // segment's track description, so the decoder gets that first; it
+        // then reads the fragments as one fragmented MP4 file.
+        // ponytail: a station that changes its init segment (a codec change
+        // at a discontinuity) keeps the first; restart the pump if heard.
+        if !ts && !self.map_sent {
+            if let Some((at, range)) = self.map.clone() {
+                let (_, init) = fetch(&at, MAX_SEGMENT, &self.shared, &self.opts).map_err(retry)?;
+                let mut init = match &range {
+                    Some(range) => slice(init, range),
+                    None => init,
+                };
+                init.append(&mut self.segment);
+                self.segment = init;
+                self.map_sent = true;
+            }
+        }
         self.served = 0;
+        let extinf = format!(
+            "{},{}",
+            segment.duration,
+            segment.title.as_deref().unwrap_or("")
+        );
+        self.shared.set_raw_title(RawTitle::Extinf(extinf));
         if let Some(title) = segment.title.as_deref().and_then(title::hls) {
             self.shared.set_title(Some(title));
         }
@@ -225,18 +270,59 @@ fn newer(
         .filter(move |(number, _)| *number >= first)
 }
 
-/// The highest-bandwidth variant whose codecs name no video.
-fn audio_variant(master: &MasterPlaylist) -> Option<&VariantStream> {
-    // ponytail: an audio rendition beside video variants (#EXT-X-MEDIA
-    // TYPE=AUDIO) is not followed; take one if a station is heard needing it.
-    master
-        .variants
+/// The playlist to play from a master playlist: the highest-bandwidth
+/// variant whose codecs name no video, or, when its audio is a separate
+/// rendition (`#EXT-X-MEDIA TYPE=AUDIO` with a URI), that rendition. With
+/// only video variants, the audio rendition of the best one that has one.
+fn audio_uri(master: &MasterPlaylist) -> Option<&str> {
+    let (mut audio, mut video): (Vec<_>, Vec<_>) = master.variants.iter().partition(|variant| {
+        let codecs = variant.codecs.as_deref().unwrap_or_default();
+        !VIDEO_CODECS.iter().any(|video| codecs.contains(video))
+    });
+    audio.sort_by_key(|variant| std::cmp::Reverse(variant.bandwidth));
+    video.sort_by_key(|variant| std::cmp::Reverse(variant.bandwidth));
+    if let Some(best) = audio.first() {
+        return Some(rendition(master, best.audio.as_deref()).unwrap_or(&best.uri));
+    }
+    if let Some(found) = video
         .iter()
-        .filter(|variant| {
-            let codecs = variant.codecs.as_deref().unwrap_or_default();
-            !VIDEO_CODECS.iter().any(|video| codecs.contains(video))
-        })
-        .max_by_key(|variant| variant.bandwidth)
+        .find_map(|v| rendition(master, v.audio.as_deref()))
+    {
+        return Some(found);
+    }
+    // No variants to name a group: any audio rendition with its own URI.
+    rendition_in(master, None)
+}
+
+/// The URI of the audio rendition in `group`: its default one, else its
+/// first with a URI. None when the group's audio is inside the variant.
+fn rendition<'a>(master: &'a MasterPlaylist, group: Option<&str>) -> Option<&'a str> {
+    rendition_in(master, Some(group?))
+}
+
+fn rendition_in<'a>(master: &'a MasterPlaylist, group: Option<&str>) -> Option<&'a str> {
+    let mut renditions = master.alternatives.iter().filter(|media| {
+        media.media_type == AlternativeMediaType::Audio
+            && media.uri.is_some()
+            && group.is_none_or(|group| media.group_id == group)
+    });
+    let first = renditions.clone().next();
+    renditions
+        .find(|media| media.default)
+        .or(first)
+        .and_then(|media| media.uri.as_deref())
+}
+
+/// The part of `bytes` an `#EXT-X-BYTERANGE` names; a range that runs past
+/// the end keeps what there is. A range with no offset starts at the top.
+/// ponytail: an offset left out means "after the last range" in the spec;
+/// track it if a station is heard relying on that.
+fn slice(mut bytes: Vec<u8>, range: &ByteRange) -> Vec<u8> {
+    let start = range.offset.unwrap_or(0).min(bytes.len() as u64) as usize;
+    let end = start.saturating_add(range.length as usize).min(bytes.len());
+    bytes.truncate(end);
+    bytes.drain(..start);
+    bytes
 }
 
 /// `playlist`, if it is a media playlist that can be played.

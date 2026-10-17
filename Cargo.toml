@@ -30,6 +30,10 @@ symphonia = { version = "0.6", default-features = false, features = ["mp3", "ogg
 symphonia-adapter-libopus = "0.3"
 symphonia-adapter-fdk-aac = "0.2"
 ureq = { version = "2.12", default-features = false, features = ["tls", "native-certs"] }
+# The operating system's own certificate check for the radio, as a browser
+# does: Windows and macOS fetch an intermediate a station's server leaves out.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.6"
 icy-metadata = { version = "0.6", default-features = false }
 url = "2"
 m3u8-rs = "6"

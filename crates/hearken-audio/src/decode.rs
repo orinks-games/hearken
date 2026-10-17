@@ -16,8 +16,9 @@ use symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS;
 use symphonia::core::codecs::audio::AudioDecoder;
 use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::codecs::CodecParameters;
-use symphonia::core::formats::{FormatReader, TrackType};
+use symphonia::core::formats::{FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
+use symphonia::core::units::{Time, TimeBase};
 use symphonia_adapter_libopus::OpusDecoder;
 
 /// Symphonia's enabled codecs, and Opus.
@@ -37,6 +38,35 @@ fn codecs() -> &'static CodecRegistry {
 pub(crate) struct LoopPoints {
     pub(crate) start: usize,
     pub(crate) end: Option<usize>,
+}
+
+/// What a clip decodes to: its rate, and its length where the file says.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipInfo {
+    pub sample_rate: u32,
+    /// Seconds, when the container knows its frame count up front.
+    pub length_s: Option<f64>,
+}
+
+/// Opens `bytes` with the codecs the Kira backend plays through and decodes
+/// their first packet of audio, without a device: a game's start-up check
+/// that its packed sounds will play, or a quick look at a clip's length.
+pub fn probe_clip(bytes: Arc<[u8]>) -> Result<ClipInfo, String> {
+    let mut clip = ClipDecoder::open(bytes).map_err(|err| err.to_string())?;
+    // A codec may hand back nothing for its first packets (Vorbis primes
+    // its window on the first), so read on until a chunk has frames.
+    loop {
+        match clip.next_chunk().map_err(|err| err.to_string())? {
+            Some(frames) if !frames.is_empty() => break,
+            Some(_) => continue,
+            None => return Err("no audio".into()),
+        }
+    }
+    let rate = clip.sample_rate;
+    Ok(ClipInfo {
+        sample_rate: rate,
+        length_s: clip.num_frames.map(|n| n as f64 / f64::from(rate)),
+    })
 }
 
 /// Decodes a whole clip into memory, with any loop points its file carries.
@@ -160,6 +190,9 @@ struct ClipDecoder {
     reader: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track: u32,
+    /// The track's timestamp unit, for turning a container seek's landing
+    /// point back into frames.
+    time_base: Option<TimeBase>,
     sample_rate: u32,
     /// Known up front for most files; streaming needs it, decoding whole
     /// does not.
@@ -201,6 +234,7 @@ impl ClipDecoder {
             .num_frames
             .map(|n| n.saturating_sub(pre_skip.into()))
             .and_then(|n| usize::try_from(n).ok());
+        let time_base = track.time_base;
         let track = track.id;
         let mut reader = reader;
         let loop_points = file_loop_points(&bytes, reader.as_mut(), num_frames);
@@ -209,6 +243,7 @@ impl ClipDecoder {
             reader,
             decoder,
             track,
+            time_base,
             sample_rate,
             num_frames,
             loop_points,
@@ -245,6 +280,34 @@ impl ClipDecoder {
     }
 }
 
+/// A seek closer than this to the start decodes forward from the start
+/// instead: cheap, and exact.
+const SEEK_AFTER_S: usize = 2;
+
+impl ClipDecoder {
+    /// A container seek to at or before frame `index`; the frame it landed
+    /// on, or `None` if the reader cannot seek there.
+    fn seek_near(&mut self, index: usize) -> Option<usize> {
+        let time = Time::try_from_secs_f64(index as f64 / f64::from(self.sample_rate))?;
+        let seeked = self
+            .reader
+            .seek(
+                SeekMode::Accurate,
+                SeekTo::Time {
+                    time,
+                    track_id: Some(self.track),
+                },
+            )
+            .ok()?;
+        self.decoder.reset();
+        self.untouched = false;
+        let landed = self.time_base?.calc_time(seeked.actual_ts)?.as_secs_f64();
+        let at = (landed.max(0.0) * f64::from(self.sample_rate)).round() as usize;
+        self.at = at.min(index);
+        Some(self.at)
+    }
+}
+
 impl Decoder for ClipDecoder {
     type Error = FromFileError;
 
@@ -267,16 +330,29 @@ impl Decoder for ClipDecoder {
         Ok(frames)
     }
 
-    /// Reopens the clip and reports the start, which Kira then decodes
-    /// forward from to whatever frame it asked for: a loop wrapping, to the
-    /// clip's start or to a loop region's. Reopening replays the clip
-    /// exactly, where a container seek would not (libopus trims the
-    /// pre-skip only once).
-    fn seek(&mut self, _index: usize) -> Result<usize, FromFileError> {
+    /// To the start, or to a loop region's start near it (a loop
+    /// wrapping): reopens the clip and reports the start, which Kira then
+    /// decodes forward from to the frame it asked for. Reopening replays the
+    /// clip exactly, where a container seek would not (libopus trims the
+    /// pre-skip only once). Further in (a programme tuned into ten minutes
+    /// in) a container seek lands on a packet at or before the frame and
+    /// reports where, so Kira decodes forward only from there, not ten
+    /// minutes of audio; a container that cannot seek falls back to the
+    /// reopen.
+    fn seek(&mut self, index: usize) -> Result<usize, FromFileError> {
         if !self.untouched {
             *self = ClipDecoder::open(self.bytes.clone())?;
         }
-        Ok(0)
+        if index < self.sample_rate as usize * SEEK_AFTER_S {
+            return Ok(0);
+        }
+        match self.seek_near(index) {
+            Some(at) => Ok(at),
+            None => {
+                *self = ClipDecoder::open(self.bytes.clone())?;
+                Ok(0)
+            }
+        }
     }
 }
 

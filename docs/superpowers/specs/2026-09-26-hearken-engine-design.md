@@ -1,7 +1,8 @@
 # Hearken Engine Design
 
 - Date: 2026-09-26; M2 revised 2026-09-27
-- Status: M1 and M1b built from this; M2 approved 2026-09-27
+- Status: M1 and M1b built from this; M2 approved 2026-09-27; M6 (Freight
+  Fate) services moved 2026-10-17, its screens stay its own
 - Repository: `orinks-games/hearken`
 - Sources: Freight Fate `c5d3ef8d` (2026-09-25), Lucky Break `a101970` (2026-09-23)
 
@@ -500,6 +501,13 @@ Each milestone gets its own implementation plan.
 5. **M5 Public.** Licence files, README, a clean-clone CI run, crates.io
    publishing, then the repo goes public when the owner says.
 6. **M6 Freight Fate**, after Career 1.9 ships, one crate at a time.
+   Status, 2026-10-17: Freight Fate takes every engine service from Hearken
+   (speech sinks, pacer, audio, radio, input types, bindings, held keys,
+   single instance) and has dropped BASS. Its state stack, menus and speech
+   delivery stay its own, by decision: moving them would change what players
+   hear. What moved, what stayed, and what Hearken would need before the
+   screens could move are in
+   `docs/superpowers/notes/2026-10-17-freight-fate-on-hearken.md`.
 
 ## Risks
 

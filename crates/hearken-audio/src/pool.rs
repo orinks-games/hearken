@@ -1,11 +1,11 @@
 //! The pool of positioned sounds: generation-checked handles over a [`Backend`].
 
-use crate::backend::{Backend, Channel, Source};
+use crate::backend::{Backend, BackendError, Channel, Source};
 use crate::clips::{ClipSource, LooseClips};
 use crate::feed::Feed;
 use crate::silent::SilentBackend;
 use crate::spatial::{place, SpatialConfig};
-use crate::types::{Bus, Listener, LoopRegion, Mix, Vec3};
+use crate::types::{Bus, Listener, LoopRegion, Mix, Ramps, Start, Vec3};
 use hearken_synth::{builtin_wav, Params, Recipe, Voice};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::Receiver;
@@ -90,12 +90,19 @@ pub(crate) struct Live {
     pub(crate) bus: Bus,
     pub(crate) pos: Option<Vec3>,
     pub(crate) volume: f32,
+    /// The pan of a sound with no position; a positioned sound takes its
+    /// pan from where it is instead.
+    pub(crate) pan: f32,
     pub(crate) pitch: f32,
     pub(crate) looping: bool,
     /// The region a looping clip repeats, when the game chose one; `None`
     /// repeats the file's own loop points, or the whole file.
     pub(crate) region: Option<LoopRegion>,
     pub(crate) voice: Option<(Recipe, Params)>,
+    /// The bytes of a clip the game handed over itself
+    /// ([`Audio::play_clip`]), kept so a deferred backend's replay plays the
+    /// same clip instead of asking the clip source for it.
+    pub(crate) clip: Option<Arc<[u8]>>,
     /// Kept so a deferred backend's replay can hand the new backend the same
     /// feed.
     pub(crate) feed: Option<Arc<dyn Feed>>,
@@ -115,10 +122,12 @@ impl Live {
             bus,
             pos,
             volume,
+            pan: 0.0,
             pitch: 1.0,
             looping,
             region: None,
             voice: None,
+            clip: None,
             feed: None,
             paused: false,
             paused_by_all: false,
@@ -192,7 +201,7 @@ pub(crate) fn clamped_or(current: f32, value: f32, min: f32, max: f32) -> f32 {
 
 fn compute_mix(listener: &Listener, spatial: &SpatialConfig, bus_gain: f32, live: &Live) -> Mix {
     let mut gain = live.volume * bus_gain;
-    let (mut pan, mut lowpass_hz, mut relative) = (0.0, None, None);
+    let (mut pan, mut lowpass_hz, mut relative) = (live.pan, None, None);
     if let Some(pos) = live.pos {
         let p = place(listener, pos, live.occluded, spatial);
         gain *= p.gain;
@@ -207,6 +216,16 @@ fn compute_mix(listener: &Listener, spatial: &SpatialConfig, bus_gain: f32, live
     }
 }
 
+/// Where a [`Start`] begins in its clip: a NaN, infinite or negative offset
+/// is the top.
+fn offset(start: Start) -> f64 {
+    if start.from_s.is_finite() {
+        start.from_s.max(0.0)
+    } else {
+        0.0
+    }
+}
+
 /// A pool of positioned sounds, buses and live voices over a [`Backend`].
 pub struct Audio {
     pub spatial: SpatialConfig,
@@ -218,6 +237,8 @@ pub struct Audio {
     listener: Listener,
     pub(crate) mixing: Mixing,
     missing: BTreeSet<String>,
+    /// Whether a missing or refused clip plays its built-in default.
+    fallback: bool,
     pub(crate) bed: Option<(String, Sound)>,
     pub(crate) music: Option<(String, bool, Sound)>,
     pub(crate) opening: Option<Receiver<Result<Box<dyn Backend>, String>>>,
@@ -238,6 +259,7 @@ impl Audio {
             listener: Listener::default(),
             mixing: Mixing::default(),
             missing: BTreeSet::new(),
+            fallback: true,
             bed: None,
             music: None,
             opening: None,
@@ -282,16 +304,23 @@ impl Audio {
         bus: Bus,
     ) -> Sound {
         let sound = self.start(key, pos, bus, true, None, 1.0);
-        if !region.is_valid() {
-            log::warn!("sound {key}: ignoring loop region {region:?}");
-            return sound;
-        }
-        if let Some(live) = slot_mut(&mut self.slots, sound) {
-            live.region = Some(region);
-            let channel = live.channel;
-            self.backend.set_loop_region(channel, region);
-        }
+        self.apply_region(sound, region);
         sound
+    }
+
+    /// Sets the region a looping `sound` repeats; an invalid one is ignored
+    /// with a warning.
+    fn apply_region(&mut self, sound: Sound, region: LoopRegion) {
+        let Some(live) = slot_mut(&mut self.slots, sound) else {
+            return;
+        };
+        if !region.is_valid() {
+            log::warn!("sound {}: ignoring loop region {region:?}", live.key);
+            return;
+        }
+        live.region = Some(region);
+        let channel = live.channel;
+        self.backend.set_loop_region(channel, region);
     }
 
     /// Starts a live synth voice from `recipe`, looping until stopped.
@@ -316,9 +345,22 @@ impl Audio {
     /// looping until stopped, as an ordinary sound: bus volume, the duck,
     /// pause, fades, position and occlusion all apply.
     pub fn start_feed(&mut self, feed: Arc<dyn Feed>, pos: Option<Vec3>, bus: Bus) -> Sound {
+        self.start_feed_at_volume(feed, pos, bus, 1.0)
+    }
+
+    /// [`start_feed`](Self::start_feed) at a starting `volume` (0..1)
+    /// instead of `1.0`: a station that should fade in from silence starts
+    /// silent, rather than being turned down after it has started.
+    pub fn start_feed_at_volume(
+        &mut self,
+        feed: Arc<dyn Feed>,
+        pos: Option<Vec3>,
+        bus: Bus,
+        volume: f32,
+    ) -> Sound {
         let live = Live {
             feed: Some(feed.clone()),
-            ..Live::new("feed", pos, bus, true, 1.0)
+            ..Live::new("feed", pos, bus, true, volume.clamp(0.0, 1.0))
         };
         self.launch(Source::Feed(feed), live)
     }
@@ -343,20 +385,32 @@ impl Audio {
         self.clips.load(key).is_some()
     }
 
+    /// Whether a clip that is missing, or that the backend refuses (it
+    /// will not decode), plays the key's built-in default instead (`true`,
+    /// the default). Off, such a sound plays nothing: it is logged the first
+    /// time, listed in [`Audio::missing_clips`], and -- unlike with the
+    /// default on -- not remembered, so the clip source is asked again next
+    /// time and a clip that turns up later (a sound the game generates and
+    /// registers as it runs) is heard.
+    pub fn set_default_fallback(&mut self, on: bool) {
+        self.fallback = on;
+    }
+
     /// `key`'s clip bytes, falling back to its built-in default (and noting
     /// it missing) the same way `start` does -- so a sound replayed on a
     /// newly opened backend gets the same clip it would if started fresh.
-    pub(crate) fn clip_or_default(&mut self, key: &str) -> std::sync::Arc<[u8]> {
+    /// `None` when the clip is missing and the fallback is off.
+    pub(crate) fn clip_or_default(&mut self, key: &str) -> Option<Arc<[u8]>> {
         // Already known bad (missing, or rejected by the backend last time):
         // go straight to the default without asking the clip source again.
-        if self.missing.contains(key) {
-            return builtin_wav(key);
+        if self.fallback && self.missing.contains(key) {
+            return Some(builtin_wav(key));
         }
         match self.clips.load(key) {
-            Some(bytes) => bytes,
+            Some(bytes) => Some(bytes),
             None => {
                 self.note_missing(key);
-                builtin_wav(key)
+                self.fallback.then(|| builtin_wav(key))
             }
         }
     }
@@ -375,9 +429,10 @@ impl Audio {
         source: Source,
         looping: bool,
         mix: Mix,
+        from_s: f64,
     ) -> Option<Channel> {
         let is_live = matches!(source, Source::Voice(_) | Source::Feed(_));
-        match self.backend.play(key, source, looping, mix) {
+        match self.play_on_backend(key, source, looping, mix, from_s) {
             Ok(channel) => Some(channel),
             Err(err) => {
                 if is_live {
@@ -386,6 +441,9 @@ impl Audio {
                 }
                 if self.note_missing(key) {
                     log::error!("backend failed to play {key:?}: {err}");
+                }
+                if !self.fallback {
+                    return None;
                 }
                 match self
                     .backend
@@ -401,6 +459,23 @@ impl Audio {
         }
     }
 
+    /// `from_s` past the top goes through [`Backend::play_from`]; from the
+    /// top, through [`Backend::play`], as it always has.
+    fn play_on_backend(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+    ) -> Result<Channel, BackendError> {
+        if from_s > 0.0 {
+            self.backend.play_from(key, source, looping, mix, from_s)
+        } else {
+            self.backend.play(key, source, looping, mix)
+        }
+    }
+
     fn start(
         &mut self,
         key: &str,
@@ -412,7 +487,10 @@ impl Audio {
     ) -> Sound {
         let source = match &voice {
             Some((recipe, params)) => Source::Voice(Voice::with_params(*recipe, params.clone())),
-            None => Source::Clip(self.clip_or_default(key)),
+            None => match self.clip_or_default(key) {
+                Some(bytes) => Source::Clip(bytes),
+                None => return Sound::NONE,
+            },
         };
 
         let live = Live {
@@ -422,12 +500,114 @@ impl Audio {
         self.launch(source, live)
     }
 
+    /// Starts `key` on `bus` as `start` says: its own volume, pan and pitch
+    /// from the first sample, looping or not, a loop region, and an offset
+    /// into the clip. The clip comes from the pool's clip source, the same
+    /// as [`Audio::play`].
+    pub fn start_with(&mut self, key: &str, bus: Bus, start: Start) -> Sound {
+        let Some(bytes) = self.clip_or_default(key) else {
+            return Sound::NONE;
+        };
+        self.start_clip(key, bytes, false, bus, start)
+    }
+
+    /// Plays clip `bytes` the game found itself (its own packs, a file),
+    /// named `key` for logs and [`Audio::live`], as `start` says. The clip
+    /// source is not asked. A clip the backend refuses falls back the way a
+    /// refused clip from the source does (see
+    /// [`Audio::set_default_fallback`]).
+    pub fn play_clip(&mut self, key: &str, bytes: Arc<[u8]>, bus: Bus, start: Start) -> Sound {
+        self.start_clip(key, bytes, true, bus, start)
+    }
+
+    /// [`Audio::play_clip`], but a clip the backend refuses (one that will
+    /// not decode) is an error, never a default and never silence the
+    /// caller cannot see: for a player's own music file, which a playlist
+    /// skips when it cannot play.
+    pub fn try_play_clip(
+        &mut self,
+        key: &str,
+        bytes: Arc<[u8]>,
+        bus: Bus,
+        start: Start,
+    ) -> Result<Sound, BackendError> {
+        let live = self.live_for(key, Some(bytes.clone()), bus, start);
+        let mix = self.mix_of(&live);
+        let from_s = offset(start);
+        match self.play_on_backend(key, Source::Clip(bytes), live.looping, mix, from_s) {
+            Ok(channel) => Ok(self.adopt(live, channel, mix, start)),
+            Err(err) => {
+                if self.note_missing(key) {
+                    log::error!("backend failed to play {key:?}: {err}");
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Reads the file at `path` and plays it as [`Audio::try_play_clip`]
+    /// does, keyed by its path.
+    pub fn try_play_file(
+        &mut self,
+        path: &std::path::Path,
+        bus: Bus,
+        start: Start,
+    ) -> Result<Sound, PlayError> {
+        let bytes: Arc<[u8]> = std::fs::read(path).map_err(PlayError::Read)?.into();
+        let key = path.to_string_lossy().into_owned();
+        self.try_play_clip(&key, bytes, bus, start)
+            .map_err(PlayError::Refused)
+    }
+
+    /// The slot-to-be for a clip started as `start` says.
+    fn live_for(&self, key: &str, clip: Option<Arc<[u8]>>, bus: Bus, start: Start) -> Live {
+        let mut live = Live::new(
+            key,
+            None,
+            bus,
+            start.looping,
+            clamped_or(1.0, start.volume, 0.0, 1.0),
+        );
+        live.pan = clamped_or(0.0, start.pan, -1.0, 1.0);
+        live.pitch = clamped_or(1.0, start.pitch, 0.05, 4.0);
+        live.clip = clip;
+        live
+    }
+
+    /// Gives a clip the backend took its slot, and its loop region.
+    fn adopt(&mut self, mut live: Live, channel: Channel, mix: Mix, start: Start) -> Sound {
+        live.channel = channel;
+        live.sent = mix;
+        let sound = self.alloc(live);
+        if let (true, Some(region)) = (start.looping, start.region) {
+            self.apply_region(sound, region);
+        }
+        sound
+    }
+
+    fn start_clip(
+        &mut self,
+        key: &str,
+        bytes: Arc<[u8]>,
+        keep: bool,
+        bus: Bus,
+        start: Start,
+    ) -> Sound {
+        let live = self.live_for(key, keep.then(|| bytes.clone()), bus, start);
+        let mix = self.mix_of(&live);
+        let from_s = offset(start);
+        match self.play_with_fallback(key, Source::Clip(bytes), live.looping, mix, from_s) {
+            Some(channel) => self.adopt(live, channel, mix, start),
+            None => Sound::NONE,
+        }
+    }
+
     /// Plays `source` for `live` and gives it a slot, or returns
     /// [`Sound::NONE`] if the backend would not take it.
     fn launch(&mut self, source: Source, mut live: Live) -> Sound {
         let mix = self.mix_of(&live);
 
-        match self.play_with_fallback(&live.key, source, live.looping, mix) {
+        match self.play_with_fallback(&live.key, source, live.looping, mix, 0.0) {
             Some(channel) => {
                 live.channel = channel;
                 live.sent = mix;
@@ -505,6 +685,58 @@ impl Audio {
             live.pitch = clamped_or(live.pitch, pitch, 0.05, 4.0);
         }
         self.resend(sound, self.fades.move_ms);
+    }
+
+    /// Sets `sound`'s volume, clamped to `0..=1`, ramping over `ramp_ms`
+    /// (`0` is at once). Anything else about the sound that was due to
+    /// change moves over the usual `fades.move_ms`.
+    pub fn set_volume_over(&mut self, sound: Sound, volume: f32, ramp_ms: u32) {
+        if let Some(live) = slot_mut(&mut self.slots, sound) {
+            live.volume = clamped_or(live.volume, volume, 0.0, 1.0);
+        }
+        let ramps = Ramps {
+            gain_ms: ramp_ms,
+            ..Ramps::all(self.fades.move_ms)
+        };
+        self.resend_ramped(sound, ramps);
+    }
+
+    /// Sets `sound`'s pitch, clamped to `0.05..=4`, sliding over `ramp_ms`
+    /// (`0` is at once).
+    pub fn set_pitch_over(&mut self, sound: Sound, pitch: f32, ramp_ms: u32) {
+        if let Some(live) = slot_mut(&mut self.slots, sound) {
+            live.pitch = clamped_or(live.pitch, pitch, 0.05, 4.0);
+        }
+        let ramps = Ramps {
+            pitch_ms: ramp_ms,
+            ..Ramps::all(self.fades.move_ms)
+        };
+        self.resend_ramped(sound, ramps);
+    }
+
+    /// Sets the pan of a `sound` with no position, clamped to `-1..=1`,
+    /// over `fades.move_ms`. A positioned sound keeps the pan its position
+    /// gives it; this applies if its position is dropped.
+    pub fn set_pan(&mut self, sound: Sound, pan: f32) {
+        self.set_pan_over(sound, pan, self.fades.move_ms);
+    }
+
+    /// [`Audio::set_pan`] over `ramp_ms` (`0` is at once).
+    pub fn set_pan_over(&mut self, sound: Sound, pan: f32, ramp_ms: u32) {
+        if let Some(live) = slot_mut(&mut self.slots, sound) {
+            live.pan = clamped_or(live.pan, pan, -1.0, 1.0);
+        }
+        let ramps = Ramps {
+            pan_ms: ramp_ms,
+            ..Ramps::all(self.fades.move_ms)
+        };
+        self.resend_ramped(sound, ramps);
+    }
+
+    /// How long `sound`'s clip runs, in seconds, when the backend can tell.
+    pub fn length_s(&mut self, sound: Sound) -> Option<f64> {
+        let channel = slot_ref(&self.slots, sound)?.channel;
+        self.backend.length_s(channel)
     }
 
     /// Moves `sound`, or drops its position entirely.
@@ -611,7 +843,8 @@ impl Audio {
         }
     }
 
-    /// Every key that has fallen back to its default at least once, sorted.
+    /// Every key that has fallen back to its default at least once (or, with
+    /// the fallback off, played nothing), sorted.
     pub fn missing_clips(&self) -> Vec<String> {
         self.missing.iter().cloned().collect()
     }
@@ -671,11 +904,35 @@ impl Audio {
         self.backend.set_mix(channel, mix, ramp_ms);
     }
 
+    /// [`Audio::resend`] with a ramp of its own for each part of the mix.
+    fn resend_ramped(&mut self, sound: Sound, ramps: Ramps) {
+        let Some(bus) = slot_ref(&self.slots, sound).map(|live| live.bus) else {
+            return;
+        };
+        let gain = self.bus_gain(bus);
+        let listener = self.listener;
+        let spatial = self.spatial;
+        let Some(live) = slot_mut(&mut self.slots, sound) else {
+            return;
+        };
+        let mix = compute_mix(&listener, &spatial, gain, live);
+        if mix == live.sent {
+            return;
+        }
+        live.sent = mix;
+        let channel = live.channel;
+        self.backend.set_mix_ramped(channel, mix, ramps);
+    }
+
     /// Records `key` as missing; returns whether this is the first time.
     fn note_missing(&mut self, key: &str) -> bool {
         let newly_missing = self.missing.insert(key.to_string());
         if newly_missing {
-            log::warn!("sound {key} is missing; playing its default");
+            if self.fallback {
+                log::warn!("sound {key} is missing; playing its default");
+            } else {
+                log::warn!("sound {key} is missing or will not play; playing nothing");
+            }
         }
         newly_missing
     }
@@ -708,3 +965,23 @@ impl Audio {
         self.free.push(index);
     }
 }
+
+/// Why [`Audio::try_play_file`] played nothing.
+#[derive(Debug)]
+pub enum PlayError {
+    /// The file could not be read.
+    Read(std::io::Error),
+    /// The backend would not play it: it is not audio it can decode.
+    Refused(BackendError),
+}
+
+impl std::fmt::Display for PlayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlayError::Read(err) => write!(f, "could not read it ({err})"),
+            PlayError::Refused(err) => write!(f, "could not play it ({err})"),
+        }
+    }
+}
+
+impl std::error::Error for PlayError {}

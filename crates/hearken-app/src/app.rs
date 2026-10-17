@@ -151,7 +151,12 @@ impl<G: Game> App<G> {
         // must not cost the player their settings.
         self.ctx.save_settings();
         self.ctx.audio.shutdown();
-        self.ctx.speech.shutdown();
+        // The line in flight (a goodbye, an update notice) gets to finish,
+        // and the window keeps answering the OS while it does: events are
+        // pumped and dropped, so macOS never reads it as not responding.
+        self.ctx.speech.shutdown_pumping(&mut || {
+            let _ = shell.poll();
+        });
     }
 
     pub fn top_name(&self) -> &'static str {

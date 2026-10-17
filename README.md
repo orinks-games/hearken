@@ -5,6 +5,12 @@ Freight Fate and Lucky Break Casino. Its first game is Freight Fate:
 Locomotive. Work in progress: this is milestone 1
 of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
 
+Freight Fate itself runs on Hearken's services since milestone 6: speech,
+the event-voice pacer, sound, music, the radio and the input types, under
+its own screens and menus.
+`docs/superpowers/notes/2026-10-17-freight-fate-on-hearken.md` says what it
+takes from Hearken, what it keeps, and why.
+
 ## What is here
 
 - `hearken`: the one dependency for a game; it re-exports the rest.

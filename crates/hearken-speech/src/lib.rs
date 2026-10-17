@@ -81,11 +81,17 @@ pub use capture::{
 };
 pub use live::{Speech, SpeechConfig};
 pub use pacer::{
-    monotonic_seconds, Clock, Cut, EventPriority, EventSpeechPacer, PacerConfig, Valid,
+    monotonic_seconds, Clock, Cut, DeliveryStatus, EventPriority, EventSpeechPacer, PacerConfig,
+    Protect, Valid,
 };
 pub use spoken::{terse_silent, SpokenMessage};
 pub use threaded::ThreadedSpeech;
 pub use verbosity::{Category, Level, NoCategory, Rule, Verbosity};
+
+/// The Prism binding itself, at the version this crate links, for a game's
+/// own live tests that talk to a backend directly. A game needs no `prismer`
+/// dependency of its own, so there is never a second copy to link.
+pub use prismer;
 
 /// Seconds between runtime health checks of the speech backend. Short enough
 /// that a player who switches screen readers hears the game again within a few
@@ -155,11 +161,8 @@ impl PreviewFeature {
 /// warnings) that falls back to the main channel when no separate voice is
 /// bound. `interrupt` cuts off the previous utterance on that channel.
 ///
-/// The "Speech is now using X." line a backend switch produces is spoken by
-/// the object itself, straight through the new main voice and bypassing any
-/// message log -- exactly what `refresh(announce=true)` promises. No hook and
-/// no returned list: a test double that wants to see it records what `say`
-/// received.
+/// A backend switch is silent: the new voice simply carries on with the
+/// next line.
 pub trait SpeechSink {
     /// Speak (and braille, where supported) `text` on the main channel.
     fn say(&mut self, text: &str, interrupt: bool);
@@ -254,11 +257,33 @@ pub trait SpeechSink {
     fn say_adjustment_preview(&mut self, setting: &str, text: &str, interrupt: bool) -> bool;
 
     /// Re-detect which screen reader or voice should be speaking. `true` when
-    /// the main voice changed; with `announce` the new voice says so.
-    fn refresh(&mut self, announce: bool) -> bool;
+    /// the main voice changed.
+    fn refresh(&mut self) -> bool;
+
+    /// Whether the main voice is still speaking a line. Sinks that cannot
+    /// answer it report `false`.
+    fn is_speaking(&self) -> bool {
+        false
+    }
+
+    /// How long the speech worker holds this sink's first lines after
+    /// start-up, so the screen reader's own announcement of the new window
+    /// cannot talk over the game's first screen. Most voices need none.
+    fn startup_hold(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
 
     /// Release the backends and context. Safe to call more than once.
     fn shutdown(&mut self);
+
+    /// Release the backends like [`shutdown`](SpeechSink::shutdown), calling
+    /// `pump` between wait slices so the caller can keep the window
+    /// answering the OS while an in-flight utterance finishes. Sinks whose
+    /// shutdown never waits use the default.
+    fn shutdown_pumping(&mut self, pump: &mut dyn FnMut()) {
+        let _ = pump;
+        self.shutdown();
+    }
 }
 
 /// The environment overrides a game's speech reads, named after the game's

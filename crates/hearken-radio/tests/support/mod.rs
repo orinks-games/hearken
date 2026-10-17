@@ -237,6 +237,7 @@ pub fn fast() -> StreamOptions {
         stall: Duration::from_secs(1),
         prebuffer: Duration::from_millis(200),
         buffer: Duration::from_secs(1),
+        ..StreamOptions::default()
     }
 }
 

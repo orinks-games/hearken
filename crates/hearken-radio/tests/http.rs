@@ -5,7 +5,7 @@ mod support;
 use std::thread;
 use std::time::Duration;
 
-use hearken_radio::Stream;
+use hearken_radio::{Stream, StreamOptions};
 use support::{drain, failed, fast, listen, playing, rms, wait_for, Reply, TestServer};
 
 /// Two seconds of a 440 Hz tone at half scale, as bare MP3 frames, so that
@@ -156,4 +156,23 @@ fn dropping_while_connecting_to_a_silent_server_ends_within_the_timeout() {
     wait_for("the connection to close", Duration::from_secs(3), || {
         server.open_connections() == 0
     });
+}
+
+#[test]
+fn the_request_names_the_game_when_it_says_who_it_is() {
+    let server = station();
+    let options = StreamOptions {
+        user_agent: "SomeGame/1.2 (+https://example.org/game)".into(),
+        ..StreamOptions::default()
+    };
+    let _stream = Stream::open_with(&server.url("/live.mp3"), options);
+    wait_for("a request", Duration::from_secs(5), || {
+        server.hits("/live.mp3") == 1
+    });
+    let request = server.last_request();
+    assert!(
+        request.contains("User-Agent: SomeGame/1.2 (+https://example.org/game)\r\n"),
+        "{request}"
+    );
+    assert!(!request.contains("Hearken/"), "{request}");
 }
