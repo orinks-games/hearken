@@ -449,3 +449,241 @@ fn escape_while_not_listening_plays_the_back_sound() {
     h.press(Key::Escape);
     assert_eq!(h.played(), ["ui/menu_back"]);
 }
+
+/// A game that words the engine's keys its own way and lets the pad's Start
+/// and Back be chosen on the second layer: Freight Fate's rules, cut down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Own {
+    Horn,
+    Lights,
+}
+
+impl hearken_app::bindings::Action for Own {
+    fn all() -> &'static [Self] {
+        &[Own::Horn, Own::Lights]
+    }
+    fn id(self) -> &'static str {
+        match self {
+            Own::Horn => "horn",
+            Own::Lights => "lights",
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Own::Horn => "Horn",
+            Own::Lights => "Lights",
+        }
+    }
+    fn default_keys(self) -> &'static [Chord] {
+        match self {
+            Own::Horn => const { &[Chord::plain(Key::H)] },
+            Own::Lights => const { &[Chord::plain(Key::L), Chord::plain(Key::Slash)] },
+        }
+    }
+    fn default_pad(self) -> &'static [PadChord] {
+        match self {
+            Own::Horn => const { &[PadChord::plain(B::Y)] },
+            Own::Lights => const { &[PadChord::plain(B::RightStickRight)] },
+        }
+    }
+    fn reserved_key(chord: &Chord) -> Option<&'static str> {
+        match chord.key {
+            Key::Escape if chord.mods == Mods::NONE => Some("Escape is the pause menu"),
+            Key::F2 => Some("F2 lists the driving commands"),
+            Key::Return | Key::KpEnter if chord.mods == Mods::NONE => Some("Enter confirms"),
+            _ => None,
+        }
+    }
+    fn reserved_pad(chord: &PadChord) -> Option<&'static str> {
+        match chord.button {
+            B::Start if !chord.modified => Some("Start is pause"),
+            B::Back if !chord.modified => Some("Back stops the driving voice and reads help"),
+            _ => None,
+        }
+    }
+}
+
+/// The same rules, with the engine's list still on behind them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct Alone(Own);
+
+impl hearken_app::bindings::Action for Alone {
+    fn all() -> &'static [Self] {
+        &[Alone(Own::Horn), Alone(Own::Lights)]
+    }
+    fn id(self) -> &'static str {
+        self.0.id()
+    }
+    fn label(self) -> &'static str {
+        self.0.label()
+    }
+    fn default_keys(self) -> &'static [Chord] {
+        self.0.default_keys()
+    }
+    fn default_pad(self) -> &'static [PadChord] {
+        self.0.default_pad()
+    }
+    fn reserved_key(chord: &Chord) -> Option<&'static str> {
+        Own::reserved_key(chord)
+    }
+    fn reserved_pad(chord: &PadChord) -> Option<&'static str> {
+        Own::reserved_pad(chord)
+    }
+    fn keeps_engine_reserved() -> bool {
+        false
+    }
+}
+
+#[test]
+fn the_games_reason_wins_over_the_engines() {
+    let mut b = KeyBindings::<Own>::default();
+    for (chord, reason) in [
+        (Chord::plain(Key::Escape), "Escape is the pause menu"),
+        (Chord::plain(Key::F2), "F2 lists the driving commands"),
+        (Chord::plain(Key::Return), "Enter confirms"),
+        (Chord::plain(Key::KpEnter), "Enter confirms"),
+        // Not the game's: the engine still answers.
+        (Chord::shift(Key::Escape), "Escape goes back"),
+        (Chord::plain(Key::F1), "F1 is help"),
+    ] {
+        assert_eq!(b.set_chord(Own::Horn, chord), Rebind::Reserved(reason));
+    }
+    assert_eq!(
+        b.set_pad_chord(Own::Horn, PadChord::plain(B::Start)),
+        Rebind::Reserved("Start is pause")
+    );
+    assert_eq!(
+        b.set_pad_chord(Own::Horn, PadChord::plain(B::Back)),
+        Rebind::Reserved("Back stops the driving voice and reads help")
+    );
+    assert_eq!(
+        b.set_pad_chord(Own::Horn, PadChord::modified(B::Start)),
+        Rebind::Reserved("Start pauses and goes back"),
+        "the engine keeps Start on both layers"
+    );
+}
+
+#[test]
+fn a_game_can_turn_the_engines_reserved_list_off() {
+    let mut b = KeyBindings::<Alone>::default();
+    let horn = Alone(Own::Horn);
+    assert_eq!(
+        b.set_chord(horn, Chord::plain(Key::Escape)),
+        Rebind::Reserved("Escape is the pause menu")
+    );
+    assert_eq!(b.set_chord(horn, Chord::plain(Key::F1)), Rebind::Done);
+    assert_eq!(
+        b.set_pad_chord(horn, PadChord::plain(B::Start)),
+        Rebind::Reserved("Start is pause")
+    );
+    assert_eq!(
+        b.set_pad_chord(horn, PadChord::modified(B::Start)),
+        Rebind::Done
+    );
+    assert_eq!(
+        b.set_pad_chord(horn, PadChord::modified(B::Back)),
+        Rebind::Done
+    );
+    assert_eq!(b.pad_action_for(B::Back, true), Some(horn));
+}
+
+#[test]
+fn a_saved_binding_on_a_key_only_the_game_keeps_is_skipped() {
+    let mut saved = SavedBindings::default();
+    saved.keys.insert("horn".to_string(), "enter".to_string());
+    saved
+        .keys
+        .insert("lights".to_string(), "ctrl+enter".to_string());
+    let loaded = KeyBindings::<Own>::from_saved(&saved);
+    assert_eq!(loaded.chords(Own::Horn), [Chord::plain(Key::H)]);
+    assert_eq!(
+        loaded.action_for(Key::Return, Mods::CTRL),
+        Some(Own::Lights)
+    );
+}
+
+#[test]
+fn a_saved_binding_keeps_its_key_when_an_update_adds_that_default() {
+    // Horn moved to slash on a build before Lights took slash by default:
+    // the horn keeps it, and lights keep only their other key.
+    let mut saved = SavedBindings::default();
+    saved.keys.insert("horn".to_string(), "slash".to_string());
+    let b = KeyBindings::<Own>::from_saved(&saved);
+    assert_eq!(b.action_for(Key::Slash, Mods::NONE), Some(Own::Horn));
+    assert_eq!(b.chords(Own::Lights), [Chord::plain(Key::L)]);
+    assert_eq!(b.spoken(Own::Lights), "L");
+}
+
+#[test]
+fn a_saved_pad_binding_keeps_a_new_default() {
+    let mut saved = SavedBindings::default();
+    saved
+        .pad
+        .insert("horn".to_string(), "rstick_right".to_string());
+    let b = KeyBindings::<Own>::from_saved(&saved);
+    assert_eq!(b.pad_action_for(B::RightStickRight, false), Some(Own::Horn));
+    assert!(b.pad_chords(Own::Lights).is_empty());
+    assert_eq!(b.pad_spoken(Own::Lights), "Lights");
+}
+
+#[test]
+fn the_right_stick_directions_have_names() {
+    for (button, saved, short) in [
+        (B::RightStickUp, "rstick_up", "right stick up"),
+        (B::RightStickDown, "rstick_down", "right stick down"),
+        (B::RightStickLeft, "rstick_left", "right stick left"),
+        (B::RightStickRight, "rstick_right", "right stick right"),
+    ] {
+        let chord = PadChord::plain(button);
+        assert_eq!(chord.saved(), saved);
+        assert_eq!(PadChord::parse(saved), Some(chord));
+        assert_eq!(chord.spoken(), short);
+        assert_eq!(
+            PadChord::modified(button).spoken(),
+            format!("right bumper plus {short}")
+        );
+    }
+}
+
+#[test]
+fn reset_puts_keys_and_pad_back_together() {
+    let mut b = KeyBindings::<T>::default();
+    b.set_chord(T::Jump, Chord::plain(Key::Z));
+    b.set_pad_chord(T::Horn, PadChord::plain(B::Y));
+    b.reset();
+    assert!(b.is_default());
+    assert_eq!(b.action_for(Key::Space, Mods::NONE), Some(T::Jump));
+}
+
+#[test]
+fn a_table_can_be_built_from_moves_and_read_back_in_order() {
+    let b = KeyBindings::<T>::from_parts(
+        [
+            (T::Map, Chord::plain(Key::Escape)),
+            (T::Jump, Chord::alt(Key::J)),
+            // Horn is not on the keyboard: dropped.
+            (T::Horn, Chord::plain(Key::H)),
+        ],
+        [
+            (T::Horn, PadChord::plain(B::Start)),
+            // Map is not on the pad: dropped.
+            (T::Map, PadChord::plain(B::Y)),
+        ],
+    );
+    assert_eq!(
+        b.moved_keys().collect::<Vec<_>>(),
+        [
+            (T::Jump, Chord::alt(Key::J)),
+            (T::Map, Chord::plain(Key::Escape)),
+        ],
+        "taken as given, reserved or not, in the order of Action::all"
+    );
+    assert_eq!(
+        b.moved_pad().collect::<Vec<_>>(),
+        [(T::Horn, PadChord::plain(B::Start))]
+    );
+    assert_eq!(b.key_override(T::Jump), Some(Chord::alt(Key::J)));
+    assert_eq!(b.key_override(T::Duck), None);
+    assert_eq!(b.pad_override(T::Horn), Some(PadChord::plain(B::Start)));
+    assert_eq!(b.pad_override(T::Jump), None);
+}

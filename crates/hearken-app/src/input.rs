@@ -386,6 +386,13 @@ pub enum ControllerButton {
     Paddle3,
     Paddle4,
     Touchpad,
+    /// The right stick pushed past its threshold, as a button. SDL never
+    /// sends these; a game that turns the stick into four buttons makes them
+    /// itself.
+    RightStickUp,
+    RightStickDown,
+    RightStickLeft,
+    RightStickRight,
 }
 
 /// SDL GameController analog axes.

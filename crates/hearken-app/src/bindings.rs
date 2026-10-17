@@ -3,7 +3,10 @@
 //!
 //! Menu keys, Escape, Enter, F1 and F2 belong to the engine and never move;
 //! a game keeps more for itself through [`Action::reserved_key`] and
-//! [`Action::reserved_pad`].
+//! [`Action::reserved_pad`]. The game's reason is asked first, so its
+//! wording wins over the engine's; a game that names every key it keeps,
+//! the engine's among them, can turn the engine's list off with
+//! [`Action::keeps_engine_reserved`].
 //!
 //! Extracted from Freight Fate (commit c5d3ef8d), `bindings.rs`, with its
 //! driving actions replaced by a game-supplied [`Action`] type.
@@ -40,7 +43,8 @@ pub trait Action: Copy + Eq + Hash + Debug + 'static {
         &[]
     }
     /// A key the game keeps for itself, with the reason the rebinding
-    /// screen gives, after the engine's own.
+    /// screen gives. Asked before the engine's own list, so a game can word
+    /// the engine's keys its own way ("Escape is the pause menu").
     fn reserved_key(_chord: &Chord) -> Option<&'static str> {
         None
     }
@@ -48,6 +52,37 @@ pub trait Action: Copy + Eq + Hash + Debug + 'static {
     fn reserved_pad(_chord: &PadChord) -> Option<&'static str> {
         None
     }
+    /// Whether the engine's own reserved keys and buttons
+    /// ([`reserved_key_reason`], [`reserved_pad_reason`]) still apply after
+    /// the game's. A game returns false only when its `reserved_key` and
+    /// `reserved_pad` already keep every key its screens need, Escape and
+    /// Enter included: the engine then refuses nothing on its own.
+    fn keeps_engine_reserved() -> bool {
+        true
+    }
+}
+
+/// Why `chord` cannot be chosen for a game's action: the game's reason
+/// first, then the engine's unless the game turned them off.
+pub fn key_reason<A: Action>(chord: &Chord) -> Option<&'static str> {
+    A::reserved_key(chord).or_else(|| {
+        if A::keeps_engine_reserved() {
+            reserved_key_reason(chord)
+        } else {
+            None
+        }
+    })
+}
+
+/// Why a pad chord cannot be chosen for a game's action, likewise.
+pub fn pad_reason<A: Action>(chord: &PadChord) -> Option<&'static str> {
+    A::reserved_pad(chord).or_else(|| {
+        if A::keeps_engine_reserved() {
+            reserved_pad_reason(chord)
+        } else {
+            None
+        }
+    })
 }
 
 /// The actions of a game with nothing to rebind.
@@ -277,9 +312,7 @@ impl<A: Action> KeyBindings<A> {
         let mut out = Self::default();
         for (id, value) in &saved.keys {
             if let (Some(action), Some(chord)) = (from_id::<A>(id), Chord::parse(value)) {
-                let reserved = reserved_key_reason(&chord)
-                    .or_else(|| A::reserved_key(&chord))
-                    .is_some();
+                let reserved = key_reason::<A>(&chord).is_some();
                 if !action.default_keys().is_empty() && !reserved {
                     out.keys.insert(action, chord);
                 }
@@ -287,9 +320,7 @@ impl<A: Action> KeyBindings<A> {
         }
         for (id, value) in &saved.pad {
             if let (Some(action), Some(chord)) = (from_id::<A>(id), PadChord::parse(value)) {
-                let reserved = reserved_pad_reason(&chord)
-                    .or_else(|| A::reserved_pad(&chord))
-                    .is_some();
+                let reserved = pad_reason::<A>(&chord).is_some();
                 if !action.default_pad().is_empty() && !reserved {
                     out.pad.insert(action, chord);
                 }
@@ -310,9 +341,59 @@ impl<A: Action> KeyBindings<A> {
             .collect();
     }
 
+    /// A table with these moves already made, taken as they are: no entry
+    /// is checked against the reserved keys or the defaults. For a game that
+    /// keeps its bindings in its own format and has read them itself; a move
+    /// for an action not on the keyboard (or not on the pad) is dropped.
+    pub fn from_parts(
+        keys: impl IntoIterator<Item = (A, Chord)>,
+        pad: impl IntoIterator<Item = (A, PadChord)>,
+    ) -> Self {
+        KeyBindings {
+            keys: keys
+                .into_iter()
+                .filter(|(action, _)| !action.default_keys().is_empty())
+                .collect(),
+            pad: pad
+                .into_iter()
+                .filter(|(action, _)| !action.default_pad().is_empty())
+                .collect(),
+        }
+    }
+
+    /// The controls moved off their default keys, in [`Action::all`] order.
+    pub fn moved_keys(&self) -> impl Iterator<Item = (A, Chord)> + '_ {
+        A::all()
+            .iter()
+            .filter_map(|action| Some((*action, *self.keys.get(action)?)))
+    }
+
+    /// The controls moved off their default pad buttons, likewise.
+    pub fn moved_pad(&self) -> impl Iterator<Item = (A, PadChord)> + '_ {
+        A::all()
+            .iter()
+            .filter_map(|action| Some((*action, *self.pad.get(action)?)))
+    }
+
+    /// The key the player moved `action` onto, if they moved it.
+    pub fn key_override(&self, action: A) -> Option<Chord> {
+        self.keys.get(&action).copied()
+    }
+
+    /// The pad button the player moved `action` onto, if they moved it.
+    pub fn pad_override(&self, action: A) -> Option<PadChord> {
+        self.pad.get(&action).copied()
+    }
+
     /// True when nothing has been moved from its default.
     pub fn is_default(&self) -> bool {
         self.keys.is_empty() && self.pad.is_empty()
+    }
+
+    /// Every control back on its defaults, keys and pad alike.
+    pub fn reset(&mut self) {
+        self.keys.clear();
+        self.pad.clear();
     }
 
     pub fn reset_keys(&mut self) {
@@ -326,10 +407,19 @@ impl<A: Action> KeyBindings<A> {
     // -- keyboard ----------------------------------------------------------------
 
     /// The chords that trigger `action` today.
+    ///
+    /// A default the player already moved another control onto stays with
+    /// that control: a default added in an update must never take over a key
+    /// the player bound before it existed.
     pub fn chords(&self, action: A) -> Vec<Chord> {
         match self.keys.get(&action) {
             Some(chord) => vec![*chord],
-            None => action.default_keys().to_vec(),
+            None => action
+                .default_keys()
+                .iter()
+                .copied()
+                .filter(|chord| !self.keys.values().any(|moved| moved == chord))
+                .collect(),
         }
     }
 
@@ -373,7 +463,7 @@ impl<A: Action> KeyBindings<A> {
 
     /// Move `action` to `chord`.
     pub fn set_chord(&mut self, action: A, chord: Chord) -> Rebind<A> {
-        if let Some(reason) = reserved_key_reason(&chord).or_else(|| A::reserved_key(&chord)) {
+        if let Some(reason) = key_reason::<A>(&chord) {
             return Rebind::Reserved(reason);
         }
         if self.chords(action).contains(&chord) {
@@ -392,10 +482,16 @@ impl<A: Action> KeyBindings<A> {
 
     // -- pad ---------------------------------------------------------------------
 
+    /// Same rule as [`Self::chords`]: a player's binding outranks a default.
     pub fn pad_chords(&self, action: A) -> Vec<PadChord> {
         match self.pad.get(&action) {
             Some(chord) => vec![*chord],
-            None => action.default_pad().to_vec(),
+            None => action
+                .default_pad()
+                .iter()
+                .copied()
+                .filter(|chord| !self.pad.values().any(|moved| moved == chord))
+                .collect(),
         }
     }
 
@@ -415,7 +511,7 @@ impl<A: Action> KeyBindings<A> {
     }
 
     pub fn set_pad_chord(&mut self, action: A, chord: PadChord) -> Rebind<A> {
-        if let Some(reason) = reserved_pad_reason(&chord).or_else(|| A::reserved_pad(&chord)) {
+        if let Some(reason) = pad_reason::<A>(&chord) {
             return Rebind::Reserved(reason);
         }
         if self.pad_chords(action).contains(&chord) {
