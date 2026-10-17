@@ -459,7 +459,7 @@ impl SpeechSink for CaptureSpeech {
         true
     }
 
-    fn refresh(&mut self, _announce: bool) -> bool {
+    fn refresh(&mut self) -> bool {
         false
     }
 
@@ -527,7 +527,7 @@ impl SpeechSink for NullSpeech {
     fn say_adjustment_preview(&mut self, _setting: &str, _text: &str, _interrupt: bool) -> bool {
         false
     }
-    fn refresh(&mut self, _announce: bool) -> bool {
+    fn refresh(&mut self) -> bool {
         false
     }
     fn shutdown(&mut self) {}
@@ -613,10 +613,19 @@ impl SpeechSink for SharedCapture {
             .borrow_mut()
             .say_adjustment_preview(setting, text, interrupt)
     }
-    fn refresh(&mut self, announce: bool) -> bool {
-        self.0.borrow_mut().refresh(announce)
+    fn refresh(&mut self) -> bool {
+        self.0.borrow_mut().refresh()
+    }
+    fn is_speaking(&self) -> bool {
+        self.0.borrow().is_speaking()
+    }
+    fn startup_hold(&self) -> std::time::Duration {
+        self.0.borrow().startup_hold()
     }
     fn shutdown(&mut self) {
         self.0.borrow_mut().shutdown()
+    }
+    fn shutdown_pumping(&mut self, pump: &mut dyn FnMut()) {
+        self.0.borrow_mut().shutdown_pumping(pump)
     }
 }
