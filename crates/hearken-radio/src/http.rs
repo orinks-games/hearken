@@ -4,7 +4,7 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ureq::ErrorKind;
 use url::{Position, Url};
@@ -59,7 +59,11 @@ impl Read for UntilClosed {
 
 fn call(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
     let url = Url::parse(url).map_err(|_| bad_url())?;
-    let agent = ureq::AgentBuilder::new()
+    let mut agent = ureq::AgentBuilder::new();
+    if let Some(tls) = platform_tls() {
+        agent = agent.tls_config(tls);
+    }
+    let agent = agent
         .timeout_connect(opts.timeout)
         .timeout_read(opts.timeout)
         .redirects(10)
@@ -89,6 +93,34 @@ fn call(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
             }
         }
     }
+}
+
+/// TLS that checks a station's certificate the way the operating system
+/// does, as a browser would: Windows and macOS fetch an intermediate
+/// certificate a station's server leaves out, which many station servers
+/// do. None (ureq's own check, against the system's roots) where the
+/// platform's verifier cannot start. Built once.
+fn platform_tls() -> Option<Arc<rustls::ClientConfig>> {
+    static CONFIG: OnceLock<Option<Arc<rustls::ClientConfig>>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let verifier = match rustls_platform_verifier::Verifier::new(provider.clone()) {
+                Ok(verifier) => verifier,
+                Err(error) => {
+                    log::warn!("radio: the system certificate check is unavailable ({error})");
+                    return None;
+                }
+            };
+            let config = rustls::ClientConfig::builder_with_provider(provider)
+                .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+                .ok()?
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_no_client_auth();
+            Some(Arc::new(config))
+        })
+        .clone()
 }
 
 /// Why a call that got no reply failed. ureq reports a refused connection

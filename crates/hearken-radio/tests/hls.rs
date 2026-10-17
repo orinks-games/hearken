@@ -21,7 +21,37 @@ const TS: &[u8] = include_bytes!("fixtures/tone.ts");
 /// command above with `-mpegts_start_pid 0x200 -f mpegts tone-pid200.ts`.
 const TS_PID_200: &[u8] = include_bytes!("fixtures/tone-pid200.ts");
 
+/// The tone as fMP4 (CMAF): an init segment and one fragment,
+/// `ffmpeg -f lavfi -i sine=frequency=440:duration=1 -af volume=12dB -ac 1
+/// -c:a aac -b:a 64k -f hls -hls_time 1 -hls_segment_type fmp4
+/// -hls_fmp4_init_filename init.mp4 -hls_segment_filename 'seg%d.m4s'
+/// index.m3u8`, keeping `init.mp4` and `seg0.m4s`.
+const FMP4_INIT: &[u8] = include_bytes!("fixtures/tone-init.mp4");
+const FMP4: &[u8] = include_bytes!("fixtures/tone.m4s");
+
 const M3U8: &str = "application/vnd.apple.mpegurl";
+
+/// Video variants only, their audio in a separate rendition, as TV-style
+/// stations publish.
+const RENDITIONS: &str = "#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"Commentary\",DEFAULT=NO,URI=\"commentary.m3u8\"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"Main\",DEFAULT=YES,URI=\"live.m3u8\"
+#EXT-X-STREAM-INF:BANDWIDTH=800000,CODECS=\"avc1.64001f,mp4a.40.2\",AUDIO=\"aud\"
+tv-low.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,CODECS=\"avc1.64001f,mp4a.40.2\",AUDIO=\"aud\"
+tv.m3u8
+";
+
+/// Three fMP4 fragments behind one init segment, never ending.
+fn fmp4_window(n: u64) -> Vec<u8> {
+    let mut text = format!(
+        "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:{n}\n#EXT-X-MAP:URI=\"init.mp4\"\n"
+    );
+    for sequence in n..n + 4 {
+        text += &format!("#EXTINF:1.0,Hearken - Live\nseg{sequence}.m4s\n");
+    }
+    text.into_bytes()
+}
 
 const MASTER: &str = "#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.2\"
@@ -90,6 +120,10 @@ fn station() -> TestServer {
             "/live.m3u8" => playlist(window(n, "aac")),
             "/ts.m3u8" => playlist(window(n, "ts")),
             "/master.m3u8" => playlist(MASTER.into()),
+            "/renditions.m3u8" => playlist(RENDITIONS.into()),
+            "/cmaf.m3u8" => playlist(fmp4_window(n)),
+            "/init.mp4" => Reply::Body(200, "video/mp4", FMP4_INIT.to_vec()),
+            _ if path.ends_with(".m4s") => Reply::Body(200, "video/iso.segment", FMP4.to_vec()),
             "/locked.m3u8" => playlist(LOCKED.into()),
             "/still.m3u8" => playlist(STILL.into()),
             "/renumbered.m3u8" => playlist(RENUMBERED.into()),
@@ -184,4 +218,39 @@ fn a_ts_station_renumbered_at_a_discontinuity_plays_on() {
     wait_for("2.5 s of audio", Duration::from_secs(5), || {
         listener.heard() >= Duration::from_millis(2_500)
     });
+}
+
+#[test]
+fn a_live_hls_station_with_fmp4_segments_plays() {
+    let server = station();
+    let stream = Stream::open_with(&server.url("/cmaf.m3u8"), fast());
+    let listener = listen(&stream);
+    wait_for("2.5 s of audio", Duration::from_secs(8), || {
+        listener.heard() >= Duration::from_millis(2_500) || failed(&stream).is_some()
+    });
+    assert_eq!(failed(&stream), None);
+    // The init segment once, however many fragments follow it.
+    assert_eq!(server.hits("/init.mp4"), 1);
+}
+
+#[test]
+fn an_fmp4_station_is_heard_as_the_tone() {
+    let server = station();
+    let stream = Stream::open(&server.url("/cmaf.m3u8"));
+    wait_for("Playing", Duration::from_secs(5), || {
+        playing(&stream) || failed(&stream).is_some()
+    });
+    assert_eq!(failed(&stream), None);
+    let level = rms(&drain(&stream));
+    assert!(level > 0.1, "rms {level}");
+}
+
+#[test]
+fn a_master_with_only_video_variants_plays_its_default_audio_rendition() {
+    let server = station();
+    let stream = Stream::open(&server.url("/renditions.m3u8"));
+    wait_for("Playing", Duration::from_secs(5), || playing(&stream));
+    assert_eq!(server.hits("/tv.m3u8"), 0);
+    assert_eq!(server.hits("/tv-low.m3u8"), 0);
+    assert_eq!(server.hits("/commentary.m3u8"), 0);
 }
