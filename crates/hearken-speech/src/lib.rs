@@ -87,6 +87,11 @@ pub use spoken::{terse_silent, SpokenMessage};
 pub use threaded::ThreadedSpeech;
 pub use verbosity::{Category, Level, NoCategory, Rule, Verbosity};
 
+/// The Prism binding itself, at the version this crate links, for a game's
+/// own live tests that talk to a backend directly. A game needs no `prismer`
+/// dependency of its own, so there is never a second copy to link.
+pub use prismer;
+
 /// Seconds between runtime health checks of the speech backend. Short enough
 /// that a player who switches screen readers hears the game again within a few
 /// seconds, long enough that the registry scan costs nothing per frame.

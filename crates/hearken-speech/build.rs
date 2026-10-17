@@ -35,9 +35,11 @@ fn prism_link_args() -> Vec<String> {
 ///
 /// prism-sys names these for Windows only, and a static library leaves them
 /// to the final link. macOS: the frameworks its CMake links (AVSpeech,
-/// VoiceOver, power management). Linux: whichever of speech-dispatcher and
-/// glibmm and giomm (Orca) pkg-config finds -- the same test Prism's CMake used to
-/// decide whether to build those backends at all.
+/// VoiceOver, power management). Linux: glibmm and giomm (Orca) when
+/// pkg-config finds them -- the same test Prism's CMake uses to decide
+/// whether to build that backend. Speech Dispatcher is not linked: Prism
+/// opens it at run time (dlopen, since Prism 0.18.3), so a machine without
+/// it still starts.
 fn link_prism_system_libraries() {
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if os == "linux" || os == "macos" {
@@ -68,7 +70,7 @@ fn link_prism_system_libraries() {
         }
         Ok("linux") => {
             link_libstdcxx_statically();
-            for module in ["speech-dispatcher", "glibmm-2.68", "giomm-2.68"] {
+            for module in ["glibmm-2.68", "giomm-2.68"] {
                 let Ok(out) = std::process::Command::new("pkg-config")
                     .args(["--libs", module])
                     .output()
