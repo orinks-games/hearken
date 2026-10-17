@@ -11,8 +11,10 @@ authors.workspace = true
 links = "hearken"
 
 [features]
-default = ["kira"]
+default = ["kira", "testing"]
 kira = ["hearken-app/kira"]
+# `hearken::Headless` and `hearken::testing`, for a game's own tests.
+testing = ["hearken-app/testing"]
 # Internet radio: `hearken::radio::Stream`.
 radio = ["dep:hearken-radio"]
 # HE-AAC for radio, through Fraunhofer's FDK AAC; read the README's licence notes first.
