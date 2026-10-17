@@ -53,9 +53,14 @@ pub struct ClipInfo {
 /// that its packed sounds will play, or a quick look at a clip's length.
 pub fn probe_clip(bytes: Arc<[u8]>) -> Result<ClipInfo, String> {
     let mut clip = ClipDecoder::open(bytes).map_err(|err| err.to_string())?;
-    let first = clip.next_chunk().map_err(|err| err.to_string())?;
-    if first.is_none_or(|frames| frames.is_empty()) {
-        return Err("no audio".into());
+    // A codec may hand back nothing for its first packets (Vorbis primes
+    // its window on the first), so read on until a chunk has frames.
+    loop {
+        match clip.next_chunk().map_err(|err| err.to_string())? {
+            Some(frames) if !frames.is_empty() => break,
+            Some(_) => continue,
+            None => return Err("no audio".into()),
+        }
     }
     let rate = clip.sample_rate;
     Ok(ClipInfo {

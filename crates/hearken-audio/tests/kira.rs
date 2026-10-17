@@ -986,6 +986,11 @@ fn a_clip_is_probed_without_a_device() {
     assert_eq!(info.sample_rate, 48_000);
     let length = info.length_s.expect("Ogg knows its length");
     assert!((length - 1.0).abs() < 0.05, "{length}");
+    // Vorbis decodes nothing from its first packet; the probe reads on.
+    let vorbis = include_bytes!("../../hearken-radio/tests/fixtures/first.ogg");
+    let info = probe_clip(Arc::from(&vorbis[..])).expect("the Vorbis tone decodes");
+    let length = info.length_s.expect("Ogg knows its length");
+    assert!((length - 1.0).abs() < 0.05, "{length}");
     let err = probe_clip(Arc::from(&b"not audio at all"[..])).unwrap_err();
     assert!(!err.is_empty());
 }
