@@ -979,3 +979,13 @@ fn a_long_opus_started_part_way_plays_only_what_is_left() {
         "3 s + 2 s is past the 4.5 s clip's end"
     );
 }
+
+#[test]
+fn a_clip_is_probed_without_a_device() {
+    let info = probe_clip(OPUS.into()).expect("the tone decodes");
+    assert_eq!(info.sample_rate, 48_000);
+    let length = info.length_s.expect("Ogg knows its length");
+    assert!((length - 1.0).abs() < 0.05, "{length}");
+    let err = probe_clip(Arc::from(&b"not audio at all"[..])).unwrap_err();
+    assert!(!err.is_empty());
+}

@@ -24,6 +24,8 @@ mod types;
 pub use self::kira::{GainCurve, KiraBackend, PanLaw};
 pub use backend::{Backend, BackendError, Channel, Source};
 pub use clips::{ClipSource, LayeredClips, LooseClips, MadeClips, MemoryClips};
+#[cfg(feature = "kira")]
+pub use decode::{probe_clip, ClipInfo};
 pub use feed::{Feed, FeedRead};
 pub use open::{NO_SOUND_NOTICE, SHUTDOWN_WAIT};
 pub use pool::{Audio, Fades, LiveSound, PlayError, Sound};

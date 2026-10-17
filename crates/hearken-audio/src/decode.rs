@@ -40,6 +40,30 @@ pub(crate) struct LoopPoints {
     pub(crate) end: Option<usize>,
 }
 
+/// What a clip decodes to: its rate, and its length where the file says.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipInfo {
+    pub sample_rate: u32,
+    /// Seconds, when the container knows its frame count up front.
+    pub length_s: Option<f64>,
+}
+
+/// Opens `bytes` with the codecs the Kira backend plays through and decodes
+/// their first packet of audio, without a device: a game's start-up check
+/// that its packed sounds will play, or a quick look at a clip's length.
+pub fn probe_clip(bytes: Arc<[u8]>) -> Result<ClipInfo, String> {
+    let mut clip = ClipDecoder::open(bytes).map_err(|err| err.to_string())?;
+    let first = clip.next_chunk().map_err(|err| err.to_string())?;
+    if first.is_none_or(|frames| frames.is_empty()) {
+        return Err("no audio".into());
+    }
+    let rate = clip.sample_rate;
+    Ok(ClipInfo {
+        sample_rate: rate,
+        length_s: clip.num_frames.map(|n| n as f64 / f64::from(rate)),
+    })
+}
+
 /// Decodes a whole clip into memory, with any loop points its file carries.
 pub(crate) fn decode_whole(
     bytes: Arc<[u8]>,
