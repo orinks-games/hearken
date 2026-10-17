@@ -246,3 +246,39 @@ fn live_configure_clamps_nothing_and_sapi_lists_voices() {
     assert!(speech.available());
     speech.shutdown();
 }
+
+/// The backends Prism must register on this platform: the ones each
+/// platform's players rely on, and the proof that the static link kept
+/// them. Each backend registers itself from its own object, so a link that
+/// dropped those objects, or a framework missing from build.rs, shows up
+/// here as a missing name rather than as a mute game on a player's machine.
+fn expected_backends() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["NVDA", "JAWS", "SAPI", "OneCore", "UIA"]
+    } else if cfg!(target_os = "macos") {
+        &["VoiceOver", "AVSpeech"]
+    } else {
+        // Speech Dispatcher and Orca are built only when their development
+        // packages are installed, so a Linux build promises none by name.
+        &[]
+    }
+}
+
+#[test]
+fn prism_registers_this_platforms_backends() {
+    // Names only: nothing is acquired or spoken, so this runs even where
+    // speech is disabled, which is what lets CI prove the link.
+    let _guard = LIVE_PRISM.lock().unwrap_or_else(|e| e.into_inner());
+    let ctx = PrismRegistry::new().expect("Prism starts");
+    let names: Vec<String> = (0..ctx.backend_count())
+        .filter_map(|index| ctx.id_at(index))
+        .filter_map(|id| ctx.name_of(id))
+        .collect();
+    eprintln!("prism backends: {names:?}");
+    for wanted in expected_backends() {
+        assert!(
+            names.iter().any(|name| name == wanted),
+            "Prism did not register {wanted}; registered: {names:?}"
+        );
+    }
+}
