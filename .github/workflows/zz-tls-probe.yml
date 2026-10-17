@@ -1,5 +1,8 @@
 name: TLS probe (temporary)
-on: workflow_dispatch
+on:
+  push:
+    branches: [claude/project-thread-4c14dx]
+    paths: [.github/workflows/zz-tls-probe.yml]
 jobs:
   probe:
     strategy:
