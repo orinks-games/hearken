@@ -345,9 +345,22 @@ impl Audio {
     /// looping until stopped, as an ordinary sound: bus volume, the duck,
     /// pause, fades, position and occlusion all apply.
     pub fn start_feed(&mut self, feed: Arc<dyn Feed>, pos: Option<Vec3>, bus: Bus) -> Sound {
+        self.start_feed_at_volume(feed, pos, bus, 1.0)
+    }
+
+    /// [`start_feed`](Self::start_feed) at a starting `volume` (0..1)
+    /// instead of `1.0`: a station that should fade in from silence starts
+    /// silent, rather than being turned down after it has started.
+    pub fn start_feed_at_volume(
+        &mut self,
+        feed: Arc<dyn Feed>,
+        pos: Option<Vec3>,
+        bus: Bus,
+        volume: f32,
+    ) -> Sound {
         let live = Live {
             feed: Some(feed.clone()),
-            ..Live::new("feed", pos, bus, true, 1.0)
+            ..Live::new("feed", pos, bus, true, volume.clamp(0.0, 1.0))
         };
         self.launch(Source::Feed(feed), live)
     }
