@@ -356,3 +356,102 @@ fn a_screen_can_take_the_f1_press_itself() {
     h.press(Key::F1);
     assert_eq!(h.spoken(), ["short help", "the full list"]);
 }
+
+/// A sink whose quit-time release pumps the window once, the way a voice
+/// still finishing its last line does, and records that it was asked.
+#[derive(Default)]
+struct PumpedQuit {
+    pumped: Rc<RefCell<bool>>,
+}
+
+impl hearken_speech::SpeechSink for PumpedQuit {
+    fn say(&mut self, _text: &str, _interrupt: bool) {}
+    fn say_event(&mut self, _text: &str, _interrupt: bool) {}
+    fn stop_main(&mut self) {}
+    fn stop_event(&mut self) {}
+    fn stop(&mut self) {}
+    fn poll(&mut self, _dt: f64) {}
+    fn request_refresh(&mut self) {}
+    fn available(&self) -> bool {
+        false
+    }
+    fn backend_name(&self) -> String {
+        "none".into()
+    }
+    fn has_separate_event_voice(&self) -> bool {
+        false
+    }
+    fn event_backend_name(&self) -> String {
+        "none".into()
+    }
+    fn supports_rate(&self) -> bool {
+        false
+    }
+    fn supports_pitch(&self) -> bool {
+        false
+    }
+    fn supports_volume(&self) -> bool {
+        false
+    }
+    fn event_supports_rate(&self) -> bool {
+        false
+    }
+    fn event_backend_options(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn select_event_backend(&mut self, _name: Option<&str>) {}
+    fn voice_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn configure(
+        &mut self,
+        _rate: Option<f64>,
+        _pitch: Option<f64>,
+        _volume: Option<f64>,
+        _voice: Option<&str>,
+    ) {
+    }
+    fn set_braille_only(&mut self, _on: bool) {}
+    fn supports_braille(&self) -> bool {
+        false
+    }
+    fn say_adjustment_preview(&mut self, _setting: &str, _text: &str, _interrupt: bool) -> bool {
+        false
+    }
+    fn refresh(&mut self) -> bool {
+        false
+    }
+    fn shutdown(&mut self) {
+        panic!("quit must release speech through shutdown_pumping");
+    }
+    fn shutdown_pumping(&mut self, pump: &mut dyn FnMut()) {
+        pump();
+        *self.pumped.borrow_mut() = true;
+    }
+}
+
+/// Quit lets the line in flight finish while the window keeps answering
+/// the OS: `run` releases speech through `shutdown_pumping`, and the pump
+/// it hands over drains the shell's events.
+#[test]
+fn run_releases_speech_while_pumping_the_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = PumpedQuit::default();
+    let pumped = sink.pumped.clone();
+    let ctx: Ctx<TestGame> = Ctx::new(
+        Box::new(sink),
+        Settings::default(),
+        Paths::at(dir.path()),
+        TestData::default(),
+    );
+    let mut app = App::new(
+        ctx,
+        Box::new(Probe::new("root").on_return(|ctx| ctx.quit())),
+    );
+    let mut shell = HeadlessShell::new();
+    shell.push(InputEvent::key(Key::Return));
+    shell.push(InputEvent::key(Key::Space));
+    app.run(&mut shell);
+    assert!(*pumped.borrow());
+    assert!(shell.queued.is_empty(), "the pump never polled the shell");
+}
