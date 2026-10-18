@@ -38,6 +38,7 @@ use crate::backend::{Backend, BackendError, Channel, Source};
 use crate::decode::{self, LoopPoints};
 use crate::feed::Feed;
 use crate::types::{LoopRegion, Mix, Ramps};
+use crate::voicing::{CabSpeakersDsp, Insert};
 
 /// How many sounds can play at once: one Kira sub-track each.
 const CHANNELS: usize = 512;
@@ -434,28 +435,17 @@ impl Effect for Amp {
     }
 }
 
-impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
-    fn name(&self) -> String {
-        "Kira".to_string()
-    }
-
-    fn play(
-        &mut self,
-        key: &str,
-        source: Source,
-        looping: bool,
-        mix: Mix,
-    ) -> Result<Channel, BackendError> {
-        self.play_from(key, source, looping, mix, 0.0)
-    }
-
-    fn play_from(
+impl<B: kira::backend::Backend> KiraBackend<B> {
+    /// A channel of its own for `source`: a sub-track carrying `insert`
+    /// first, if there is one, then the low-pass, the panner and the gain.
+    fn start_channel(
         &mut self,
         _key: &str,
         source: Source,
         looping: bool,
         mix: Mix,
         from_s: f64,
+        insert: Option<&Insert>,
     ) -> Result<Channel, BackendError> {
         let (curve, law) = (self.curve, self.law);
         let manager = self
@@ -473,6 +463,9 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
             } else {
                 decibels(mix.gain)
             });
+        if let Some(insert) = insert {
+            builder.add_built_effect(insert_effect(insert));
+        }
         let filter = builder.add_effect(
             FilterBuilder::new()
                 .cutoff(cutoff)
@@ -535,6 +528,68 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
             },
         );
         Ok(channel)
+    }
+}
+
+/// An [`Insert`] as a Kira effect, first on the channel's track: the
+/// sound's own character, before the game's filter, pan and gain.
+struct InsertEffect(CabSpeakersDsp);
+
+impl Effect for InsertEffect {
+    fn process(&mut self, input: &mut [Frame], dt: f64, _info: &Info) {
+        if !self.0.begin((1.0 / dt) as f32) {
+            return;
+        }
+        for frame in input {
+            let (left, right) = self.0.frame(frame.left, frame.right);
+            frame.left = left;
+            frame.right = right;
+        }
+    }
+}
+
+fn insert_effect(insert: &Insert) -> Box<dyn Effect> {
+    match insert {
+        Insert::CabSpeakers(cab) => Box::new(InsertEffect(cab.processor())),
+    }
+}
+
+impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
+    fn name(&self) -> String {
+        "Kira".to_string()
+    }
+
+    fn play(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+    ) -> Result<Channel, BackendError> {
+        self.play_from(key, source, looping, mix, 0.0)
+    }
+
+    fn play_from(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+    ) -> Result<Channel, BackendError> {
+        self.start_channel(key, source, looping, mix, from_s, None)
+    }
+
+    fn play_inserted(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+        insert: &Insert,
+    ) -> Result<Channel, BackendError> {
+        self.start_channel(key, source, looping, mix, from_s, Some(insert))
     }
 
     fn set_mix(&mut self, channel: Channel, mix: Mix, ramp_ms: u32) {

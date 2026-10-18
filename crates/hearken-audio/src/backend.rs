@@ -2,6 +2,7 @@
 
 use crate::feed::Feed;
 use crate::types::{LoopRegion, Mix, Ramps};
+use crate::voicing::Insert;
 use std::fmt;
 
 /// An opaque, backend-assigned id for one playing sound.
@@ -57,6 +58,22 @@ pub trait Backend: Send {
     ) -> Result<Channel, BackendError> {
         let _ = from_s;
         self.play(key, source, looping, mix)
+    }
+
+    /// Starts `source` as [`Backend::play_from`] does, with `insert`
+    /// processing it before its mix. A backend that cannot run inserts
+    /// plays it unprocessed, which is the default.
+    fn play_inserted(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+        insert: &Insert,
+    ) -> Result<Channel, BackendError> {
+        let _ = insert;
+        self.play_from(key, source, looping, mix, from_s)
     }
 
     /// Changes a playing channel's mix, ramping over `ramp_ms`.

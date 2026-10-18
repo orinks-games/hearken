@@ -6,6 +6,7 @@ use crate::feed::Feed;
 use crate::silent::SilentBackend;
 use crate::spatial::{place, SpatialConfig};
 use crate::types::{Bus, Listener, LoopRegion, Mix, Ramps, Start, Vec3};
+use crate::voicing::Insert;
 use hearken_synth::{builtin_wav, Params, Recipe, Voice};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::Receiver;
@@ -158,6 +159,8 @@ pub(crate) fn slot_mut(slots: &mut [Slot], sound: Sound) -> Option<&mut Live> {
 /// between ducked and unducked depending on which of them last touched it.
 pub(crate) struct Mixing {
     pub(crate) bus_volumes: HashMap<Bus, f32>,
+    /// The insert each sound started on a bus carries.
+    pub(crate) inserts: HashMap<Bus, Insert>,
     pub(crate) duck_level: f32,
     pub(crate) duck_buses: HashSet<Bus>,
 }
@@ -166,6 +169,7 @@ impl Default for Mixing {
     fn default() -> Mixing {
         Mixing {
             bus_volumes: HashMap::new(),
+            inserts: HashMap::new(),
             duck_level: 1.0, // 1.0 is no duck
             duck_buses: HashSet::new(),
         }
@@ -430,9 +434,10 @@ impl Audio {
         looping: bool,
         mix: Mix,
         from_s: f64,
+        bus: Bus,
     ) -> Option<Channel> {
         let is_live = matches!(source, Source::Voice(_) | Source::Feed(_));
-        match self.play_on_backend(key, source, looping, mix, from_s) {
+        match self.play_on_backend(key, source, looping, mix, from_s, bus) {
             Ok(channel) => Some(channel),
             Err(err) => {
                 if is_live {
@@ -445,10 +450,14 @@ impl Audio {
                 if !self.fallback {
                     return None;
                 }
-                match self
-                    .backend
-                    .play(key, Source::Clip(builtin_wav(key)), looping, mix)
-                {
+                match self.play_on_backend(
+                    key,
+                    Source::Clip(builtin_wav(key)),
+                    looping,
+                    mix,
+                    0.0,
+                    bus,
+                ) {
                     Ok(channel) => Some(channel),
                     Err(err) => {
                         log::error!("backend failed to play {key:?}'s default too: {err}");
@@ -459,8 +468,10 @@ impl Audio {
         }
     }
 
-    /// `from_s` past the top goes through [`Backend::play_from`]; from the
-    /// top, through [`Backend::play`], as it always has.
+    /// A sound on a bus with an insert goes through
+    /// [`Backend::play_inserted`]; otherwise `from_s` past the top goes
+    /// through [`Backend::play_from`], and from the top through
+    /// [`Backend::play`], as it always has.
     fn play_on_backend(
         &mut self,
         key: &str,
@@ -468,8 +479,12 @@ impl Audio {
         looping: bool,
         mix: Mix,
         from_s: f64,
+        bus: Bus,
     ) -> Result<Channel, BackendError> {
-        if from_s > 0.0 {
+        if let Some(insert) = self.mixing.inserts.get(&bus) {
+            self.backend
+                .play_inserted(key, source, looping, mix, from_s.max(0.0), insert)
+        } else if from_s > 0.0 {
             self.backend.play_from(key, source, looping, mix, from_s)
         } else {
             self.backend.play(key, source, looping, mix)
@@ -534,7 +549,7 @@ impl Audio {
         let live = self.live_for(key, Some(bytes.clone()), bus, start);
         let mix = self.mix_of(&live);
         let from_s = offset(start);
-        match self.play_on_backend(key, Source::Clip(bytes), live.looping, mix, from_s) {
+        match self.play_on_backend(key, Source::Clip(bytes), live.looping, mix, from_s, bus) {
             Ok(channel) => Ok(self.adopt(live, channel, mix, start)),
             Err(err) => {
                 if self.note_missing(key) {
@@ -596,7 +611,7 @@ impl Audio {
         let live = self.live_for(key, keep.then(|| bytes.clone()), bus, start);
         let mix = self.mix_of(&live);
         let from_s = offset(start);
-        match self.play_with_fallback(key, Source::Clip(bytes), live.looping, mix, from_s) {
+        match self.play_with_fallback(key, Source::Clip(bytes), live.looping, mix, from_s, bus) {
             Some(channel) => self.adopt(live, channel, mix, start),
             None => Sound::NONE,
         }
@@ -607,7 +622,7 @@ impl Audio {
     fn launch(&mut self, source: Source, mut live: Live) -> Sound {
         let mix = self.mix_of(&live);
 
-        match self.play_with_fallback(&live.key, source, live.looping, mix, 0.0) {
+        match self.play_with_fallback(&live.key, source, live.looping, mix, 0.0, live.bus) {
             Some(channel) => {
                 live.channel = channel;
                 live.sent = mix;
@@ -795,6 +810,25 @@ impl Audio {
                 })
             })
             .collect()
+    }
+
+    /// Gives every sound started on `bus` from now on `insert` (a radio's
+    /// cab speakers, say), run on its own track before its mix; `None`
+    /// takes it off. Sounds already playing keep what they started with,
+    /// so a game sets this before it starts them. The insert is a shared
+    /// handle: changing it (its amount, a window) reaches every sound that
+    /// carries it at once. A backend that cannot run inserts plays the
+    /// sounds as they are.
+    pub fn set_bus_insert(&mut self, bus: Bus, insert: Option<Insert>) {
+        match insert {
+            Some(insert) => self.mixing.inserts.insert(bus, insert),
+            None => self.mixing.inserts.remove(&bus),
+        };
+    }
+
+    /// The insert sounds started on `bus` carry, if any.
+    pub fn bus_insert(&self, bus: Bus) -> Option<&Insert> {
+        self.mixing.inserts.get(&bus)
     }
 
     /// A bus's volume; `1.0` until set.

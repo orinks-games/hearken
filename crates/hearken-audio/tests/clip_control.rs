@@ -321,3 +321,24 @@ fn a_deferred_open_replays_a_game_clip_loop_with_its_own_bytes() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A bus insert reaches every sound started on that bus, and only those,
+/// until it is taken off.
+#[test]
+fn a_bus_insert_rides_only_the_sounds_started_on_its_bus() {
+    let (mut audio, rec, _registry) = pool();
+    let radio = Bus("radio");
+    let cab = CabSpeakers::new(CabSpeakersParams::default());
+    audio.set_bus_insert(radio, Some(Insert::CabSpeakers(cab)));
+    assert!(audio.bus_insert(radio).is_some());
+
+    audio.play("radio/static", radio);
+    audio.play("sfx/door", Bus::EFFECTS);
+    let channel = |key: &str| rec.channel_of(key).expect("played");
+    assert!(rec.inserted(channel("radio/static")));
+    assert!(!rec.inserted(channel("sfx/door")));
+
+    audio.set_bus_insert(radio, None);
+    audio.play("radio/later", radio);
+    assert!(!rec.inserted(channel("radio/later")));
+}

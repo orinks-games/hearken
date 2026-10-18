@@ -19,6 +19,7 @@ mod silent;
 mod slots;
 mod spatial;
 mod types;
+mod voicing;
 
 #[cfg(feature = "kira")]
 pub use self::kira::{GainCurve, KiraBackend, PanLaw};
@@ -33,3 +34,4 @@ pub use recording::{Call, Recorder, RecordingBackend};
 pub use silent::SilentBackend;
 pub use spatial::{place, Placement, SpatialConfig};
 pub use types::{Bus, Listener, LoopRegion, Mix, Ramps, Start, Vec3};
+pub use voicing::{CabSpeakers, CabSpeakersDsp, CabSpeakersParams, CabTone, Insert, Reflection};
