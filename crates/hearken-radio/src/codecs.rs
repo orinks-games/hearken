@@ -1,6 +1,7 @@
 //! Radio's own codec registry: Symphonia's enabled codecs (with AAC, for
-//! the many AAC stations) and libopus, which Symphonia lacks. Under
-//! `fdk-aac`, FDK AAC decodes AAC instead, adding HE-AAC.
+//! the many AAC stations) and libopus, which Symphonia lacks. On Windows and
+//! macOS the system's AAC decoder takes AAC, adding HE-AAC (see
+//! `system_aac`); under `fdk-aac`, FDK AAC takes it instead.
 
 use std::sync::OnceLock;
 
@@ -16,6 +17,10 @@ pub(crate) fn registry() -> &'static CodecRegistry {
         // takes the codec. At Preferred, FDK wins in either order.
         #[cfg(feature = "fdk-aac")]
         codecs.register_audio_decoder_at_tier::<symphonia_adapter_fdk_aac::AacDecoder>(
+            symphonia::core::common::Tier::Preferred,
+        );
+        #[cfg(all(any(windows, target_os = "macos"), not(feature = "fdk-aac")))]
+        codecs.register_audio_decoder_at_tier::<crate::system_aac::SystemAac>(
             symphonia::core::common::Tier::Preferred,
         );
         codecs.register_audio_decoder::<OpusDecoder>();

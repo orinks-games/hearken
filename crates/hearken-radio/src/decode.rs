@@ -89,7 +89,8 @@ pub(crate) fn pump(
             return Fault::Fatal("unsupported sample rate".into());
         }
         let channels = buffer.num_planes();
-        if channels == 0 {
+        // A decoder priming its output returns no frames yet.
+        if channels == 0 || buffer.frames() == 0 {
             continue;
         }
         buffer.copy_to_vec_interleaved(&mut samples);

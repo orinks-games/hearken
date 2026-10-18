@@ -37,7 +37,11 @@ takes from Hearken, what it keeps, and why.
 - `hearken-synth`: fundsp recipes for live voices and the default sound for
   every category, so a game makes sound with no sound files.
 - `hearken-radio`: internet radio, played as a feed: HTTP and ICY stations,
-  playlists and live HLS, with now-playing titles.
+  playlists and live HLS, with now-playing titles. On Windows and macOS,
+  AAC goes through the system's own decoder (Media Foundation,
+  AudioToolbox), so HE-AAC and HE-AAC v2 stations play in full stereo. On
+  Linux, Symphonia decodes AAC, and an HE-AAC station plays its AAC-LC base
+  layer only: half the bandwidth and, for v2, mono.
 - `template/`: Hello Hearken, the smallest complete game.
 
 ## Features
@@ -46,8 +50,8 @@ takes from Hearken, what it keeps, and why.
 opt-in:
 
 - `radio`: internet radio, as `hearken::radio::Stream`.
-- `fdk-aac`: Fraunhofer's FDK AAC decodes radio's AAC in place of
-  Symphonia's, adding HE-AAC, which Symphonia's does not decode. It turns on
+- `fdk-aac`: Fraunhofer's FDK AAC decodes radio's AAC in place of the
+  system's decoder and Symphonia's, adding HE-AAC on Linux. It turns on
   `radio`. Fraunhofer's licence permits using FDK AAC only under AAC patent
   licences the game holds, and grants none itself: a game without them is
   not licensed to use it at all.
@@ -90,7 +94,11 @@ The opt-in features compile in more, all of it into the game, with no DLLs:
 
 - `radio`: `ureq`, `icy-metadata` and `url` (each MIT or Apache-2.0),
   `m3u8-rs` and `mpeg2ts` (MIT), and Symphonia's AAC decoder (MPL-2.0, as
-  the rest of Symphonia). `ureq`'s TLS is rustls, which is built on `ring`
+  the rest of Symphonia). On Windows and macOS, `windows` or
+  `objc2-audio-toolbox` (each MIT or Apache-2.0) bind the system's AAC
+  decoder, which ships with the operating system: Microsoft and Apple
+  license the AAC patents for it, and the game carries no AAC decoder of
+  its own there. `ureq`'s TLS is rustls, which is built on `ring`
   (Apache-2.0 and ISC) and brings in `rustls-webpki` and `untrusted` (ISC).
   `url` brings in ICU's Unicode data through `idna` (Unicode-3.0).
 - `fdk-aac`: `symphonia-adapter-fdk-aac` ((MIT or Apache-2.0) and MPL-2.0),
