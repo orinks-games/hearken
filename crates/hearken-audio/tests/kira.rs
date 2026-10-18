@@ -994,3 +994,42 @@ fn a_clip_is_probed_without_a_device() {
     let err = probe_clip(Arc::from(&b"not audio at all"[..])).unwrap_err();
     assert!(!err.is_empty());
 }
+
+/// The cab-speaker insert through a real Kira track: clean is the sound
+/// exactly as it plays without the insert, and voiced changes it.
+#[test]
+fn a_cab_speaker_insert_plays_clean_untouched_and_voiced_changed() {
+    let noise: Vec<f32> = (0..RATE as usize)
+        .map(|n| ((n * 7_919 % 1_000) as f32 / 1_000.0 - 0.5) * 0.5)
+        .collect();
+    let mut plain = rig();
+    plain
+        .b
+        .play("radio", clip(&noise), true, Mix::UNITY)
+        .unwrap();
+    let without = plain.render(8_192);
+
+    let cab = CabSpeakers::new(CabSpeakersParams::default());
+    cab.set_amount(0.0, 0);
+    let insert = Insert::CabSpeakers(cab.clone());
+    let mut clean = rig();
+    clean
+        .b
+        .play_inserted("radio", clip(&noise), true, Mix::UNITY, 0.0, &insert)
+        .unwrap();
+    assert_eq!(clean.render(8_192), without);
+
+    cab.set_amount(1.0, 0);
+    let mut voiced = rig();
+    voiced
+        .b
+        .play_inserted("radio", clip(&noise), true, Mix::UNITY, 0.0, &insert)
+        .unwrap();
+    let heard = voiced.render(8_192);
+    assert_ne!(heard, without);
+    // The far (right) speaker is quieter than the near one.
+    let side = |f: fn(&Frame) -> f32| -> f32 {
+        (heard.iter().map(|x| f(x).powi(2)).sum::<f32>() / heard.len() as f32).sqrt()
+    };
+    assert!(side(|f| f.right) < side(|f| f.left));
+}

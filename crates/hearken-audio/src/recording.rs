@@ -59,6 +59,8 @@ struct Inner {
     lengths: HashMap<String, f64>,
     /// The key each channel was started with.
     keys: HashMap<Channel, String>,
+    /// The channels started with an insert.
+    inserted: HashSet<Channel>,
 }
 
 /// A handle to a [`RecordingBackend`]'s recorded calls, for assertions.
@@ -105,6 +107,12 @@ impl Recorder {
             } if c == channel => Some(mix),
             _ => None,
         })
+    }
+
+    /// Whether `channel` was started with an insert
+    /// ([`Backend::play_inserted`]).
+    pub fn inserted(&self, channel: Channel) -> bool {
+        self.with_inner(|inner| inner.inserted.contains(&channel))
     }
 
     /// Whether `channel` is still playing, as the backend would answer.
@@ -182,6 +190,21 @@ impl Backend for RecordingBackend {
         mix: Mix,
     ) -> Result<Channel, BackendError> {
         self.play_from(key, source, looping, mix, 0.0)
+    }
+
+    fn play_inserted(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+        _insert: &crate::voicing::Insert,
+    ) -> Result<Channel, BackendError> {
+        let channel = self.play_from(key, source, looping, mix, from_s)?;
+        self.recorder
+            .with_inner(|inner| inner.inserted.insert(channel));
+        Ok(channel)
     }
 
     fn play_from(
