@@ -660,13 +660,17 @@ dependencies = [
  "log",
  "m3u8-rs",
  "mpeg2ts",
+ "objc2-audio-toolbox",
+ "objc2-core-audio-types",
  "rustls",
  "rustls-platform-verifier",
  "symphonia",
  "symphonia-adapter-fdk-aac",
  "symphonia-adapter-libopus",
+ "symphonia-core",
  "ureq",
  "url",
+ "windows",
 ]
 
 [[package]]

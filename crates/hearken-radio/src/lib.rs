@@ -11,6 +11,8 @@ mod icy;
 mod playlist;
 mod ring;
 mod stream;
+#[cfg(any(windows, target_os = "macos", test))]
+mod system_aac;
 mod title;
 mod worker;
 

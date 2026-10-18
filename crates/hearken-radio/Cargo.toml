@@ -29,3 +29,14 @@ symphonia-adapter-fdk-aac = { workspace = true, optional = true }
 symphonia-adapter-libopus.workspace = true
 ureq.workspace = true
 url.workspace = true
+
+# The system's own AAC decoder, which decodes HE-AAC (see src/system_aac).
+[target.'cfg(windows)'.dependencies]
+# symphonia-core directly: its codec-description macros name it.
+symphonia-core.workspace = true
+windows.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+symphonia-core.workspace = true
+objc2-audio-toolbox.workspace = true
+objc2-core-audio-types.workspace = true

@@ -28,7 +28,12 @@ hearken-radio = { path = "crates/hearken-radio" }
 kira = { version = "0.12", default-features = false, features = ["cpal", "symphonia"] }
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
 symphonia-adapter-libopus = "0.3"
+symphonia-core = "0.6"
 symphonia-adapter-fdk-aac = "0.2"
+# The radio's HE-AAC: Media Foundation on Windows, AudioToolbox on macOS.
+windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com"] }
+objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "AudioConverter", "AudioFormat", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
 ureq = { version = "2.12", default-features = false, features = ["tls", "native-certs"] }
 # The operating system's own certificate check for the radio, as a browser
 # does: Windows and macOS fetch an intermediate a station's server leaves out.
