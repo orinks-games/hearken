@@ -13,11 +13,11 @@ commits.
 ## Games made with Hearken
 
 - **[Freight Fate: Locomotive](https://github.com/orinks-games/Freight-Fate)**,
-  a train-driving game. Freight Fate runs on
-  Hearken's speech, event voice, sound, music, radio and input, under its
-  own screens and menus.
+  a train-driving game. Freight Fate runs on Hearken's speech, event voice,
+  sound, music, radio and input, under its own screens and menus.
 - **[Echo Parlor](https://github.com/orinks-games/echo-parlor)**, a
-  collection of twelve audio games, from fireworks shows to sonar dives.
+  collection of twelve audio games, among them a fireworks show and a
+  submarine you pilot by sonar.
 
 Hearken grew out of Freight Fate and Lucky Break Casino: the parts both
 games needed were pulled out into the engine.
@@ -27,16 +27,16 @@ games needed were pulled out into the engine.
 Every Hearken game has these, without the game writing any of it:
 
 - **Your own screen reader.** Speech and braille go through Prism, which
-  reaches NVDA, JAWS, VoiceOver, Speech Dispatcher, SAPI and more. Hearken picks the one that is
-  actually running. Switch screen readers while you play, and the game
+  reaches NVDA, JAWS, VoiceOver, Speech Dispatcher, SAPI and more. Hearken
+  picks the one that is actually running. Switch screen readers while you play, and the game
   follows within a few seconds instead of going silent. With no screen
   reader on Windows, SAPI voices speak instead.
 - **The same keys everywhere.** Up and Down move through menus, Enter
   chooses and Escape goes back. F1 reads help for the screen you are on, and
   F2 stops speech.
 - **Settings**: speech rate, how much the game says while you play (when
-  the game offers levels for it), a volume for each kind of sound, lowering music and background sound while
-  the game speaks, and whether menus say where you are ("2 of 4").
+  the game offers levels for it), a volume for each kind of sound, lowering
+  music and background sound while the game speaks, and whether menus say where you are ("2 of 4").
 - **Controls you can move.** Any key or controller button the game lets
   you move can go to another one, from Settings. Each change is saved at
   once.
@@ -44,10 +44,10 @@ Every Hearken game has these, without the game writing any of it:
   disconnects.
 - **A help document** read a section at a time, which works before the game
   has saved anything.
-- **Sound that never stops the game.** Without a sound device, the game
-  says so and keeps running. A missing sound file plays a built-in stand-in.
-  Speech runs on its own thread, so a screen reader that hangs costs a
-  sentence, never the game.
+- **A game that keeps running when sound or speech fails.** Without a sound
+  device, the game says so and keeps running. A missing sound file plays a
+  built-in stand-in. Speech runs on its own thread, so a screen reader that
+  hangs loses a sentence instead of freezing the game.
 
 ## What developers get
 
@@ -96,7 +96,7 @@ Some of what that gives a game:
   `.wav`, `.flac`, `.mp3`) in a `sounds` folder next to the game, and plays
   the game's built-in sound when there is no file. Dropping in a recording
   needs no code change.
-- **Tests that hear the game.** `hearken::Headless` runs a game with no
+- **Tests without a window.** `hearken::Headless` runs a game with no
   window, sound or screen reader. Press keys, then check what it said.
 - **Saved settings and logs.** Settings, including the game's own, are
   saved as JSON in the platform's local data folder, next to a session log.
@@ -165,7 +165,7 @@ Copy `template/` to start, or set a game up by hand:
    }
    ```
 
-   Every associated type has a place to grow: `Data` for your game's
+   Fill in the associated types as the game grows: `Data` for your game's
    state, `Settings` for your own saved settings, `Action` for controls the
    player can move, `Event` and `Category` for gameplay events and their
    verbosity. Optional methods add your own sound setup, built-in sounds,
