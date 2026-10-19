@@ -14,6 +14,8 @@ mod audio_toolbox;
 pub(crate) mod config;
 #[cfg(windows)]
 mod mf;
+#[cfg(windows)]
+mod mfplat;
 
 #[cfg(target_os = "macos")]
 use audio_toolbox::Decoder as Platform;

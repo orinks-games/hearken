@@ -6,8 +6,7 @@ use std::mem::ManuallyDrop;
 use windows::core::GUID;
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFMediaType, IMFSample, IMFTransform, MFAudioFormat_AAC, MFAudioFormat_Float,
-    MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Audio, MFShutdown,
-    MFStartup, MFTEnumEx, MFSTARTUP_LITE, MFT_CATEGORY_AUDIO_DECODER, MFT_ENUM_FLAG,
+    MFMediaType_Audio, MFSTARTUP_LITE, MFT_CATEGORY_AUDIO_DECODER, MFT_ENUM_FLAG,
     MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_FLUSH,
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
     MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MF_E_TRANSFORM_NEED_MORE_INPUT,
@@ -17,6 +16,10 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
 
 use super::config::Core;
+// Found at run time, so the game still starts without Media Foundation.
+use super::mfplat::{
+    MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFShutdown, MFStartup, MFTEnumEx,
+};
 
 /// Bytes of an output sample the decoder does not allocate itself: one
 /// HE-AAC frame of 2048 frames in up to 6 channels of f32, with room over.
