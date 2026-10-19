@@ -1,88 +1,284 @@
 # Hearken
 
-Rust crates for audio-first, screen-reader-first games, extracted from
-Freight Fate and Lucky Break Casino. Its first game is Freight Fate:
-Locomotive. Work in progress: this is milestone 1
-of `docs/superpowers/specs/2026-09-26-hearken-engine-design.md`.
+Hearken is a game engine for audio games: games you play by ear, built for
+blind and visually impaired players first. It is written in Rust as a set
+of crates, and a game made with it speaks through the player's screen
+reader, plays positioned 3D sound, and works with the keyboard or a game
+controller from the first menu on.
 
-Freight Fate itself runs on Hearken's services since milestone 6: speech,
-the event-voice pacer, sound, music, the radio and the input types, under
-its own screens and menus.
-`docs/superpowers/notes/2026-10-17-freight-fate-on-hearken.md` says what it
-takes from Hearken, what it keeps, and why.
+Hearken runs on Windows, Linux and macOS. It is young and still changing:
+there is no release on crates.io yet, and its API can change between
+commits.
 
-## What is here
+## Games made with Hearken
 
-- `hearken`: the one dependency for a game; it re-exports the rest.
-- `hearken-app`: the window, the screen stack, spoken menus, settings,
-  help, pause, confirm and text-entry screens, and a headless harness for
-  tests. Closing a screen can leave the one beneath silent
-  (`ctx.pop_quiet()`), hand it a result to speak before its current row
-  instead of its whole announcement (`ctx.pop_with("Route deleted.")`), or
-  go back several screens to a named one (`ctx.pop_to("routes")`, with
-  `pop_to_quiet` and `pop_to_with`). `ConfirmScreen` speaks its question
-  before its options, Escape picks the cancel option, and an option marked
-  `ends_game` quits without the screen beneath speaking. A menu row, and
-  a Settings row through `SettingsRow::value_first`, can read back only its
-  new value on Left and Right. A text field can go without a label
-  (`TextEntryScreen::unlabelled`) and take the game's own instructions.
-- `hearken-speech`: screen reader, braille and text-to-speech output
-  through Prism.
-- `hearken-audio`: a pool of positioned sounds, buses and live voices,
-  played through Kira, which compiles into the game. A looping clip can
-  repeat a region inside its file and play out the rest when released, so
-  a horn is one file with its start, loop and release: the loop points come
-  from a WAV's `smpl` chunk, `LOOPSTART` and `LOOPEND` (or `LOOPLENGTH`)
-  tags in an Ogg, Opus or FLAC file, or `Audio::start_loop_region`.
-- `hearken-synth`: fundsp recipes for live voices and the default sound for
-  every category, so a game makes sound with no sound files.
-- `hearken-radio`: internet radio, played as a feed: HTTP and ICY stations,
-  playlists and live HLS, with now-playing titles. On Windows and macOS,
-  AAC goes through the system's own decoder (Media Foundation,
+- **Freight Fate: Locomotive**, a train-driving game. Freight Fate runs on
+  Hearken's speech, event voice, sound, music, radio and input, under its
+  own screens and menus.
+- **[Echo Parlor](https://github.com/orinks-games/echo-parlor)**, a
+  collection of twelve audio games, from fireworks shows to sonar dives.
+
+Hearken grew out of Freight Fate and Lucky Break Casino: the parts both
+games needed were pulled out into the engine.
+
+## What players get
+
+Every Hearken game has these, without the game writing any of it:
+
+- **Your own screen reader.** Speech and braille go through Prism, which
+  reaches NVDA, JAWS, VoiceOver, Speech Dispatcher, SAPI and more. Hearken picks the one that is
+  actually running. Switch screen readers while you play, and the game
+  follows within a few seconds instead of going silent. With no screen
+  reader on Windows, SAPI voices speak instead.
+- **The same keys everywhere.** Up and Down move through menus, Enter
+  chooses and Escape goes back. F1 reads help for the screen you are on, and
+  F2 stops speech.
+- **Settings**: speech rate, how much the game says while you play (when
+  the game offers levels for it), a volume for each kind of sound, lowering music and background sound while
+  the game speaks, and whether menus say where you are ("2 of 4").
+- **Controls you can move.** Any key or controller button the game lets
+  you move can go to another one, from Settings. Each change is saved at
+  once.
+- **Game controllers**, through SDL2, with a spoken notice when one
+  disconnects.
+- **A help document** read a section at a time, which works before the game
+  has saved anything.
+- **Sound that never stops the game.** Without a sound device, the game
+  says so and keeps running. A missing sound file plays a built-in stand-in.
+  Speech runs on its own thread, so a screen reader that hangs costs a
+  sentence, never the game.
+
+## What developers get
+
+A game depends on one crate, `hearken`, which brings in the rest:
+
+| Crate | What it does |
+|-------|--------------|
+| `hearken` | The one dependency for a game. It re-exports everything below. |
+| `hearken-app` | The window, the screen stack, spoken menus, and ready-made Settings, Help, Pause, Confirm, text-entry and key-binding screens. Includes a headless harness for tests. |
+| `hearken-speech` | Screen reader, braille and text-to-speech output through Prism. Includes an event voice with pacing, priorities and repeat suppression, and a verbosity table the player sets. |
+| `hearken-audio` | A pool of positioned sounds, buses and live voices, played through [Kira](https://github.com/tesselode/kira), which compiles into the game. |
+| `hearken-synth` | Sound made with [fundsp](https://github.com/SamiPerttu/fundsp): built-in menu earcons, a default sound for every category, and recipes for live voices such as engines. A game can make sound with no sound files at all. |
+| `hearken-radio` | Internet radio, played as a sound: HTTP and ICY stations, playlists and live HLS, with now-playing titles. Optional. |
+
+Some of what that gives a game:
+
+- **Screens on a stack.** A game is a set of screens that implement
+  `State`. Push one, pop back, and the screen underneath announces itself
+  again. Closing a screen can also leave the one beneath silent
+  (`ctx.pop_quiet()`), hand it a result to speak first
+  (`ctx.pop_with("Route deleted.")`), or go back to a named screen
+  (`ctx.pop_to("routes")`).
+- **Spoken menus.** A `Menu` builds its rows; Hearken speaks them, plays the
+  earcons and handles the keys. Rows carry their own help for F1.
+- **Remappable actions.** A game lists its controls as an `Action` enum with
+  default keys and controller buttons. `ctx.action_for(event)` and
+  `ctx.action_held(action)` read input through the player's bindings, and
+  `ctx.control_name(action)` says the key the player chose ("the Up arrow").
+- **Gameplay speech that keeps up.** The event voice drops a line the
+  player just heard, speaks a standing warning only when it changes, and
+  lets an important line go ahead of chatter instead of waiting behind it.
+  A game names its own event categories and what each one does at each
+  verbosity level, so a quiet mode can turn chatter into earcons. Speech
+  can also go to the braille display alone.
+- **3D sound.** Sounds play at a position around a listener with a heading,
+  on buses (UI, effects, ambience, music, voice) the player sets volumes
+  for. A game can add buses, muffle sounds behind walls through
+  `Game::occluded`, and put effects such as cab speakers on a bus.
+- **Loops with a start and a release.** A looping clip can repeat a region
+  inside its file and play out the rest when released, so a horn is one
+  file. The loop points come from a WAV's `smpl` chunk, `LOOPSTART` and
+  `LOOPEND` (or `LOOPLENGTH`) tags in Ogg, Opus or FLAC files, or
+  `Audio::start_loop_region`.
+- **Sound files that replace built-in sounds.** Sounds are named by key,
+  such as `sfx/beacon`. Hearken looks for `sfx/beacon.ogg` (or `.opus`,
+  `.wav`, `.flac`, `.mp3`) in a `sounds` folder next to the game, and plays
+  the game's built-in sound when there is no file. Dropping in a recording
+  needs no code change.
+- **Tests that hear the game.** `hearken::Headless` runs a game with no
+  window, sound or screen reader. Press keys, then check what it said.
+- **Saved settings and logs.** Settings, including the game's own, are
+  saved as JSON in the platform's local data folder, next to a session log.
+  The log can also carry a transcript of everything the game said.
+
+## Getting started
+
+### Build the template game
+
+The repository includes Hello Hearken (`template/`), the smallest complete
+game: a title menu, settings, help, and a practice room with a beacon that
+circles you and an engine you can rev.
+
+1. Install Rust with [rustup](https://rustup.rs). `rust-toolchain.toml`
+   picks the compiler version.
+2. Install CMake 3.24 or newer and a C++23 compiler (Visual Studio 2022 on
+   Windows). Prism, SDL2 and libopus, the Opus decoder, are compiled from
+   source the first time you build. To skip Prism's build, set
+   `PRISM_LIB_DIR` to a folder holding a prebuilt Prism library.
+3. On Linux, install the development files for ALSA (`libasound2-dev` on
+   Debian and Ubuntu), Speech Dispatcher (`libspeechd-dev`), and SDL2's
+   desktop backends. Prism will not build without at least one Linux speech
+   backend. `.github/actions/linux-deps/action.yml` lists every package CI
+   installs on Ubuntu.
+4. Turn your screen reader on, then run:
+
+   ```sh
+   cargo run -p hello-hearken
+   ```
+
+### Make your own game
+
+Copy `template/` to start, or set a game up by hand:
+
+1. Add Hearken to your game's `Cargo.toml`:
+
+   ```toml
+   [dependencies]
+   hearken = { git = "https://github.com/orinks-games/hearken", branch = "main" }
+   ```
+
+   `hearken` must be a direct dependency: the build script below can only
+   read link arguments from a direct dependency.
+
+2. Copy `template/build.rs` into your game and set `build = "build.rs"` in
+   `[package]`. It passes on the link arguments that `hearken-speech` works
+   out for Prism. There are none since Prism 0.1.4, but the build script
+   means a future one reaches your game with no change to it.
+
+3. Describe your game by implementing `hearken::Game`:
+
+   ```rust
+   pub struct MyGame;
+
+   impl hearken::Game for MyGame {
+       const TITLE: &'static str = "My Game";
+       // The folder that holds settings and logs.
+       const DATA_DIR: &'static str = "MyGame";
+       // Names the environment overrides, such as MY_GAME_NO_SPEECH.
+       const ENV_PREFIX: &'static str = "MY_GAME";
+       type Event = ();
+       type Data = ();
+       type Settings = ();
+       type Action = hearken::NoAction;
+       type Category = hearken::NoCategory;
+   }
+   ```
+
+   Every associated type has a place to grow: `Data` for your game's
+   state, `Settings` for your own saved settings, `Action` for controls the
+   player can move, `Event` and `Category` for gameplay events and their
+   verbosity. Optional methods add your own sound setup, built-in sounds,
+   occlusion and Settings rows.
+
+4. Start it from `main`, with the first screen:
+
+   ```rust
+   fn main() {
+       std::process::exit(hearken::run::<MyGame>((), || Box::new(Title::new())));
+   }
+   ```
+
+5. Write screens. A screen implements `hearken::State`, and only `name`
+   and `help` are required:
+
+   ```rust
+   use hearken::{Ctx, InputEvent, Key, State};
+
+   struct Room;
+
+   impl State<MyGame> for Room {
+       fn name(&self) -> &'static str {
+           "room"
+       }
+
+       fn enter(&mut self, ctx: &mut Ctx<MyGame>) {
+           ctx.say("A quiet room. Space plays a sound.");
+       }
+
+       fn handle_input(&mut self, ctx: &mut Ctx<MyGame>, event: &InputEvent) {
+           if event.pressed() == Some(Key::Space) {
+               ctx.audio.play("sfx/beacon", hearken::Bus::EFFECTS);
+           }
+       }
+
+       fn help(&self, _ctx: &Ctx<MyGame>) -> String {
+           "Space plays a sound. Escape goes back.".into()
+       }
+   }
+   ```
+
+   For menus, implement `hearken::menu::Menu` instead, as `template/src/title.rs`
+   does. `hearken::screens` has the ready-made Settings, Help, Pause and
+   Confirm screens to push from them.
+
+6. Test it without a window. With a title menu like the template's:
+
+   ```rust
+   use hearken::{Headless, Key};
+
+   #[test]
+   fn the_title_announces_itself() {
+       let mut h = Headless::<MyGame>::new((), Title::new());
+       assert_eq!(h.spoken(), ["My Game.", "Play. 1 of 4."]);
+       h.press(Key::Return);
+       assert_eq!(h.app.top_name(), "room");
+   }
+   ```
+
+`template/src/` shows the rest in a few short files: remappable actions in
+`lib.rs`, a menu in `title.rs`, positioned sound and a pause menu in
+`practice.rs`, and a synthesized engine voice in `sound.rs`.
+`template/tests/walkthrough.rs` plays through the game in tests.
+
+### Environment overrides
+
+Each game's `ENV_PREFIX` names a set of environment variables, so two games
+on one machine never share them. For a prefix of `MY_GAME`:
+
+| Variable | Effect |
+|----------|--------|
+| `MY_GAME_DATA_DIR` | Keep settings and logs in this folder instead. |
+| `MY_GAME_SOUNDS` | Load sound files from this folder. |
+| `MY_GAME_LOG`, `MY_GAME_LOG_FILE` | Set the log level and where the log goes. |
+| `MY_GAME_NO_SPEECH` | Turn speech off, for test runs. |
+| `MY_GAME_SPEECH_BACKEND` | Speak through this Prism backend only. |
+| `MY_GAME_STREAM_TRANSCRIPT` | Print each spoken line to standard output. |
+| `MY_GAME_AUDIO_BACKEND` | `silent` turns sound off. |
+
+## Optional features
+
+`hearken`'s `kira` feature, which plays sound, and `testing`, which provides
+`Headless`, are on by default. These are opt-in:
+
+- `radio`: internet radio, as `hearken::radio::Stream`. On Windows and
+  macOS, AAC goes through the system's own decoder (Media Foundation,
   AudioToolbox), so HE-AAC and HE-AAC v2 stations play in full stereo. On
   Linux, Symphonia decodes AAC, and an HE-AAC station plays its AAC-LC base
   layer only: half the bandwidth and, for v2, mono.
-- `template/`: Hello Hearken, the smallest complete game.
-
-## Features
-
-`hearken`'s `kira` feature, which plays sound, is on by default. These are
-opt-in:
-
-- `radio`: internet radio, as `hearken::radio::Stream`.
 - `fdk-aac`: Fraunhofer's FDK AAC decodes radio's AAC in place of the
   system's decoder and Symphonia's, adding HE-AAC on Linux. It turns on
   `radio`. Fraunhofer's licence permits using FDK AAC only under AAC patent
   licences the game holds, and grants none itself: a game without them is
-  not licensed to use it at all.
+  not licensed to use it at all. Read the licence notes below first.
 
-## Building
+## Working on Hearken
 
-1. Install Rust with rustup; `rust-toolchain.toml` picks the version.
-2. Install CMake 3.24 or newer and a C++23 compiler (Visual Studio 2022 on
-   Windows). Prism and libopus, the Opus decoder, are compiled from source
-   the first time. To skip Prism's build, set `PRISM_LIB_DIR` to a folder
-   holding a prebuilt Prism library.
-3. On Linux, install ALSA's development files (`libasound2-dev` on Debian
-   and Ubuntu), which Kira's sound output builds against, and
-   speech-dispatcher's (`libspeechd-dev`): Prism will not build without at
-   least one Linux speech backend.
-4. `cargo run -p hello-hearken` starts the template game. Turn your screen
-   reader on first; without one, Windows' SAPI voices speak instead.
+`cargo test --workspace` runs every crate's tests and the template's
+walkthrough. CI also runs `cargo fmt --all --check` and
+`cargo clippy --workspace --all-targets -- -D warnings` on Windows and
+Linux for every pull request, and on macOS for release tags. Set
+`HEARKEN_TEST_NO_SPEECH=1` to run the tests without a screen reader.
 
-Every game needs a `build.rs` like `template/build.rs`. It passes on the link
-arguments hearken-speech works out for Prism. Since Prism 0.1.4 there are
-none (Prism loads the screen reader DLLs at run time, so a game still starts
-on a machine that lacks some of them), but the build.rs keeps any future
-argument reaching the game with no change to it. The game must list `hearken` as a
-direct dependency, which is all it needs: Cargo hands a build script those
-arguments only from a direct dependency, and `hearken` passes them on.
+The design and the notes behind it are in `docs/superpowers/`: the engine
+design in `specs/2026-09-26-hearken-engine-design.md`, and what Freight
+Fate takes from Hearken in `notes/2026-10-17-freight-fate-on-hearken.md`.
 
 ## Licence
 
-MIT or Apache-2.0, at your option. Prism's screen reader clients keep their
-own licences. Two decoders compile into every game with sound, and its
-credits or licence notes carry what they ask:
+Hearken is licensed under either of [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE), at your option. Prism's screen reader clients
+keep their own licences. Two decoders compile into every game with sound,
+and the game's credits or licence notes carry what they ask:
 
 - Symphonia (MPL-2.0): where its source is, when shipped unchanged.
 - libopus (BSD-3-Clause): its copyright notice and licence text, from
@@ -107,7 +303,7 @@ The opt-in features compile in more, all of it into the game, with no DLLs:
   complete text with its credits or licence notes and to make the FDK AAC
   source available free of charge to anyone who gets the game. It permits
   use only under AAC patent licences the game holds, and grants none: see
-  Features.
+  Optional features.
 
 These lists name the notable licences, not every crate's. `cargo about`
 builds the complete notice for what a game actually compiles in.
