@@ -12,7 +12,8 @@ commits.
 
 ## Games made with Hearken
 
-- **Freight Fate: Locomotive**, a train-driving game. Freight Fate runs on
+- **[Freight Fate: Locomotive](https://github.com/orinks-games/Freight-Fate)**,
+  a train-driving game. Freight Fate runs on
   Hearken's speech, event voice, sound, music, radio and input, under its
   own screens and menus.
 - **[Echo Parlor](https://github.com/orinks-games/echo-parlor)**, a
