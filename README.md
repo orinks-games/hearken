@@ -10,18 +10,6 @@ Hearken runs on Windows, Linux and macOS. It is young and still changing:
 there is no release on crates.io yet, and its API can change between
 commits.
 
-## Games made with Hearken
-
-- **[Freight Fate: Locomotive](https://github.com/orinks-games/Freight-Fate)**,
-  a train-driving game. Freight Fate runs on Hearken's speech, event voice,
-  sound, music, radio and input, under its own screens and menus.
-- **[Echo Parlor](https://github.com/orinks-games/echo-parlor)**, a
-  collection of twelve audio games, among them a fireworks show and a
-  submarine you pilot by sonar.
-
-Hearken grew out of Freight Fate and Lucky Break Casino: the parts both
-games needed were pulled out into the engine.
-
 ## What players get
 
 Every Hearken game has these, without the game writing any of it:
@@ -270,9 +258,8 @@ walkthrough. CI also runs `cargo fmt --all --check` and
 Linux for every pull request, and on macOS for release tags. Set
 `HEARKEN_TEST_NO_SPEECH=1` to run the tests without a screen reader.
 
-The design and the notes behind it are in `docs/superpowers/`: the engine
-design in `specs/2026-09-26-hearken-engine-design.md`, and what Freight
-Fate takes from Hearken in `notes/2026-10-17-freight-fate-on-hearken.md`.
+The engine's design and the notes behind it are in `docs/superpowers/`,
+starting with `specs/2026-09-26-hearken-engine-design.md`.
 
 ## Licence
 
