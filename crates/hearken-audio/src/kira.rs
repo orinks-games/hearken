@@ -11,8 +11,9 @@
 //! resampling step. Every stop ends with the channel's track handle dropped,
 //! which removes the track and the sound on it.
 //!
-//! Dropping a `KiraBackend` without [`Backend::shutdown`] is safe: Kira tells
-//! its output thread to stop on drop, without a join.
+//! Dropping a `KiraBackend` without [`Backend::shutdown`] is safe: the device
+//! watcher is told to stop on drop, without a join. The default device is
+//! reopened when it changes or goes away (see [`DeviceBackend`]).
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -30,8 +31,7 @@ use kira::sound::streaming::StreamingSoundHandle;
 use kira::sound::{FromFileError, PlaybackPosition, PlaybackState, Region, Sound, SoundData};
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{
-    AudioManager, AudioManagerSettings, Capacities, Decibels, DefaultBackend, Frame, Panning,
-    Tween, Value,
+    AudioManager, AudioManagerSettings, Capacities, Decibels, Frame, Panning, Tween, Value,
 };
 
 use crate::backend::{Backend, BackendError, Channel, Source};
@@ -39,6 +39,10 @@ use crate::decode::{self, LoopPoints};
 use crate::feed::Feed;
 use crate::types::{LoopRegion, Mix, Ramps};
 use crate::voicing::{CabSpeakersDsp, Insert};
+
+mod device;
+
+pub use device::{DeviceBackend, DeviceError};
 
 /// How many sounds can play at once: one Kira sub-track each.
 const CHANNELS: usize = 512;
@@ -160,7 +164,7 @@ impl Entry {
 }
 
 /// Plays sound through Kira: the default device, or any Kira output.
-pub struct KiraBackend<B: kira::backend::Backend = DefaultBackend> {
+pub struct KiraBackend<B: kira::backend::Backend = DeviceBackend> {
     /// `None` once shut down.
     manager: Option<AudioManager<B>>,
     channels: HashMap<Channel, Entry>,

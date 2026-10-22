@@ -643,9 +643,11 @@ dependencies = [
 name = "hearken-audio"
 version = "0.1.0"
 dependencies = [
+ "cpal",
  "hearken-synth",
  "kira",
  "log",
+ "rtrb",
  "symphonia",
  "symphonia-adapter-libopus",
  "tempfile",

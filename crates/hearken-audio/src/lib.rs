@@ -22,7 +22,7 @@ mod types;
 mod voicing;
 
 #[cfg(feature = "kira")]
-pub use self::kira::{GainCurve, KiraBackend, PanLaw};
+pub use self::kira::{DeviceBackend, DeviceError, GainCurve, KiraBackend, PanLaw};
 pub use backend::{Backend, BackendError, Channel, Source};
 pub use clips::{ClipSource, LayeredClips, LooseClips, MadeClips, MemoryClips};
 #[cfg(feature = "kira")]
