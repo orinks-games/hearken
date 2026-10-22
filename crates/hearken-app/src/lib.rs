@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod bindings;
+pub mod clock;
 pub mod controller;
 pub mod ctx;
 pub mod game;
@@ -27,6 +28,7 @@ pub mod text;
 
 pub use app::App;
 pub use bindings::{Action, Chord, KeyBindings, NoAction, PadChord};
+pub use clock::LocalTime;
 pub use controller::{ControllerManager, InputDevice};
 pub use ctx::{Ctx, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
 pub use game::Game;

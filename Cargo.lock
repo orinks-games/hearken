@@ -631,6 +631,7 @@ dependencies = [
  "hearken-audio",
  "hearken-speech",
  "hearken-synth",
+ "libc",
  "log",
  "sdl2",
  "serde",
