@@ -10,11 +10,14 @@ authors.workspace = true
 
 [features]
 default = ["kira"]
-kira = ["dep:kira", "dep:symphonia", "dep:symphonia-adapter-libopus"]
+kira = ["dep:kira", "dep:cpal", "dep:rtrb", "dep:symphonia", "dep:symphonia-adapter-libopus"]
 
 [dependencies]
 hearken-synth.workspace = true
 kira = { workspace = true, optional = true }
+# The output device under Kira, reopened when it changes (see kira/device.rs).
+cpal = { workspace = true, optional = true }
+rtrb = { workspace = true, optional = true }
 log.workspace = true
 # AAC in MP4/M4A and AIFF too, for the music files a player brings.
 symphonia = { workspace = true, optional = true, features = ["aac", "isomp4", "aiff"] }
