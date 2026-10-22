@@ -654,6 +654,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hearken-cli"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "hearken-radio"
 version = "0.1.0"
 dependencies = [
@@ -2225,6 +2234,8 @@ dependencies = [
  "rustls",
  "rustls-native-certs 0.7.3",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]

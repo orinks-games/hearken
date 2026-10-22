@@ -226,13 +226,40 @@ on one machine never share them. For a prefix of `MY_GAME`:
 
 | Variable | Effect |
 |----------|--------|
-| `MY_GAME_DATA_DIR` | Keep settings and logs in this folder instead. |
+| `MY_GAME_DATA_DIR` | Keep settings and logs in this folder instead. A `portable.txt` beside the executable keeps them in a `saves` folder there. |
 | `MY_GAME_SOUNDS` | Load sound files from this folder. |
 | `MY_GAME_LOG`, `MY_GAME_LOG_FILE` | Set the log level and where the log goes. |
 | `MY_GAME_NO_SPEECH` | Turn speech off, for test runs. |
 | `MY_GAME_SPEECH_BACKEND` | Speak through this Prism backend only. |
 | `MY_GAME_STREAM_TRANSCRIPT` | Print each spoken line to standard output. |
 | `MY_GAME_AUDIO_BACKEND` | `silent` turns sound off. |
+
+### Play and release with the hearken command
+
+```sh
+cargo install --git https://github.com/orinks-games/hearken hearken-cli
+```
+
+- `hearken play <game>` starts a game. With Rust installed it pulls the
+  latest source and builds a developer build, agent server included.
+  Without Rust, or with `--download`, it downloads the game's latest
+  release instead. `hearken list` names the games it knows.
+- `hearken release <game>` builds the zip players get, in `dist/`: the
+  executable, the game's files, and on Windows SDL2 and the Visual C++
+  runtime. It leaves out an `agent-server` Cargo feature.
+
+Inside a game's own folder the name can be left out; `hearken play` then
+builds the work in progress as it is. The game's `Cargo.toml` says what a
+release holds:
+
+```toml
+[package.metadata.hearken]
+portable = true                               # saves beside the game
+include = ["sounds", "README.md", "LICENSE"]  # the default
+```
+
+A portable release carries `portable.txt`, so the game keeps its settings,
+saves and log in a `saves` folder beside it instead of the user's folder.
 
 ## Optional features
 
