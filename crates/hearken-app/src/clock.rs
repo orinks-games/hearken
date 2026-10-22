@@ -9,8 +9,23 @@
 //!
 //! Every call fails open: when the time zone can't be read, [`local_now`]
 //! returns `None` and [`now_or_utc`] falls back to UTC.
+//!
+//! # Trusted time
+//!
+//! A player can set their computer's clock to any date, which opens a
+//! dated event early. A game that cares calls [`sync_in_background`] once
+//! at start-up: it asks a public time server (SNTP over UDP, or a web
+//! server's Date header where UDP is blocked) how far the computer's clock
+//! is off, and [`trusted_unix_now`] and
+//! [`trusted_local_now`] add that correction. Offline, or before the
+//! answer arrives, they use the computer's clock and say so through
+//! [`Source`]. What to do about a wrong clock is the game's call.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::Once;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// A moment on the player's wall clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -152,6 +167,202 @@ fn utc_offset_minutes(_unix_seconds: i64) -> Option<i32> {
     None
 }
 
+/// The public time servers [`sync_now`] asks, in order, until one answers.
+pub const TIME_SERVERS: [&str; 3] = [
+    "pool.ntp.org:123",
+    "time.cloudflare.com:123",
+    "time.google.com:123",
+];
+
+/// Web servers whose Date header [`sync_now`] reads when no time server
+/// answers, such as on a network that blocks UDP port 123. Plain HTTP on
+/// port 80: only the header is read, and it needs no TLS.
+pub const WEB_SERVERS: [&str; 2] = ["www.google.com", "www.cloudflare.com"];
+
+/// How long [`sync_now`] waits for each server.
+pub const SERVER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Where a trusted time came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Source {
+    /// The computer's clock, corrected by a time server's answer.
+    Server,
+    /// The computer's clock alone: no server has answered yet.
+    Computer,
+}
+
+/// Seconds to add to the computer's clock to get the server's.
+static SKEW: AtomicI64 = AtomicI64::new(0);
+static SYNCED: AtomicBool = AtomicBool::new(false);
+static STARTED: Once = Once::new();
+
+/// Starts one background check of the computer's clock against the
+/// [`TIME_SERVERS`]; later calls do nothing. Never blocks.
+pub fn sync_in_background() {
+    STARTED.call_once(|| {
+        let spawned = std::thread::Builder::new()
+            .name("hearken-clock-sync".into())
+            .spawn(|| {
+                if sync_now(SERVER_TIMEOUT).is_none() {
+                    log::info!("clock: no time server answered; trusting the computer's clock");
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("clock: could not start the time check: {e}");
+        }
+    });
+}
+
+/// Asks the [`TIME_SERVERS`] in turn, then the [`WEB_SERVERS`], blocking up to `timeout` for each,
+/// and keeps the first answer for [`trusted_unix_now`]. Returns how many
+/// seconds the computer's clock is behind (positive) or ahead (negative).
+pub fn sync_now(timeout: Duration) -> Option<i64> {
+    let skew = TIME_SERVERS
+        .iter()
+        .find_map(|server| query_server(server, timeout))
+        .or_else(|| {
+            WEB_SERVERS
+                .iter()
+                .find_map(|host| query_web_server(host, timeout))
+        })?;
+    SKEW.store(skew, Ordering::Relaxed);
+    SYNCED.store(true, Ordering::Release);
+    log::info!("clock: computer clock is {skew} s off the time server");
+    Some(skew)
+}
+
+/// How far the computer's clock is behind the time server, in seconds,
+/// once one has answered.
+pub fn skew_seconds() -> Option<i64> {
+    SYNCED
+        .load(Ordering::Acquire)
+        .then(|| SKEW.load(Ordering::Relaxed))
+}
+
+/// Seconds since 1970 UTC, corrected by the time server when it has
+/// answered, and where the time came from.
+pub fn trusted_unix_now() -> (i64, Source) {
+    let secs = unix_now().unwrap_or(0);
+    match skew_seconds() {
+        Some(skew) => (secs + skew, Source::Server),
+        None => (secs, Source::Computer),
+    }
+}
+
+/// The player's local time on the trusted clock: the server's moment in
+/// the computer's time zone (UTC when that can't be read).
+pub fn trusted_local_now() -> (LocalTime, Source) {
+    let (secs, source) = trusted_unix_now();
+    let offset = utc_offset_minutes(secs).unwrap_or(0);
+    (LocalTime::from_unix(secs, offset), source)
+}
+
+/// One SNTP exchange (RFC 4330): the server's clock minus ours, in
+/// seconds, or `None` on any failure.
+fn query_server(server: &str, timeout: Duration) -> Option<i64> {
+    let socket = UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    socket.set_read_timeout(Some(timeout)).ok()?;
+    socket.set_write_timeout(Some(timeout)).ok()?;
+    socket.connect(server).ok()?;
+    let mut request = [0u8; 48];
+    // Leap indicator 0, version 4, mode 3 (client).
+    request[0] = 0b00_100_011;
+    socket.send(&request).ok()?;
+    let mut reply = [0u8; 48];
+    let n = socket.recv(&mut reply).ok()?;
+    let server_secs = parse_sntp_reply(&reply[..n])?;
+    let ours = unix_now()?;
+    Some(server_secs - ours)
+}
+
+/// One HTTP HEAD request: the web server's Date header minus our clock,
+/// in seconds, or `None` on any failure.
+fn query_web_server(host: &str, timeout: Duration) -> Option<i64> {
+    let addr = (host, 80).to_socket_addrs().ok()?.next()?;
+    let mut stream = TcpStream::connect_timeout(&addr, timeout).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
+    let request = format!("HEAD / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut head = Vec::new();
+    let mut buf = [0u8; 1024];
+    while head.len() < 16 * 1024 && !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = stream.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        head.extend_from_slice(&buf[..n]);
+    }
+    let text = String::from_utf8_lossy(&head);
+    let date = text.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("date")
+            .then(|| value.trim())
+    })?;
+    let server_secs = parse_http_date(date)?;
+    Some(server_secs - unix_now()?)
+}
+
+/// Seconds since 1970 from an HTTP date, "Thu, 22 Oct 2026 17:49:16 GMT"
+/// (RFC 9110's IMF-fixdate, the only form servers may send).
+pub fn parse_http_date(text: &str) -> Option<i64> {
+    let mut parts = text.split_whitespace();
+    let _weekday = parts.next()?;
+    let day: u32 = parts.next()?.parse().ok()?;
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month_name = parts.next()?;
+    let month = MONTHS.iter().position(|m| *m == month_name)? as u32 + 1;
+    let year: i32 = parts.next()?.parse().ok()?;
+    let mut hms = parts.next()?.splitn(3, ':');
+    let hour: i64 = hms.next()?.parse().ok()?;
+    let minute: i64 = hms.next()?.parse().ok()?;
+    let second: i64 = hms.next()?.parse().ok()?;
+    if parts.next()? != "GMT"
+        || day == 0
+        || day > days_in_month(year, month)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second)
+}
+
+/// Seconds between 1900 (NTP's epoch) and 1970.
+const NTP_TO_UNIX: i64 = 2_208_988_800;
+
+/// The server's transmit time, as seconds since 1970, from an SNTP reply;
+/// `None` for anything but a usable server answer.
+pub fn parse_sntp_reply(reply: &[u8]) -> Option<i64> {
+    if reply.len() < 48 {
+        return None;
+    }
+    let leap = reply[0] >> 6;
+    let mode = reply[0] & 0b111;
+    let stratum = reply[1];
+    // Mode 4 is a server's answer; stratum 0 is a "kiss of death"
+    // (go away), and leap 3 means the server's own clock is not set.
+    if mode != 4 || stratum == 0 || stratum > 15 || leap == 3 {
+        return None;
+    }
+    let secs = u32::from_be_bytes([reply[40], reply[41], reply[42], reply[43]]);
+    if secs == 0 {
+        return None;
+    }
+    // NTP seconds wrap in February 2036: a value with the top bit clear
+    // is in the next era (RFC 4330, section 3).
+    let ntp = if secs & 0x8000_0000 == 0 {
+        i64::from(secs) + (1 << 32)
+    } else {
+        i64::from(secs)
+    };
+    Some(ntp - NTP_TO_UNIX)
+}
+
 /// (year, month, day) of the day `days` after 1970-01-01 (Howard
 /// Hinnant's civil_from_days).
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
@@ -254,5 +465,77 @@ mod tests {
         if let Some(local) = local_now() {
             assert!((-14 * 60..=14 * 60).contains(&local.utc_offset_minutes));
         }
+    }
+
+    fn reply(ntp_secs: u32) -> [u8; 48] {
+        let mut r = [0u8; 48];
+        r[0] = 0b00_100_100; // leap 0, version 4, mode 4
+        r[1] = 2;
+        r[40..44].copy_from_slice(&ntp_secs.to_be_bytes());
+        r
+    }
+
+    #[test]
+    fn sntp_reply_gives_unix_seconds() {
+        // 2026-10-22 00:00 UTC.
+        let unix = days_from_civil(2026, 10, 22) * 86_400;
+        let ntp = (unix + NTP_TO_UNIX) as u32;
+        assert_eq!(parse_sntp_reply(&reply(ntp)), Some(unix));
+    }
+
+    #[test]
+    fn sntp_reply_rolls_over_in_2036() {
+        // 2040-01-01 is past the 2036 wrap, so its NTP seconds are small.
+        let unix = days_from_civil(2040, 1, 1) * 86_400;
+        let ntp = (unix + NTP_TO_UNIX - (1 << 32)) as u32;
+        assert_eq!(parse_sntp_reply(&reply(ntp)), Some(unix));
+    }
+
+    #[test]
+    fn sntp_rejects_what_is_not_an_answer() {
+        let good = reply(3_970_000_000);
+        assert!(parse_sntp_reply(&good).is_some());
+        assert!(parse_sntp_reply(&good[..40]).is_none());
+        let mut kiss = good;
+        kiss[1] = 0;
+        assert!(parse_sntp_reply(&kiss).is_none());
+        let mut client = good;
+        client[0] = 0b00_100_011;
+        assert!(parse_sntp_reply(&client).is_none());
+        let mut unset = good;
+        unset[0] |= 0b11 << 6;
+        assert!(parse_sntp_reply(&unset).is_none());
+        assert!(parse_sntp_reply(&reply(0)).is_none());
+    }
+
+    #[test]
+    fn before_any_answer_the_computer_clock_is_used() {
+        if skew_seconds().is_none() {
+            let (secs, source) = trusted_unix_now();
+            assert_eq!(source, Source::Computer);
+            assert!((secs - unix_now().unwrap()).abs() <= 1);
+        }
+    }
+
+    #[test]
+    fn http_dates() {
+        let t = parse_http_date("Thu, 22 Oct 2026 17:49:16 GMT").unwrap();
+        let at = LocalTime::from_unix(t, 0);
+        assert_eq!((at.year, at.month, at.day), (2026, 10, 22));
+        assert_eq!((at.hour, at.minute), (17, 49));
+        assert_eq!(t % 60, 16);
+        assert!(parse_http_date("Thu, 22 Oct 2026 17:49:16 PST").is_none());
+        assert!(parse_http_date("Sun, 30 Feb 2026 00:00:00 GMT").is_none());
+        assert!(parse_http_date("Thursday, 22-Oct-26 17:49:16 GMT").is_none());
+        assert!(parse_http_date("").is_none());
+    }
+
+    /// Asks the real servers; run with `--ignored` where UDP 123 is open.
+    #[test]
+    #[ignore]
+    fn a_time_server_answers() {
+        let skew = sync_now(SERVER_TIMEOUT).expect("no time server answered");
+        assert!(skew.abs() < 86_400, "computer clock is {skew} s off");
+        assert_eq!(trusted_unix_now().1, Source::Server);
     }
 }
