@@ -127,6 +127,10 @@ impl Project {
         ]
         .map(String::from)
         .to_vec();
+        if !dev {
+            // A release builds exactly the dependencies Cargo.lock pins.
+            args.push("--locked".into());
+        }
         if !dev && self.default_features.iter().any(|f| f == AGENT_SERVER) {
             let keep: Vec<&str> = self
                 .default_features
@@ -215,6 +219,8 @@ mod tests {
     fn a_game_without_an_agent_server_builds_as_it_is() {
         let features = serde_json::json!({ "default": ["kira"] });
         let p = Project::from_metadata(&game(features, serde_json::json!({})), None).unwrap();
-        assert_eq!(p.build_args(false), p.build_args(true));
+        let mut release = p.build_args(false);
+        assert_eq!(release.pop().as_deref(), Some("--locked"));
+        assert_eq!(release, p.build_args(true));
     }
 }
