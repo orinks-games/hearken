@@ -40,6 +40,7 @@ use crate::feed::Feed;
 use crate::types::{LoopRegion, Mix, Ramps};
 use crate::voicing::{CabSpeakersDsp, Insert};
 
+mod capture;
 mod device;
 
 pub use device::{DeviceBackend, DeviceError};
@@ -167,6 +168,8 @@ impl Entry {
 pub struct KiraBackend<B: kira::backend::Backend = DeviceBackend> {
     /// `None` once shut down.
     manager: Option<AudioManager<B>>,
+    /// Records the final mix to a file on request.
+    capture: capture::Capture,
     channels: HashMap<Channel, Entry>,
     /// Channels mid fade-out, and when each one is due to be dropped.
     fading: Vec<(Channel, Instant)>,
@@ -195,9 +198,12 @@ impl KiraBackend {
 impl<B: kira::backend::Backend> KiraBackend<B> {
     /// Starts Kira with explicit settings: another device, other capacities,
     /// or Kira's mock output in tests.
-    pub fn with_settings(settings: AudioManagerSettings<B>) -> Result<Self, B::Error> {
+    pub fn with_settings(mut settings: AudioManagerSettings<B>) -> Result<Self, B::Error> {
+        let (tap, capture) = capture::tap();
+        settings.main_track_builder.add_effect(tap);
         Ok(KiraBackend {
             manager: Some(AudioManager::new(settings)?),
+            capture,
             channels: HashMap::new(),
             fading: Vec::new(),
             next: 1,
@@ -694,7 +700,22 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
         self.channels.retain(|_, entry| entry.alive());
     }
 
+    fn start_capture(&mut self, path: &std::path::Path) -> Result<(), BackendError> {
+        if self.manager.is_none() {
+            return Err(BackendError("the sound device is closed".into()));
+        }
+        self.capture.start(path).map_err(BackendError)
+    }
+
+    fn stop_capture(&mut self) -> Option<Result<std::path::PathBuf, BackendError>> {
+        self.capture.stop().map(|r| r.map_err(BackendError))
+    }
+
     fn shutdown(&mut self) {
+        // A recording in progress keeps what it has.
+        if let Some(Err(e)) = self.capture.stop() {
+            log::warn!("kira: {e}");
+        }
         let Some(manager) = self.manager.take() else {
             return;
         };

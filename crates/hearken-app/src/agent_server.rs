@@ -1,15 +1,29 @@
 //! `--agent-server`: an MCP server inside the real game, so an agent can
 //! play it the way a player does -- keys in, ears out -- while a person
-//! listens. Built only with the `agent-server` feature; `hearken release`
-//! leaves that feature out of the zip players get.
+//! listens. Built only with the `agent-server` feature, which no game gets
+//! unless it asks; `hearken release` leaves that feature out of the zip
+//! players get; and even with it on, only a debug build starts the server.
 //!
 //! The agent gets the real window loop, real time, real speech (heard on
 //! the operator's screen reader) and real sound. Its keys go in as the
 //! window's own key events, before the frame, so they pass every screen's
 //! normal input handling. What it hears is every spoken line (the game's
-//! transcript) and the key of every sound that starts. One inspector tool,
-//! `screen`, reads the top screen's text lines; an agent that needs it to
-//! play has found something a player cannot hear, and that is a finding.
+//! transcript) and every sound that starts, with where it plays. One
+//! inspector tool, `screen`, reads the top screen's text lines; an agent
+//! that needs it to play has found something a player cannot hear, and
+//! that is a finding.
+//!
+//! Tools: `listen`, `screen`, `press` (with `times`, and `settle: 0` to
+//! reply at once for timing-critical play), `hold`, `release`, `wait`,
+//! `wait_for`, `record_start`, `record_stop` and `quit_game`.
+//!
+//! `record_start` keeps a playtest as two files side by side: a WAV of the
+//! final mix, tapped after every bus and effect (Kira backend only; another
+//! backend gets the log alone), and a log, timed from the same start, of
+//! every spoken line, every sound with its position, and every key, the
+//! agent's and any a person pressed. They go where `path` says, or under a
+//! dated name in a `recordings` folder beside the game. `record_stop`
+//! finishes both and replies with their paths; closing the game does too.
 //!
 //! Saves go to a sandbox folder (`agent-sandbox` under the game's data
 //! folder), and the session holds its own single-instance lock, so the
@@ -33,6 +47,8 @@ use crate::bindings::Chord;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
 
+mod record;
+
 /// One `wait` or `wait_for` may hold the game for at most this long.
 const MAX_WAIT_SECONDS: f64 = 300.0;
 /// After a press, how long the game runs before the reply, so the reply
@@ -41,9 +57,11 @@ const PRESS_SETTLE_SECONDS: f64 = 0.6;
 /// Presses one `press` call may make.
 const MAX_REPEAT: u32 = 50;
 
-/// Whether this run was asked to be an agent server.
+/// Whether this run was asked to be an agent server: a debug build only,
+/// launched with `--agent-server`. A release build never starts it, even
+/// with the feature on.
 pub fn asked() -> bool {
-    std::env::args().any(|a| a == "--agent-server")
+    cfg!(debug_assertions) && std::env::args().any(|a| a == "--agent-server")
 }
 
 type Out = Arc<Mutex<std::io::Stdout>>;
@@ -69,12 +87,23 @@ fn reply(out: &Out, id: &Value, text: String, is_error: bool) -> bool {
 enum Ask {
     Listen,
     Screen,
-    Press { chord: Chord, times: u32 },
+    Press {
+        chord: Chord,
+        times: u32,
+        /// Seconds the game runs after the key comes up, before the reply.
+        settle: f64,
+    },
     Hold(Chord),
     Release(Chord),
     Wait(f64),
-    WaitFor { text: String, seconds: f64 },
+    WaitFor {
+        text: String,
+        seconds: f64,
+    },
     Quit,
+    /// Start recording, to this path or a dated default.
+    RecordStart(Option<String>),
+    RecordStop,
 }
 
 enum Msg {
@@ -88,11 +117,13 @@ fn tools() -> Value {
     json!([
         { "name": "listen", "description": "Everything said (and every sound started) since the last call, without touching the game.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "screen", "description": "Inspector, not ears: the top screen's name and its text lines. Record anything you needed here that was never spoken.", "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "press", "description": "Press and release a key (times: repeat count, default 1), then return what was heard.", "inputSchema": { "type": "object", "properties": { "key": key, "times": { "type": "integer", "minimum": 1, "maximum": MAX_REPEAT } }, "required": ["key"] } },
+        { "name": "press", "description": "Press and release a key (times: repeat count, default 1), then return what was heard. settle: seconds to keep listening after the key comes up (default 0.6; 0 replies at once, for timing-critical play).", "inputSchema": { "type": "object", "properties": { "key": key, "times": { "type": "integer", "minimum": 1, "maximum": MAX_REPEAT }, "settle": { "type": "number", "minimum": 0, "maximum": MAX_WAIT_SECONDS } }, "required": ["key"] } },
         { "name": "hold", "description": "Hold a key down until release.", "inputSchema": { "type": "object", "properties": { "key": key }, "required": ["key"] } },
         { "name": "release", "description": "Let a held key go.", "inputSchema": { "type": "object", "properties": { "key": key }, "required": ["key"] } },
         { "name": "wait", "description": "Let the game run for some seconds, then return what was heard.", "inputSchema": { "type": "object", "properties": { "seconds": { "type": "number", "minimum": 0, "maximum": MAX_WAIT_SECONDS } }, "required": ["seconds"] } },
         { "name": "wait_for", "description": "Run until a spoken line contains text (case-insensitive), or seconds pass.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string" }, "seconds": { "type": "number", "minimum": 0, "maximum": MAX_WAIT_SECONDS } }, "required": ["text"] } },
+        { "name": "record_start", "description": "Record the playtest: a WAV of what the player hears, and beside it a log, timed from the same start, of every spoken line, every sound (with where it played) and every key, the agent's and a person's. path: where (its extension is replaced); default a dated name in a recordings folder beside the game.", "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } } } },
+        { "name": "record_stop", "description": "Stop recording and finish both files; replies with their paths.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "quit_game", "description": "Close the game and end this server.", "inputSchema": { "type": "object", "properties": {} } }
     ])
 }
@@ -120,6 +151,10 @@ fn parse_call(params: &Value) -> Result<Ask, String> {
                 .as_u64()
                 .unwrap_or(1)
                 .clamp(1, MAX_REPEAT as u64) as u32,
+            settle: args["settle"]
+                .as_f64()
+                .unwrap_or(PRESS_SETTLE_SECONDS)
+                .clamp(0.0, MAX_WAIT_SECONDS),
         },
         "hold" => Ask::Hold(parse_chord(args)?),
         "release" => Ask::Release(parse_chord(args)?),
@@ -132,6 +167,8 @@ fn parse_call(params: &Value) -> Result<Ask, String> {
             seconds: seconds(args, 30.0),
         },
         "quit_game" => Ask::Quit,
+        "record_start" => Ask::RecordStart(args["path"].as_str().map(String::from)),
+        "record_stop" => Ask::RecordStop,
         other => return Err(format!("unknown tool: {other}")),
     })
 }
@@ -216,6 +253,7 @@ pub struct AgentServer {
     heard: Vec<String>,
     /// `Ctx::said` when last read.
     said: u64,
+    recording: Option<record::Recording>,
 }
 
 impl AgentServer {
@@ -241,6 +279,7 @@ impl AgentServer {
             job: None,
             heard: Vec::new(),
             said: 0,
+            recording: None,
         })
     }
 
@@ -253,6 +292,20 @@ impl AgentServer {
     /// last frame, add the agent's keys to `events`, and reply to a call
     /// that is done. `dt` is last frame's length.
     pub fn frame<G: Game>(&mut self, app: &mut App<G>, events: &mut Vec<InputEvent>, dt: f64) {
+        let from_window = events.len();
+        self.step(app, events, dt);
+        if let Some(rec) = &mut self.recording {
+            for (i, e) in events.iter().enumerate() {
+                rec.key(
+                    app.ctx.clock,
+                    if i < from_window { "player" } else { "agent" },
+                    e,
+                );
+            }
+        }
+    }
+
+    fn step<G: Game>(&mut self, app: &mut App<G>, events: &mut Vec<InputEvent>, dt: f64) {
         loop {
             match self.calls.try_recv() {
                 Ok(Msg::Call(id, ask)) => self.queue.push_back((id, ask)),
@@ -346,7 +399,33 @@ impl AgentServer {
                 reply(&self.out, &job.id, "(quitting)".into(), false);
                 return None;
             }
-            Ask::Press { times, .. } => job.presses = times,
+            Ask::RecordStart(path) => {
+                let (text, failed) = if self.recording.is_some() {
+                    ("already recording; record_stop first".to_string(), true)
+                } else {
+                    match record::Recording::start(&mut app.ctx, path.as_deref()) {
+                        Ok((rec, text)) => {
+                            self.recording = Some(rec);
+                            (text, false)
+                        }
+                        Err(e) => (e, true),
+                    }
+                };
+                reply(&self.out, &job.id, text, failed);
+                return None;
+            }
+            Ask::RecordStop => {
+                let text = match self.recording.take() {
+                    Some(rec) => rec.stop(app.ctx.clock, Some(&mut app.ctx.audio)),
+                    None => "not recording".to_string(),
+                };
+                reply(&self.out, &job.id, text, false);
+                return None;
+            }
+            Ask::Press { times, settle, .. } => {
+                job.presses = times;
+                job.left = settle;
+            }
             Ask::Hold(chord) => events.push(key_down(chord)),
             Ask::Release(chord) => events.push(InputEvent::KeyUp {
                 key: chord.key,
@@ -363,17 +442,29 @@ impl AgentServer {
         let new = (ctx.said - self.said).min(ctx.transcript.len() as u64) as usize;
         self.said = ctx.said;
         let start = ctx.transcript.len() - new;
+        let sounds = ctx.audio.take_heard();
+        if let Some(rec) = &mut self.recording {
+            for line in &ctx.transcript[start..] {
+                rec.said(ctx.clock, line);
+            }
+            for s in &sounds {
+                rec.sound(ctx.clock, s);
+            }
+        }
         self.heard.extend(ctx.transcript[start..].iter().cloned());
         self.heard.extend(
-            ctx.audio
-                .take_heard()
-                .into_iter()
-                .map(|k| format!("sound: {k}")),
+            sounds
+                .iter()
+                .map(|s| format!("sound: {}", record::describe_sound(s))),
         );
     }
 
-    /// The game is closing: answer whatever is still waiting.
-    pub fn finish(&mut self) {
+    /// The game is closing: finish a recording, and answer whatever is
+    /// still waiting.
+    pub fn finish<G: Game>(&mut self, app: &mut App<G>) {
+        if let Some(rec) = self.recording.take() {
+            rec.stop(app.ctx.clock, Some(&mut app.ctx.audio));
+        }
         if let Some(job) = self.job.take() {
             let text = std::mem::take(&mut self.heard).join("\n");
             reply(
@@ -417,7 +508,7 @@ mod tests {
     #[test]
     fn calls_parse_into_asks() {
         let p = json!({ "name": "press", "arguments": { "key": "Ctrl+Up", "times": 3 } });
-        let Ask::Press { chord, times } = parse_call(&p).unwrap() else {
+        let Ask::Press { chord, times, .. } = parse_call(&p).unwrap() else {
             panic!("a press")
         };
         assert_eq!((chord.key, chord.mods.ctrl, times), (Key::Up, true, 3));
