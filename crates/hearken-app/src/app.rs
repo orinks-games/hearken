@@ -137,9 +137,20 @@ impl<G: Game> App<G> {
     /// Run until something quits, then let the game finish, save the
     /// settings and shut speech down.
     pub fn run(&mut self, shell: &mut dyn Shell) {
+        self.run_with(shell, |_, _, _| {});
+    }
+
+    /// `run`, with `before` called each frame ahead of the step with the
+    /// window's events, which it may add to, and the frame's length.
+    pub fn run_with(
+        &mut self,
+        shell: &mut dyn Shell,
+        mut before: impl FnMut(&mut Self, &mut Vec<InputEvent>, f64),
+    ) {
         while self.ctx.running {
-            let events = shell.poll();
+            let mut events = shell.poll();
             let dt = shell.frame();
+            before(self, &mut events, dt);
             self.step(events, dt);
             let lines = self.top_lines();
             shell.render(&lines);

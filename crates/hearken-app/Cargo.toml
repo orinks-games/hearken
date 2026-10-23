@@ -15,6 +15,10 @@ kira = ["hearken-audio/kira"]
 # `Headless`, the in-memory app a game's tests drive. A game that tests
 # through its own harness turns default features off and skips `tempfile`.
 testing = ["dep:tempfile"]
+# `--agent-server`: an MCP server in the real game, so an agent can play it
+# by ear (see `agent_server`). For developer builds; `hearken release`
+# leaves a game's `agent-server` feature out.
+agent-server = []
 
 [dependencies]
 hearken-speech.workspace = true

@@ -79,8 +79,36 @@ fn default_backend(_prefix: &str) -> Result<Box<dyn Backend>, String> {
 
 /// Run `G` until the player quits. Returns the process exit code.
 pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) -> i32 {
-    let paths = Paths::discover(G::DATA_DIR, G::ENV_PREFIX);
-    let mut guard = SingleInstanceGuard::new(&mutex_name(G::DATA_DIR));
+    // An agent session waits for its first tool call before anything opens,
+    // saves in a sandbox, and holds a lock of its own (see `agent_server`).
+    #[cfg(feature = "agent-server")]
+    let mut agent = if crate::agent_server::asked() {
+        match crate::agent_server::AgentServer::start() {
+            Some(agent) => Some(agent),
+            None => return 0,
+        }
+    } else {
+        None
+    };
+    #[cfg(feature = "agent-server")]
+    let (paths, lock) = if agent.is_some() {
+        let real = Paths::discover(G::DATA_DIR, G::ENV_PREFIX);
+        (
+            Paths::at(real.data_dir.join("agent-sandbox")),
+            format!("{}-agent", G::DATA_DIR),
+        )
+    } else {
+        (
+            Paths::discover(G::DATA_DIR, G::ENV_PREFIX),
+            G::DATA_DIR.to_string(),
+        )
+    };
+    #[cfg(not(feature = "agent-server"))]
+    let (paths, lock) = (
+        Paths::discover(G::DATA_DIR, G::ENV_PREFIX),
+        G::DATA_DIR.to_string(),
+    );
+    let mut guard = SingleInstanceGuard::new(&mutex_name(&lock));
     let first_copy = guard.acquire();
     // Only the copy holding the lock may move the last session's log aside.
     if first_copy {
@@ -117,6 +145,14 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     ctx.apply_speech_settings();
 
     let mut app = App::new(ctx, first());
+    #[cfg(feature = "agent-server")]
+    if let Some(agent) = agent.as_mut() {
+        agent.attach(&mut app);
+        app.run_with(&mut shell, |app, events, dt| agent.frame(app, events, dt));
+        agent.finish();
+        guard.release();
+        return 0;
+    }
     app.run(&mut shell);
     guard.release();
     0

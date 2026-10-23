@@ -248,6 +248,8 @@ pub struct Audio {
     pub(crate) opening: Option<Receiver<Result<Box<dyn Backend>, String>>>,
     pub(crate) notice: Option<String>,
     pub(crate) shut_down: bool,
+    /// Keys of sounds started, kept only for an agent (`keep_heard`).
+    heard: Option<Vec<String>>,
 }
 
 impl Audio {
@@ -269,6 +271,7 @@ impl Audio {
             opening: None,
             notice: None,
             shut_down: false,
+            heard: None,
         }
     }
 
@@ -971,7 +974,28 @@ impl Audio {
         newly_missing
     }
 
+    /// Starts keeping the key of every sound that starts, for an agent
+    /// listening to the game (`take_heard`). Off until asked, so a player's
+    /// game keeps nothing.
+    pub fn keep_heard(&mut self) {
+        self.heard.get_or_insert_with(Vec::new);
+    }
+
+    /// The keys of the sounds started since the last call, a loop marked
+    /// "(loop)". Empty unless `keep_heard` was called.
+    pub fn take_heard(&mut self) -> Vec<String> {
+        self.heard.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
     fn alloc(&mut self, live: Live) -> Sound {
+        if let Some(heard) = &mut self.heard {
+            // ponytail: unbounded until taken; an agent drains it every call.
+            heard.push(if live.looping {
+                format!("{} (loop)", live.key)
+            } else {
+                live.key.clone()
+            });
+        }
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
             slot.live = Some(live);
