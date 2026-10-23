@@ -26,6 +26,9 @@ instead.\n";
 pub fn release(project: &Project) -> Result<PathBuf, String> {
     // A packed release gets a key of its own, built into its program. Any
     // other build is made with none, so it reads loose sounds.
+    if project.pack {
+        engine_reads_packs(&project.dir)?;
+    }
     let key = if project.pack {
         Some(hearken_pack::new_key().map_err(|e| format!("Could not make a pack key: {e}"))?)
     } else {
@@ -98,6 +101,21 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
         return Err(format!("Could not pack {archive}."));
     }
     Ok(dist.join(archive))
+}
+
+/// Refuses a packed release of a game whose Hearken predates sound packs:
+/// its program could not read `sounds.pak` and would play no sounds.
+fn engine_reads_packs(dir: &Path) -> Result<(), String> {
+    let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap_or_default();
+    if lock.contains("name = \"hearken-pack\"") {
+        Ok(())
+    } else {
+        Err(
+            "This game's Hearken is too old to read a sound pack. Update it with \
+             `cargo update -p hearken`, or turn `pack` off."
+                .to_string(),
+        )
+    }
 }
 
 /// Writes `sounds` into the stage as `sounds.pak`, checks it opens with
@@ -227,7 +245,17 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::platform;
+    use super::{engine_reads_packs, platform};
+
+    #[test]
+    fn packing_needs_an_engine_that_reads_packs() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("Cargo.lock");
+        std::fs::write(&lock, "[[package]]\nname = \"hearken\"\n").unwrap();
+        assert!(engine_reads_packs(dir.path()).is_err());
+        std::fs::write(&lock, "[[package]]\nname = \"hearken-pack\"\n").unwrap();
+        assert!(engine_reads_packs(dir.path()).is_ok());
+    }
 
     #[test]
     fn names_match_what_play_downloads() {

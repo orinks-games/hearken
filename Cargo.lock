@@ -711,6 +711,7 @@ dependencies = [
  "dirs",
  "hearken-pack",
  "serde_json",
+ "tempfile",
  "ureq",
 ]
 

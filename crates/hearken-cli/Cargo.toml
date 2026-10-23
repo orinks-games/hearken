@@ -18,3 +18,6 @@ dirs.workspace = true
 hearken-pack.workspace = true
 serde_json.workspace = true
 ureq = { workspace = true, features = ["json"] }
+
+[dev-dependencies]
+tempfile.workspace = true
