@@ -243,14 +243,28 @@ cargo install --git https://github.com/orinks-games/hearken hearken-cli
 - `hearken play <game>` starts a game. With Rust installed it pulls the
   latest source and builds a developer build, agent server included.
   Without Rust, or with `--download`, it downloads the game's latest
-  release instead. `hearken list` names the games it knows.
+  GitHub release instead.
 - `hearken release <game>` builds the zip players get, in `dist/`: the
   executable, the game's files, and on Windows SDL2 and the Visual C++
   runtime. It leaves out an `agent-server` Cargo feature.
 
-Inside a game's own folder the name can be left out; `hearken play` then
-builds the work in progress as it is. The game's `Cargo.toml` says what a
-release holds:
+The command knows no games of its own: a game is its GitHub repository or
+a folder on this computer.
+
+```sh
+hearken play orinks-games/freight-fate        # or https://github.com/orinks-games/freight-fate
+hearken play orinks-games/freight-fate --download
+hearken release ../my-game
+```
+
+A repository is played from the checkout you are standing in when it is
+that repository's, or else from a folder of the same name in your home
+folder, cloned the first time. A download goes under your local data
+folder, one folder per release, and starts the release's only program, or
+the one named like the repository. Inside a game's own folder the name can
+be left out; `hearken play` then builds the work in progress as it is. The
+game's `Cargo.toml` says which package is the game and what a release
+holds:
 
 ```toml
 [package.metadata.hearken]
