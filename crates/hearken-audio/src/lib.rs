@@ -29,7 +29,7 @@ pub use clips::{ClipSource, LayeredClips, LooseClips, MadeClips, MemoryClips};
 pub use decode::{probe_clip, ClipInfo};
 pub use feed::{Feed, FeedRead};
 pub use open::{NO_SOUND_NOTICE, SHUTDOWN_WAIT};
-pub use pool::{Audio, Fades, LiveSound, PlayError, Sound};
+pub use pool::{Audio, Fades, Heard, LiveSound, PlayError, Sound};
 pub use recording::{Call, Recorder, RecordingBackend};
 pub use silent::SilentBackend;
 pub use spatial::{place, Placement, SpatialConfig};

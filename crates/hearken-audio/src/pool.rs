@@ -248,6 +248,17 @@ pub struct Audio {
     pub(crate) opening: Option<Receiver<Result<Box<dyn Backend>, String>>>,
     pub(crate) notice: Option<String>,
     pub(crate) shut_down: bool,
+    /// Sounds started, kept only for an agent (`keep_heard`).
+    heard: Option<Vec<Heard>>,
+}
+
+/// A sound that started, as an agent listening to the game hears of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Heard {
+    pub key: String,
+    /// Where it plays, for a positioned sound.
+    pub pos: Option<Vec3>,
+    pub looping: bool,
 }
 
 impl Audio {
@@ -269,6 +280,7 @@ impl Audio {
             opening: None,
             notice: None,
             shut_down: false,
+            heard: None,
         }
     }
 
@@ -971,7 +983,40 @@ impl Audio {
         newly_missing
     }
 
+    /// Starts keeping the key of every sound that starts, for an agent
+    /// listening to the game (`take_heard`). Off until asked, so a player's
+    /// game keeps nothing.
+    pub fn keep_heard(&mut self) {
+        self.heard.get_or_insert_with(Vec::new);
+    }
+
+    /// The sounds started since the last call. Empty unless `keep_heard`
+    /// was called.
+    pub fn take_heard(&mut self) -> Vec<Heard> {
+        self.heard.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// Starts writing what the player hears, the final mix, to a WAV file
+    /// at `path`, when the backend can record.
+    pub fn start_capture(&mut self, path: &std::path::Path) -> Result<(), BackendError> {
+        self.backend.start_capture(path)
+    }
+
+    /// Stops a recording: its finished file, or why it failed. `None` when
+    /// nothing was recording.
+    pub fn stop_capture(&mut self) -> Option<Result<std::path::PathBuf, BackendError>> {
+        self.backend.stop_capture()
+    }
+
     fn alloc(&mut self, live: Live) -> Sound {
+        if let Some(heard) = &mut self.heard {
+            // ponytail: unbounded until taken; an agent drains it every call.
+            heard.push(Heard {
+                key: live.key.clone(),
+                pos: live.pos,
+                looping: live.looping,
+            });
+        }
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
             slot.live = Some(live);

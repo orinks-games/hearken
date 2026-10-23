@@ -2,6 +2,8 @@
 //!
 //! Extracted from Lucky Break Casino (commit a101970) and Freight Fate (commit c5d3ef8d).
 
+#[cfg(feature = "agent-server")]
+pub mod agent_server;
 pub mod app;
 pub mod bindings;
 pub mod clock;

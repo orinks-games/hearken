@@ -124,6 +124,20 @@ pub trait Backend: Send {
     /// Called once a frame: reap ended and faded channels.
     fn update(&mut self) {}
 
+    /// Starts writing the final mix, what the player hears, to a WAV file
+    /// at `path`. A backend that cannot record says so, which is the
+    /// default.
+    fn start_capture(&mut self, path: &std::path::Path) -> Result<(), BackendError> {
+        let _ = path;
+        Err(BackendError(format!("{} cannot record", self.name())))
+    }
+
+    /// Stops a recording and finishes its file: the file's path, or why it
+    /// could not be finished. `None` when nothing was recording.
+    fn stop_capture(&mut self) -> Option<Result<std::path::PathBuf, BackendError>> {
+        None
+    }
+
     /// Explicit, idempotent teardown. Never blocks.
     fn shutdown(&mut self) {}
 }

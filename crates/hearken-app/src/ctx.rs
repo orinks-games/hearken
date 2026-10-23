@@ -38,6 +38,8 @@ pub struct Ctx<G: Game> {
     pub running: bool,
     /// Every line spoken this run, newest last. Event lines start `[event] `.
     pub transcript: Vec<String>,
+    /// Lines spoken this run, counting those `transcript` has let go.
+    pub said: u64,
     /// Lines for the player once the first screen has announced itself.
     pub notices: Vec<String>,
     pub frame: u64,
@@ -78,6 +80,7 @@ impl<G: Game> Ctx<G> {
             bindings,
             running: true,
             transcript: Vec::new(),
+            said: 0,
             notices: Vec::new(),
             frame: 0,
             clock: 0.0,
@@ -206,6 +209,7 @@ impl<G: Game> Ctx<G> {
     pub(crate) fn record(&mut self, line: String) {
         log::info!(target: TRANSCRIPT_TARGET, "{line}");
         self.transcript.push(line);
+        self.said += 1;
         if self.transcript.len() > TRANSCRIPT_CAP {
             let excess = self.transcript.len() - TRANSCRIPT_CAP;
             self.transcript.drain(..excess);
