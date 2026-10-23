@@ -14,5 +14,10 @@ path = "src/main.rs"
 
 [dependencies]
 dirs.workspace = true
+# Writes a release's sounds.pak; the engine reads it.
+hearken-pack.workspace = true
 serde_json.workspace = true
 ureq = { workspace = true, features = ["json"] }
+
+[dev-dependencies]
+tempfile.workspace = true

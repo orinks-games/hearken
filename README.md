@@ -48,6 +48,7 @@ A game depends on one crate, `hearken`, which brings in the rest:
 | `hearken-speech` | Screen reader, braille and text-to-speech output through Prism. Includes an event voice with pacing, priorities and repeat suppression, and a verbosity table the player sets. |
 | `hearken-audio` | A pool of positioned sounds, buses and live voices, played through [Kira](https://github.com/tesselode/kira), which compiles into the game. |
 | `hearken-synth` | Sound made with [fundsp](https://github.com/SamiPerttu/fundsp): built-in menu earcons, a default sound for every category, and recipes for live voices such as engines. A game can make sound with no sound files at all. |
+| `hearken-pack` | A release's sounds in one encrypted `sounds.pak`, so players cannot browse them. Written by `hearken release`, read by `hearken-audio`. |
 | `hearken-radio` | Internet radio, played as a sound: HTTP and ICY stations, playlists and live HLS, with now-playing titles. Optional. |
 
 Some of what that gives a game:
@@ -269,11 +270,30 @@ holds:
 ```toml
 [package.metadata.hearken]
 portable = true                               # saves beside the game
+pack = true                                   # sounds in an encrypted sounds.pak
 include = ["sounds", "README.md", "LICENSE"]  # the default
 ```
 
 A portable release carries `portable.txt`, so the game keeps its settings,
 saves and log in a `saves` folder beside it instead of the user's folder.
+
+A packed release ships the `sounds` folder as one file, `sounds.pak`, so a
+player who opens the zip cannot listen to the sounds or read their names,
+and a game's secrets stay secret. Each release is encrypted (ChaCha20) with
+a new random key, built into that release's program and kept nowhere else,
+so no one tool opens every Hearken game, and a tool made for one release
+does not open the next. The key is split into shares that are put back
+together only when the pack is opened, so it is not sitting whole in the
+program's bytes, and sounds stay encrypted in memory except while they
+play. Files in `sounds` that are not sounds, such as
+credits, still ship loose. Developer builds and `hearken play` read the
+loose folder as before, and `MY_GAME_SOUNDS` still points any build at a
+folder.
+
+This stops browsing, not a determined person: the key is inside the program
+players run, and someone willing to take that program apart can find it.
+Any game that plays its own sounds on the player's computer has the same
+limit.
 
 ## Optional features
 

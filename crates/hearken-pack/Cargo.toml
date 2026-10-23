@@ -1,0 +1,17 @@
+[package]
+name = "hearken-pack"
+description = "A game's sounds in one encrypted file, so a release ships no browsable sounds folder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build.rs"
+
+[dependencies]
+chacha20 = "0.10"
+getrandom = "0.4"
+
+[dev-dependencies]
+tempfile.workspace = true
