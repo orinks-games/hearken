@@ -125,10 +125,12 @@ impl ClipSource for LooseClips {
 /// A release's sounds, from the encrypted `sounds.pak` that `hearken
 /// release` writes beside the game (see the `hearken-pack` crate).
 ///
-/// Loads are cached for the run, misses included, as [`LooseClips`] does.
+/// Loads are cached for the run, misses included, as [`LooseClips`] does,
+/// but the cache holds each sound still encrypted: a sound is decrypted
+/// for each play and sits in memory readable only while it is in use.
 pub struct PackedClips {
     pack: hearken_pack::Pack,
-    cache: HashMap<String, Option<Arc<[u8]>>>,
+    cache: HashMap<String, Option<hearken_pack::Sealed>>,
 }
 
 impl PackedClips {
@@ -170,18 +172,18 @@ impl PackedClips {
 
 impl ClipSource for PackedClips {
     fn load(&mut self, key: &str) -> Option<Arc<[u8]>> {
-        if let Some(cached) = self.cache.get(key) {
-            return cached.clone();
+        if !self.cache.contains_key(key) {
+            let sealed = match self.pack.read_sealed(&key.replace('\\', "/")) {
+                Ok(sealed) => sealed,
+                Err(e) => {
+                    log::warn!("sounds: could not read {key:?} from the sound pack: {e}");
+                    None
+                }
+            };
+            self.cache.insert(key.to_string(), sealed);
         }
-        let found = match self.pack.read(&key.replace('\\', "/")) {
-            Ok(found) => found.map(Arc::from),
-            Err(e) => {
-                log::warn!("sounds: could not read {key:?} from the sound pack: {e}");
-                None
-            }
-        };
-        self.cache.insert(key.to_string(), found.clone());
-        found
+        let sealed = self.cache.get(key)?.as_ref()?;
+        Some(Arc::from(self.pack.unseal(sealed)))
     }
 }
 

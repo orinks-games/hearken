@@ -267,6 +267,12 @@ impl Pack {
 
     /// The sound file for `key`, or `None` when the pack has none.
     pub fn read(&mut self, key: &str) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.read_sealed(key)?.map(|sealed| self.unseal(&sealed)))
+    }
+
+    /// `key`'s sound as it is in the pack, still encrypted: what a caller
+    /// keeps in memory so that sounds sit there decrypted only while in use.
+    pub fn read_sealed(&mut self, key: &str) -> io::Result<Option<Sealed>> {
         let Some(entry) = self.entries.get(key) else {
             return Ok(None);
         };
@@ -274,9 +280,25 @@ impl Pack {
         self.file
             .seek(SeekFrom::Start(self.data_start + entry.offset))?;
         self.file.read_exact(&mut data)?;
-        crypt(&self.key, entry.nonce, &mut data);
-        Ok(Some(data))
+        Ok(Some(Sealed {
+            nonce: entry.nonce,
+            bytes: data.into(),
+        }))
     }
+
+    /// A sealed sound's file, decrypted.
+    pub fn unseal(&self, sealed: &Sealed) -> Vec<u8> {
+        let mut data = sealed.bytes.to_vec();
+        crypt(&self.key, sealed.nonce, &mut data);
+        data
+    }
+}
+
+/// One sound from a pack, still encrypted. Cheap to clone.
+#[derive(Clone)]
+pub struct Sealed {
+    nonce: u64,
+    bytes: std::sync::Arc<[u8]>,
 }
 
 #[cfg(test)]
@@ -322,6 +344,22 @@ mod tests {
             Some(&b"RIFF theme"[..])
         );
         assert_eq!(pack.read("ui/missing").unwrap(), None);
+
+        let sealed = pack.read_sealed("ui/click").unwrap().unwrap();
+        assert_ne!(&*sealed.bytes, b"OggS click");
+        assert_eq!(pack.unseal(&sealed), b"OggS click");
+    }
+
+    #[test]
+    fn the_build_key_is_the_one_it_was_built_with() {
+        // Meaningful when the tests are built with HEARKEN_PACK_KEY set.
+        match std::env::var("HEARKEN_PACK_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+        {
+            Some(hex) => assert_eq!(build_key().map(|k| key_hex(&k)), Some(hex)),
+            None => assert_eq!(build_key(), None),
+        }
     }
 
     #[test]

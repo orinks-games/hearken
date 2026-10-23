@@ -282,7 +282,10 @@ player who opens the zip cannot listen to the sounds or read their names,
 and a game's secrets stay secret. Each release is encrypted (ChaCha20) with
 a new random key, built into that release's program and kept nowhere else,
 so no one tool opens every Hearken game, and a tool made for one release
-does not open the next. Files in `sounds` that are not sounds, such as
+does not open the next. The key is split into shares that are put back
+together only when the pack is opened, so it is not sitting whole in the
+program's bytes, and sounds stay encrypted in memory except while they
+play. Files in `sounds` that are not sounds, such as
 credits, still ship loose. Developer builds and `hearken play` read the
 loose folder as before, and `MY_GAME_SOUNDS` still points any build at a
 folder.
