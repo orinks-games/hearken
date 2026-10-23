@@ -1,0 +1,226 @@
+//! What `cargo metadata` says about a game: its package, binary, version,
+//! default features and the `[package.metadata.hearken]` table.
+//!
+//! ```toml
+//! [package.metadata.hearken]
+//! portable = true                                  # saves beside the game
+//! include = ["sounds", "README.md", "LICENSE"]     # shipped in a release
+//! bin = "my-game"                                  # when it has several
+//! ```
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use serde_json::Value;
+
+/// The Cargo feature a release build leaves out.
+pub const AGENT_SERVER: &str = "agent-server";
+
+pub struct Project {
+    /// The workspace root.
+    pub dir: PathBuf,
+    pub package: String,
+    pub bin: String,
+    pub version: String,
+    pub default_features: Vec<String>,
+    pub portable: bool,
+    /// Files and folders, relative to `dir`, that a release ships.
+    pub include: Vec<String>,
+}
+
+impl Project {
+    /// The game in the workspace at `dir`: the package named `package`, or
+    /// else the one with a `[package.metadata.hearken]` table.
+    pub fn load(dir: &Path, package: Option<&str>) -> Result<Project, String> {
+        let out = Command::new("cargo")
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .current_dir(dir)
+            .output()
+            .map_err(|e| format!("Could not run cargo: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "{} is not a Cargo workspace: {}",
+                dir.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        let meta: Value = serde_json::from_slice(&out.stdout)
+            .map_err(|e| format!("Could not read cargo metadata: {e}"))?;
+        Project::from_metadata(&meta, package)
+    }
+
+    fn from_metadata(meta: &Value, package: Option<&str>) -> Result<Project, String> {
+        let packages = meta["packages"].as_array().cloned().unwrap_or_default();
+        let found: Vec<&Value> = packages
+            .iter()
+            .filter(|p| match package {
+                Some(name) => p["name"] == name,
+                None => p["metadata"]["hearken"].is_object(),
+            })
+            .collect();
+        let pkg = match (found.as_slice(), package) {
+            ([one], _) => *one,
+            ([], Some(name)) => return Err(format!("This workspace has no package {name}.")),
+            _ => {
+                return Err(
+                    "Name the game, or add a [package.metadata.hearken] table to \
+                     its Cargo.toml so hearken can find it."
+                        .to_string(),
+                )
+            }
+        };
+        let hearken = &pkg["metadata"]["hearken"];
+        let strings = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect()
+        };
+        let name = pkg["name"].as_str().unwrap_or_default().to_string();
+        let bins: Vec<&str> = pkg["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| {
+                t["kind"]
+                    .as_array()
+                    .is_some_and(|k| k.contains(&"bin".into()))
+            })
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        let bin = match hearken["bin"].as_str() {
+            Some(bin) => bin.to_string(),
+            None if bins.contains(&name.as_str()) => name.clone(),
+            None => bins
+                .first()
+                .map(|b| b.to_string())
+                .ok_or_else(|| format!("{name} has no program to run."))?,
+        };
+        let include = match hearken.get("include") {
+            Some(list) => strings(list),
+            None => ["sounds", "README.md", "LICENSE"]
+                .map(String::from)
+                .to_vec(),
+        };
+        Ok(Project {
+            dir: PathBuf::from(meta["workspace_root"].as_str().unwrap_or(".")),
+            bin,
+            version: pkg["version"].as_str().unwrap_or("0.0.0").to_string(),
+            default_features: strings(&pkg["features"]["default"]),
+            portable: hearken["portable"].as_bool().unwrap_or(false),
+            include,
+            package: name,
+        })
+    }
+
+    /// `cargo build` arguments for a release (`dev` false: the agent server
+    /// left out) or a developer build (everything the game turns on).
+    pub fn build_args(&self, dev: bool) -> Vec<String> {
+        let mut args: Vec<String> = [
+            "build",
+            "--release",
+            "-p",
+            &self.package,
+            "--bin",
+            &self.bin,
+        ]
+        .map(String::from)
+        .to_vec();
+        if !dev {
+            // A release builds exactly the dependencies Cargo.lock pins.
+            args.push("--locked".into());
+        }
+        if !dev && self.default_features.iter().any(|f| f == AGENT_SERVER) {
+            let keep: Vec<&str> = self
+                .default_features
+                .iter()
+                .map(String::as_str)
+                .filter(|f| *f != AGENT_SERVER)
+                .collect();
+            args.push("--no-default-features".into());
+            if !keep.is_empty() {
+                args.push("--features".into());
+                args.push(keep.join(","));
+            }
+        }
+        args
+    }
+
+    pub fn exe(&self) -> PathBuf {
+        self.dir.join("target").join("release").join(format!(
+            "{}{}",
+            self.bin,
+            std::env::consts::EXE_SUFFIX
+        ))
+    }
+
+    /// Builds the game; `dev` keeps the agent server.
+    pub fn build(&self, dev: bool) -> Result<(), String> {
+        println!("Building {}...", self.package);
+        let built = Command::new("cargo")
+            .args(self.build_args(dev))
+            .current_dir(&self.dir)
+            .status()
+            .is_ok_and(|s| s.success());
+        built
+            .then_some(())
+            .ok_or_else(|| format!("{} did not build.", self.package))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn game(features: Value, hearken: Value) -> Value {
+        serde_json::json!({
+            "workspace_root": "/games/parlor",
+            "packages": [
+                { "name": "parlor-core", "version": "0.1.0", "features": {},
+                  "metadata": null, "targets": [{ "kind": ["lib"], "name": "parlor_core" }] },
+                { "name": "parlor", "version": "0.2.0", "features": features,
+                  "metadata": { "hearken": hearken },
+                  "targets": [{ "kind": ["bin"], "name": "parlor" }] }
+            ]
+        })
+    }
+
+    #[test]
+    fn finds_the_game_by_its_hearken_table() {
+        let meta = game(
+            serde_json::json!({}),
+            serde_json::json!({ "portable": true }),
+        );
+        let p = Project::from_metadata(&meta, None).unwrap();
+        assert_eq!((p.package.as_str(), p.bin.as_str()), ("parlor", "parlor"));
+        assert_eq!(p.version, "0.2.0");
+        assert!(p.portable);
+        assert_eq!(p.include, ["sounds", "README.md", "LICENSE"]);
+    }
+
+    #[test]
+    fn a_release_leaves_the_agent_server_out() {
+        let features = serde_json::json!({ "default": ["agent-server", "kira"] });
+        let p = Project::from_metadata(&game(features, serde_json::json!({})), None).unwrap();
+        let release = p.build_args(false);
+        assert!(release.ends_with(&[
+            "--no-default-features".into(),
+            "--features".into(),
+            "kira".into()
+        ]));
+        assert!(!p
+            .build_args(true)
+            .iter()
+            .any(|a| a == "--no-default-features"));
+    }
+
+    #[test]
+    fn a_game_without_an_agent_server_builds_as_it_is() {
+        let features = serde_json::json!({ "default": ["kira"] });
+        let p = Project::from_metadata(&game(features, serde_json::json!({})), None).unwrap();
+        let mut release = p.build_args(false);
+        assert_eq!(release.pop().as_deref(), Some("--locked"));
+        assert_eq!(release, p.build_args(true));
+    }
+}
