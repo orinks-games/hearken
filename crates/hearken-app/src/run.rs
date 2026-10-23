@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[cfg(feature = "kira")]
 use hearken_audio::KiraBackend;
-use hearken_audio::{Audio, Backend, LooseClips, SilentBackend};
+use hearken_audio::{Audio, Backend, SilentBackend};
 use hearken_speech::{SpeechEnv, SpeechSink, ThreadedSpeech};
 
 use crate::app::App;
@@ -135,7 +135,7 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     let mut ctx = Ctx::new(Box::new(start_speech::<G>()), settings, paths, game);
     ctx.install_audio(Audio::deferred(
         open_backend::<G>,
-        crate::sound::clip_source::<G>(LooseClips::discover(G::ENV_PREFIX)),
+        crate::sound::clip_source::<G>(hearken_audio::discover_clips(G::ENV_PREFIX)),
     ));
     ctx.controller = ControllerManager::new(
         ctx.settings.controller.enabled,

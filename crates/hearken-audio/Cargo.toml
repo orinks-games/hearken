@@ -14,6 +14,8 @@ kira = ["dep:kira", "dep:cpal", "dep:rtrb", "dep:symphonia", "dep:symphonia-adap
 
 [dependencies]
 hearken-synth.workspace = true
+# A release's sounds.pak (see `PackedClips`).
+hearken-pack.workspace = true
 kira = { workspace = true, optional = true }
 # The output device under Kira, reopened when it changes (see kira/device.rs).
 cpal = { workspace = true, optional = true }

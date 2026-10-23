@@ -9,6 +9,13 @@ use crate::project::Project;
 /// (This crate stays free of the engine, so the name is repeated here.)
 const PORTABLE_MARKER: &str = "portable.txt";
 
+/// The folder the engine reads sounds from, which `pack = true` ships as
+/// `sounds.pak`.
+const SOUNDS: &str = "sounds";
+
+/// The variable `hearken-pack`'s build script reads the release's key from.
+const PACK_KEY_VAR: &str = "HEARKEN_PACK_KEY";
+
 /// What a portable copy's marker file says to whoever opens it.
 const PORTABLE_NOTE: &str = "This copy of the game is portable: its settings, saves and log \
 are kept in the saves folder beside it. Delete this file to keep them in your user folder \
@@ -17,7 +24,15 @@ instead.\n";
 /// Builds the release, stages it under `dist/` and archives it. Returns the
 /// archive's path.
 pub fn release(project: &Project) -> Result<PathBuf, String> {
-    project.build(false)?;
+    // A packed release gets a key of its own, built into its program. Any
+    // other build is made with none, so it reads loose sounds.
+    let key = if project.pack {
+        Some(hearken_pack::new_key().map_err(|e| format!("Could not make a pack key: {e}"))?)
+    } else {
+        None
+    };
+    let hex = key.as_ref().map(hearken_pack::key_hex).unwrap_or_default();
+    project.build_with(false, &[(PACK_KEY_VAR, &hex)])?;
     let stem = format!(
         "{}-{}-{}",
         project.package,
@@ -34,13 +49,24 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
 
     let exe = project.exe();
     copy(&exe, &stage.join(exe.file_name().unwrap_or_default()))?;
+    let mut packed = false;
     for item in &project.include {
         let from = project.dir.join(item);
+        if let (Some(key), SOUNDS) = (&key, item.as_str()) {
+            if from.is_dir() {
+                pack(&from, &stage, key)?;
+                packed = true;
+                continue;
+            }
+        }
         if from.exists() {
             copy(&from, &stage.join(item))?;
         } else {
             println!("Skipping {item}: it is not in the workspace.");
         }
+    }
+    if project.pack && !packed {
+        println!("Nothing to pack: the release includes no {SOUNDS} folder.");
     }
     if cfg!(windows) {
         windows_runtime(&project.dir.join("target").join("release"), &stage)?;
@@ -72,6 +98,29 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
         return Err(format!("Could not pack {archive}."));
     }
     Ok(dist.join(archive))
+}
+
+/// Writes `sounds` into the stage as `sounds.pak`, checks it opens with
+/// `key`, and copies any file in it that is not a sound (credits, say) loose
+/// into the stage's `sounds` folder.
+fn pack(sounds: &Path, stage: &Path, key: &[u8; 32]) -> Result<(), String> {
+    let out = stage.join(hearken_pack::FILE_NAME);
+    let written = hearken_pack::write(sounds, &out, key)
+        .map_err(|e| format!("Could not pack {}: {e}", sounds.display()))?;
+    let pack = hearken_pack::Pack::open(&out, key)
+        .map_err(|e| format!("The sound pack does not open: {e}"))?;
+    if pack.len() != written.sounds {
+        return Err("The sound pack lost sounds while it was written.".to_string());
+    }
+    for other in &written.others {
+        copy(&sounds.join(other), &stage.join(SOUNDS).join(other))?;
+    }
+    println!(
+        "Packed {} sounds into {}.",
+        written.sounds,
+        hearken_pack::FILE_NAME
+    );
+    Ok(())
 }
 
 /// The platform part of a release's name, the one `hearken play --download`

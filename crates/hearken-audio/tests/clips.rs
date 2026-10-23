@@ -72,3 +72,28 @@ fn made_clips_are_made_once_and_cached_misses_included() {
     assert!(clips.load("none").is_none());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn a_sound_pack_gives_the_same_sounds_as_the_folder_it_was_made_from() {
+    use hearken_audio::PackedClips;
+    let dir = tempfile::tempdir().unwrap();
+    let sounds = dir.path().join("sounds");
+    std::fs::create_dir_all(sounds.join("ui")).unwrap();
+    std::fs::write(sounds.join("ui/menu_move.wav"), b"RIFF-ish").unwrap();
+    std::fs::write(sounds.join("door.ogg"), b"OggS").unwrap();
+    let pak = dir.path().join(hearken_pack::FILE_NAME);
+    let key = hearken_pack::new_key().unwrap();
+    hearken_pack::write(&sounds, &pak, &key).unwrap();
+
+    let mut loose = LooseClips::at(&sounds);
+    let mut packed = PackedClips::open(&pak, &key).unwrap();
+    for name in ["ui/menu_move", "door", "ui/nothing"] {
+        assert_eq!(packed.load(name), loose.load(name), "{name}");
+    }
+    // A Windows-style key finds the sound on every platform.
+    assert_eq!(
+        packed.load("ui\\menu_move").as_deref(),
+        Some(&b"RIFF-ish"[..])
+    );
+    assert!(PackedClips::open(&pak, &hearken_pack::new_key().unwrap()).is_err());
+}

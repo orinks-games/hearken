@@ -24,7 +24,9 @@ mod voicing;
 #[cfg(feature = "kira")]
 pub use self::kira::{DeviceBackend, DeviceError, GainCurve, KiraBackend, PanLaw};
 pub use backend::{Backend, BackendError, Channel, Source};
-pub use clips::{ClipSource, LayeredClips, LooseClips, MadeClips, MemoryClips};
+pub use clips::{
+    discover_clips, ClipSource, LayeredClips, LooseClips, MadeClips, MemoryClips, PackedClips,
+};
 #[cfg(feature = "kira")]
 pub use decode::{probe_clip, ClipInfo};
 pub use feed::{Feed, FeedRead};

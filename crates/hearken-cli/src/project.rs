@@ -4,6 +4,7 @@
 //! ```toml
 //! [package.metadata.hearken]
 //! portable = true                                  # saves beside the game
+//! pack = true                                      # sounds in an encrypted sounds.pak
 //! include = ["sounds", "README.md", "LICENSE"]     # shipped in a release
 //! bin = "my-game"                                  # when it has several
 //! ```
@@ -24,6 +25,9 @@ pub struct Project {
     pub version: String,
     pub default_features: Vec<String>,
     pub portable: bool,
+    /// Whether a release ships the `sounds` folder as an encrypted
+    /// `sounds.pak` instead of loose files.
+    pub pack: bool,
     /// Files and folders, relative to `dir`, that a release ships.
     pub include: Vec<String>,
 }
@@ -109,6 +113,7 @@ impl Project {
             version: pkg["version"].as_str().unwrap_or("0.0.0").to_string(),
             default_features: strings(&pkg["features"]["default"]),
             portable: hearken["portable"].as_bool().unwrap_or(false),
+            pack: hearken["pack"].as_bool().unwrap_or(false),
             include,
             package: name,
         })
@@ -157,9 +162,15 @@ impl Project {
 
     /// Builds the game; `dev` keeps the agent server.
     pub fn build(&self, dev: bool) -> Result<(), String> {
+        self.build_with(dev, &[])
+    }
+
+    /// Builds the game with `env` set for Cargo.
+    pub fn build_with(&self, dev: bool, env: &[(&str, &str)]) -> Result<(), String> {
         println!("Building {}...", self.package);
         let built = Command::new("cargo")
             .args(self.build_args(dev))
+            .envs(env.iter().copied())
             .current_dir(&self.dir)
             .status()
             .is_ok_and(|s| s.success());
@@ -196,6 +207,7 @@ mod tests {
         assert_eq!((p.package.as_str(), p.bin.as_str()), ("parlor", "parlor"));
         assert_eq!(p.version, "0.2.0");
         assert!(p.portable);
+        assert!(!p.pack);
         assert_eq!(p.include, ["sounds", "README.md", "LICENSE"]);
     }
 
