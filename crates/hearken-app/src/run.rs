@@ -148,7 +148,7 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     #[cfg(feature = "agent-server")]
     if let Some(agent) = agent.as_mut() {
         agent.attach(&mut app);
-        app.run_with(&mut shell, |app, events, dt| agent.frame(app, events, dt));
+        app.run_paced(&mut shell, |app, events, dt| agent.frame(app, events, dt));
         agent.finish(&mut app);
         guard.release();
         return 0;

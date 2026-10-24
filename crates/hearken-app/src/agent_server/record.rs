@@ -20,7 +20,8 @@ pub(super) struct Recording {
     log_path: PathBuf,
     /// `None` when the backend could not record sound.
     wav: Option<PathBuf>,
-    /// `Ctx::clock` at the start, so the log's times line up with the WAV.
+    /// The agent server's real-time clock at the start, so the log's times
+    /// line up with the WAV, lockstep or not.
     started: f64,
 }
 
@@ -54,6 +55,7 @@ impl Recording {
     pub(super) fn start<G: Game>(
         ctx: &mut Ctx<G>,
         asked: Option<&str>,
+        now: f64,
     ) -> Result<(Recording, String), String> {
         let base = base_path(asked, G::DATA_DIR);
         if let Some(dir) = base.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -84,7 +86,7 @@ impl Recording {
             log,
             log_path,
             wav,
-            started: ctx.clock,
+            started: now,
         };
         Ok((rec, reply))
     }
