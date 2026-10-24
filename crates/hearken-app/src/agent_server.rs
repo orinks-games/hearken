@@ -47,6 +47,7 @@ use crate::bindings::Chord;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
 
+mod heard;
 mod record;
 
 /// One `wait` or `wait_for` may hold the game for at most this long.
@@ -241,6 +242,8 @@ struct Job {
     /// Presses still to send, and whether the last one's key is still down.
     presses: u32,
     down: bool,
+    /// A `wait_for` whose text has been heard.
+    found: bool,
 }
 
 /// The game side of the server: stepped once a frame by `run`.
@@ -250,7 +253,7 @@ pub struct AgentServer {
     queue: VecDeque<(Value, Ask)>,
     job: Option<Job>,
     /// What was heard since the last reply.
-    heard: Vec<String>,
+    heard: heard::Heard,
     /// `Ctx::said` when last read.
     said: u64,
     recording: Option<record::Recording>,
@@ -277,7 +280,7 @@ impl AgentServer {
             calls,
             queue: VecDeque::from([first]),
             job: None,
-            heard: Vec::new(),
+            heard: heard::Heard::default(),
             said: 0,
             recording: None,
         })
@@ -345,16 +348,14 @@ impl AgentServer {
         }
         job.left -= dt;
         let done = match &job.ask {
-            Ask::WaitFor { text, .. } => {
-                job.left <= 0.0 || self.heard.iter().any(|l| l.to_lowercase().contains(text))
-            }
+            Ask::WaitFor { .. } => job.left <= 0.0 || job.found,
             _ => job.left <= 0.0,
         };
         if done {
             let job = self.job.take().expect("a job is running");
-            let mut text = std::mem::take(&mut self.heard).join("\n");
+            let mut text = self.heard.take();
             if let Ask::WaitFor { text: want, .. } = &job.ask {
-                if !text.to_lowercase().contains(want.as_str()) {
+                if !job.found {
                     text = format!("(not heard: \"{want}\")\n{text}");
                 }
             }
@@ -382,6 +383,7 @@ impl AgentServer {
             left: PRESS_SETTLE_SECONDS,
             presses: 0,
             down: false,
+            found: false,
         };
         match ask {
             Ask::Listen => job.left = 0.0,
@@ -432,7 +434,10 @@ impl AgentServer {
                 mods: chord.mods,
             }),
             Ask::Wait(s) => job.left = s,
-            Ask::WaitFor { seconds, .. } => job.left = seconds,
+            Ask::WaitFor { seconds, ref text } => {
+                job.left = seconds;
+                job.found = self.heard.contains(text);
+            }
         }
         Some(job)
     }
@@ -451,12 +456,30 @@ impl AgentServer {
                 rec.sound(ctx.clock, s);
             }
         }
-        self.heard.extend(ctx.transcript[start..].iter().cloned());
-        self.heard.extend(
+        let want = match &self.job {
+            Some(Job {
+                ask: Ask::WaitFor { text, .. },
+                found: false,
+                ..
+            }) => Some(text.clone()),
+            _ => None,
+        };
+        let lines = ctx.transcript[start..].iter().cloned().chain(
             sounds
                 .iter()
                 .map(|s| format!("sound: {}", record::describe_sound(s))),
         );
+        for line in lines {
+            if want
+                .as_deref()
+                .is_some_and(|w| line.to_lowercase().contains(w))
+            {
+                if let Some(job) = &mut self.job {
+                    job.found = true;
+                }
+            }
+            self.heard.push(line);
+        }
     }
 
     /// The game is closing: finish a recording, and answer whatever is
@@ -466,7 +489,7 @@ impl AgentServer {
             rec.stop(app.ctx.clock, Some(&mut app.ctx.audio));
         }
         if let Some(job) = self.job.take() {
-            let text = std::mem::take(&mut self.heard).join("\n");
+            let text = self.heard.take();
             reply(
                 &self.out,
                 &job.id,
