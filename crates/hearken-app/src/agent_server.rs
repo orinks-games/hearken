@@ -15,7 +15,18 @@
 //!
 //! Tools: `listen`, `screen`, `press` (with `times`, and `settle: 0` to
 //! reply at once for timing-critical play), `hold`, `release`, `wait`,
-//! `wait_for`, `record_start`, `record_stop` and `quit_game`.
+//! `wait_for`, `lockstep`, `record_start`, `record_stop` and `quit_game`.
+//!
+//! `lockstep` (on) holds game time still between tool calls, the way
+//! Freight Fate's does. An agent's round trip takes seconds, longer than
+//! most reaction windows; in lockstep the game waits while it thinks, so a
+//! cue heard in a `wait_for` reply can still be answered in time. Time
+//! passes only inside a call: the frames a `press`, `hold` or `release`
+//! takes, its settle, and `wait` and `wait_for`. Between calls every frame
+//! runs with no time passing: the window answers, a person's keys still
+//! land, but no timer moves. Sound already playing plays on, as it does in
+//! Freight Fate; the game's own clock is what waits. Off is the default, and
+//! what a person playing alongside needs.
 //!
 //! `record_start` keeps a playtest as two files side by side: a WAV of the
 //! final mix, tapped after every bus and effect (Kira backend only; another
@@ -36,7 +47,7 @@
 //! launch a game. The first tool call boots it. Stdin closing ends the game.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 
@@ -64,7 +75,7 @@ pub fn asked() -> bool {
     cfg!(debug_assertions) && std::env::args().any(|a| a == "--agent-server")
 }
 
-type Out = Arc<Mutex<std::io::Stdout>>;
+type Out = Arc<Mutex<Box<dyn Write + Send>>>;
 
 fn send(out: &Out, msg: &Value) -> bool {
     let mut out = out.lock().unwrap_or_else(|p| p.into_inner());
@@ -101,6 +112,8 @@ enum Ask {
         seconds: f64,
     },
     Quit,
+    /// Hold game time still between calls (on) or let it run (off).
+    Lockstep(bool),
     /// Start recording, to this path or a dated default.
     RecordStart(Option<String>),
     RecordStop,
@@ -122,6 +135,7 @@ fn tools() -> Value {
         { "name": "release", "description": "Let a held key go.", "inputSchema": { "type": "object", "properties": { "key": key }, "required": ["key"] } },
         { "name": "wait", "description": "Let the game run for some seconds, then return what was heard.", "inputSchema": { "type": "object", "properties": { "seconds": { "type": "number", "minimum": 0, "maximum": MAX_WAIT_SECONDS } }, "required": ["seconds"] } },
         { "name": "wait_for", "description": "Run until a spoken line contains text (case-insensitive), or seconds pass.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string" }, "seconds": { "type": "number", "minimum": 0, "maximum": MAX_WAIT_SECONDS } }, "required": ["text"] } },
+        { "name": "lockstep", "description": "Hold game time still between tool calls (on: true), so the game waits while you think and a cue can be answered in time however long the round trip. Time then passes only inside a call: the frames a press, hold or release takes and its settle, and wait and wait_for. Use press with settle 0 to answer a cue and freeze again at once. Sound already playing plays on. Off (false), the default, runs on the wall clock, which a person playing alongside needs.", "inputSchema": { "type": "object", "properties": { "on": { "type": "boolean" } }, "required": ["on"] } },
         { "name": "record_start", "description": "Record the playtest: a WAV of what the player hears, and beside it a log, timed from the same start, of every spoken line, every sound (with where it played) and every key, the agent's and a person's. path: where (its extension is replaced); default a dated name in a recordings folder beside the game.", "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } } } },
         { "name": "record_stop", "description": "Stop recording and finish both files; replies with their paths.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "quit_game", "description": "Close the game and end this server.", "inputSchema": { "type": "object", "properties": {} } }
@@ -167,6 +181,11 @@ fn parse_call(params: &Value) -> Result<Ask, String> {
             seconds: seconds(args, 30.0),
         },
         "quit_game" => Ask::Quit,
+        "lockstep" => Ask::Lockstep(
+            args["on"]
+                .as_bool()
+                .ok_or("on (true or false) is required")?,
+        ),
         "record_start" => Ask::RecordStart(args["path"].as_str().map(String::from)),
         "record_stop" => Ask::RecordStop,
         other => return Err(format!("unknown tool: {other}")),
@@ -174,9 +193,8 @@ fn parse_call(params: &Value) -> Result<Ask, String> {
 }
 
 /// Answers the handshake itself; queues tool calls for the game.
-fn serve(out: Out, calls: mpsc::Sender<Msg>) {
-    let stdin = std::io::stdin();
-    for line in stdin.lock().lines() {
+fn serve(input: Box<dyn BufRead + Send>, out: Out, calls: mpsc::Sender<Msg>) {
+    for line in input.lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
@@ -197,7 +215,7 @@ fn serve(out: Out, calls: mpsc::Sender<Msg>) {
                 "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "hearken-agent", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "A Hearken game, played by ear. The first tool call opens the real game window, with speech and sound the operator hears. Keys go in through press, hold and release; listen, wait and wait_for return what was said and which sounds started.",
+                "instructions": "A Hearken game, played by ear. The first tool call opens the real game window, with speech and sound the operator hears. Keys go in through press, hold and release; listen, wait and wait_for return what was said and which sounds started. For reaction-time play, turn lockstep on: game time then waits between calls.",
             }),
             "tools/list" => json!({ "tools": tools() }),
             "ping" => json!({}),
@@ -254,18 +272,33 @@ pub struct AgentServer {
     /// `Ctx::said` when last read.
     said: u64,
     recording: Option<record::Recording>,
+    /// Hold game time still between calls.
+    lockstep: bool,
+    /// Seconds of real time since the game opened. The recording log runs
+    /// on it, as the WAV does, so the two stay aligned even when lockstep
+    /// holds the game's own clock.
+    wall: f64,
 }
 
 impl AgentServer {
     /// Starts serving stdio and waits for the first tool call, which is
     /// when the game should open. `None` when the client left first.
     pub fn start() -> Option<AgentServer> {
-        let out: Out = Arc::new(Mutex::new(std::io::stdout()));
+        AgentServer::over(
+            Box::new(BufReader::new(std::io::stdin())),
+            Box::new(std::io::stdout()),
+        )
+    }
+
+    /// `start`, over any line source and sink: stdio for a real session, a
+    /// pipe in tests.
+    fn over(input: Box<dyn BufRead + Send>, output: Box<dyn Write + Send>) -> Option<AgentServer> {
+        let out: Out = Arc::new(Mutex::new(output));
         let (tx, calls) = mpsc::channel();
         let serve_out = out.clone();
         std::thread::Builder::new()
             .name("agent-server".into())
-            .spawn(move || serve(serve_out, tx))
+            .spawn(move || serve(input, serve_out, tx))
             .ok()?;
         let first = match calls.recv() {
             Ok(Msg::Call(id, ask)) => (id, ask),
@@ -280,6 +313,8 @@ impl AgentServer {
             heard: Vec::new(),
             said: 0,
             recording: None,
+            lockstep: false,
+            wall: 0.0,
         })
     }
 
@@ -290,67 +325,87 @@ impl AgentServer {
 
     /// One frame, before `App::step`: take new calls, gather what was heard
     /// last frame, add the agent's keys to `events`, and reply to a call
-    /// that is done. `dt` is last frame's length.
-    pub fn frame<G: Game>(&mut self, app: &mut App<G>, events: &mut Vec<InputEvent>, dt: f64) {
+    /// that is done. `dt` is the frame's length; the return is how far the
+    /// step moves the game on, which is 0 between calls in lockstep.
+    pub fn frame<G: Game>(
+        &mut self,
+        app: &mut App<G>,
+        events: &mut Vec<InputEvent>,
+        dt: f64,
+    ) -> f64 {
+        self.wall += dt;
         let from_window = events.len();
-        self.step(app, events, dt);
+        let working = self.step(app, events, dt);
         if let Some(rec) = &mut self.recording {
             for (i, e) in events.iter().enumerate() {
                 rec.key(
-                    app.ctx.clock,
+                    self.wall,
                     if i < from_window { "player" } else { "agent" },
                     e,
                 );
             }
         }
+        if self.lockstep && !working {
+            0.0
+        } else {
+            dt
+        }
     }
 
-    fn step<G: Game>(&mut self, app: &mut App<G>, events: &mut Vec<InputEvent>, dt: f64) {
+    /// Works through the calls; true while one still needs game time this
+    /// frame.
+    fn step<G: Game>(&mut self, app: &mut App<G>, events: &mut Vec<InputEvent>, dt: f64) -> bool {
         loop {
             match self.calls.try_recv() {
                 Ok(Msg::Call(id, ask)) => self.queue.push_back((id, ask)),
                 Ok(Msg::Hangup) | Err(TryRecvError::Disconnected) => {
                     log::info!("agent server: the client left, closing the game");
                     app.ctx.running = false;
-                    return;
+                    return false;
                 }
                 Err(TryRecvError::Empty) => break,
             }
         }
         self.gather(app);
 
-        while self.job.is_none() {
-            let Some((id, ask)) = self.queue.pop_front() else {
-                break;
+        loop {
+            if self.job.is_none() {
+                let Some((id, ask)) = self.queue.pop_front() else {
+                    return false;
+                };
+                self.job = self.begin(id, ask, app, events);
+                continue;
+            }
+            let job = self.job.as_mut().expect("a job is running");
+            if let Ask::Press { chord, .. } = &job.ask {
+                let chord = *chord;
+                if job.down {
+                    events.push(InputEvent::KeyUp {
+                        key: chord.key,
+                        mods: chord.mods,
+                    });
+                    job.down = false;
+                    return true;
+                } else if job.presses > 0 {
+                    events.push(key_down(chord));
+                    job.presses -= 1;
+                    job.down = true;
+                    return true;
+                }
+            }
+            // Judged before this frame runs, so the reply carries every
+            // line the waited time produced, and in lockstep no time passes
+            // after it.
+            let done = match &job.ask {
+                Ask::WaitFor { text, .. } => {
+                    job.left <= 0.0 || self.heard.iter().any(|l| l.to_lowercase().contains(text))
+                }
+                _ => job.left <= 0.0,
             };
-            self.job = self.begin(id, ask, app, events);
-        }
-        let Some(job) = &mut self.job else { return };
-        if let Ask::Press { chord, .. } = &job.ask {
-            let chord = *chord;
-            if job.down {
-                events.push(InputEvent::KeyUp {
-                    key: chord.key,
-                    mods: chord.mods,
-                });
-                job.down = false;
-            } else if job.presses > 0 {
-                events.push(key_down(chord));
-                job.presses -= 1;
-                job.down = true;
+            if !done {
+                job.left -= dt;
+                return true;
             }
-            if job.presses > 0 || job.down {
-                return;
-            }
-        }
-        job.left -= dt;
-        let done = match &job.ask {
-            Ask::WaitFor { text, .. } => {
-                job.left <= 0.0 || self.heard.iter().any(|l| l.to_lowercase().contains(text))
-            }
-            _ => job.left <= 0.0,
-        };
-        if done {
             let job = self.job.take().expect("a job is running");
             let mut text = std::mem::take(&mut self.heard).join("\n");
             if let Ask::WaitFor { text: want, .. } = &job.ask {
@@ -363,6 +418,7 @@ impl AgentServer {
             }
             if !reply(&self.out, &job.id, text, false) {
                 app.ctx.running = false;
+                return false;
             }
         }
     }
@@ -399,11 +455,21 @@ impl AgentServer {
                 reply(&self.out, &job.id, "(quitting)".into(), false);
                 return None;
             }
+            Ask::Lockstep(on) => {
+                self.lockstep = on;
+                let text = if on {
+                    "Lockstep is on: game time waits between calls. It passes only inside press, hold, release, wait and wait_for."
+                } else {
+                    "Lockstep is off: the game runs on the wall clock again."
+                };
+                reply(&self.out, &job.id, text.into(), false);
+                return None;
+            }
             Ask::RecordStart(path) => {
                 let (text, failed) = if self.recording.is_some() {
                     ("already recording; record_stop first".to_string(), true)
                 } else {
-                    match record::Recording::start(&mut app.ctx, path.as_deref()) {
+                    match record::Recording::start(&mut app.ctx, path.as_deref(), self.wall) {
                         Ok((rec, text)) => {
                             self.recording = Some(rec);
                             (text, false)
@@ -416,7 +482,7 @@ impl AgentServer {
             }
             Ask::RecordStop => {
                 let text = match self.recording.take() {
-                    Some(rec) => rec.stop(app.ctx.clock, Some(&mut app.ctx.audio)),
+                    Some(rec) => rec.stop(self.wall, Some(&mut app.ctx.audio)),
                     None => "not recording".to_string(),
                 };
                 reply(&self.out, &job.id, text, false);
@@ -445,10 +511,10 @@ impl AgentServer {
         let sounds = ctx.audio.take_heard();
         if let Some(rec) = &mut self.recording {
             for line in &ctx.transcript[start..] {
-                rec.said(ctx.clock, line);
+                rec.said(self.wall, line);
             }
             for s in &sounds {
-                rec.sound(ctx.clock, s);
+                rec.sound(self.wall, s);
             }
         }
         self.heard.extend(ctx.transcript[start..].iter().cloned());
@@ -463,7 +529,7 @@ impl AgentServer {
     /// still waiting.
     pub fn finish<G: Game>(&mut self, app: &mut App<G>) {
         if let Some(rec) = self.recording.take() {
-            rec.stop(app.ctx.clock, Some(&mut app.ctx.audio));
+            rec.stop(self.wall, Some(&mut app.ctx.audio));
         }
         if let Some(job) = self.job.take() {
             let text = std::mem::take(&mut self.heard).join("\n");
@@ -536,5 +602,256 @@ mod tests {
         ));
         let ctrl = key_down(Chord::parse("ctrl+a").unwrap());
         assert!(matches!(ctrl, InputEvent::KeyDown { text: None, .. }));
+    }
+
+    #[test]
+    fn lockstep_parses() {
+        let on = json!({ "name": "lockstep", "arguments": { "on": true } });
+        assert_eq!(parse_call(&on).unwrap(), Ask::Lockstep(true));
+        assert!(parse_call(&json!({ "name": "lockstep", "arguments": {} })).is_err());
+    }
+}
+
+/// The server driven end to end over a pipe, against a headless game with
+/// a reaction window.
+#[cfg(all(test, feature = "testing"))]
+mod lockstep_tests {
+    use super::*;
+    use crate::ctx::Ctx;
+    use crate::shell::FRAME_SECONDS;
+    use crate::state::State;
+    use crate::testing::Headless;
+    use std::io::PipeWriter;
+    use std::time::{Duration, Instant};
+
+    struct Reflex;
+
+    impl Game for Reflex {
+        const TITLE: &'static str = "Reflex";
+        const DATA_DIR: &'static str = "HearkenReflexTest";
+        const ENV_PREFIX: &'static str = "HEARKEN_REFLEX_TEST";
+        type Event = ();
+        type Data = ();
+        type Settings = ();
+        type Action = crate::bindings::NoAction;
+        type Category = hearken_speech::NoCategory;
+    }
+
+    /// "Now!" after half a second, then a third of a second to press space.
+    #[derive(Default)]
+    struct Window {
+        clock: f64,
+        over: bool,
+    }
+
+    const CUE_AT: f64 = 0.5;
+    const WINDOW: f64 = 0.3;
+
+    impl State<Reflex> for Window {
+        fn name(&self) -> &'static str {
+            "window"
+        }
+        fn help(&self, _ctx: &Ctx<Reflex>) -> String {
+            String::new()
+        }
+        fn update(&mut self, ctx: &mut Ctx<Reflex>, dt: f64) {
+            if self.over {
+                return;
+            }
+            let before = self.clock;
+            self.clock += dt;
+            if before < CUE_AT && self.clock >= CUE_AT {
+                ctx.say("Now!");
+            }
+            if self.clock >= CUE_AT + WINDOW {
+                self.over = true;
+                ctx.say("Missed.");
+            }
+        }
+        fn handle_input(&mut self, ctx: &mut Ctx<Reflex>, event: &InputEvent) {
+            if !self.over && event.pressed() == Some(Key::Space) {
+                self.over = true;
+                ctx.say(if self.clock >= CUE_AT {
+                    "Hit!"
+                } else {
+                    "Too soon."
+                });
+            }
+        }
+    }
+
+    /// What the server writes, kept for the test to read.
+    #[derive(Clone, Default)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Sink {
+        fn replies(&self) -> Vec<Value> {
+            String::from_utf8_lossy(&self.0.lock().unwrap())
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect()
+        }
+    }
+
+    struct Session {
+        game: Headless<Reflex>,
+        agent: AgentServer,
+        to_server: PipeWriter,
+        sink: Sink,
+        next_id: u64,
+    }
+
+    fn call_line(id: u64, name: &str, args: Value) -> String {
+        format!(
+            "{}\n",
+            json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": name, "arguments": args } })
+        )
+    }
+
+    impl Session {
+        /// The game opens on the first call, as a real session does.
+        fn open(name: &str, args: Value) -> (Session, String) {
+            let (from_client, mut to_server) = std::io::pipe().unwrap();
+            let sink = Sink::default();
+            to_server
+                .write_all(call_line(1, name, args).as_bytes())
+                .unwrap();
+            let agent = AgentServer::over(
+                Box::new(BufReader::new(from_client)),
+                Box::new(sink.clone()),
+            )
+            .expect("the first call opens the game");
+            let mut session = Session {
+                game: Headless::new((), Window::default()),
+                agent,
+                to_server,
+                sink,
+                next_id: 2,
+            };
+            session.agent.attach(&mut session.game.app);
+            let text = session.until_reply(1);
+            (session, text)
+        }
+
+        /// One frame of the real loop: the server, then the game.
+        fn frame(&mut self) {
+            let mut events = Vec::new();
+            let dt = self
+                .agent
+                .frame(&mut self.game.app, &mut events, FRAME_SECONDS);
+            self.game.app.step(events, dt);
+        }
+
+        /// Frames with no call in flight: an agent thinking.
+        fn think(&mut self, seconds: f64) {
+            for _ in 0..(seconds / FRAME_SECONDS).round() as u32 {
+                self.frame();
+            }
+        }
+
+        fn until_reply(&mut self, id: u64) -> String {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(r) = self.sink.replies().into_iter().find(|r| r["id"] == id) {
+                    return r["result"]["content"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                assert!(Instant::now() < deadline, "no reply to call {id}");
+                // Let the serve thread hand the call over before a frame
+                // runs, so a frame never passes waiting for the pipe.
+                std::thread::sleep(Duration::from_millis(2));
+                self.frame();
+            }
+        }
+
+        fn call(&mut self, name: &str, args: Value) -> String {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.to_server
+                .write_all(call_line(id, name, args).as_bytes())
+                .unwrap();
+            // The call is on its way; give it time to reach the channel so
+            // no frame runs on the wall clock while it travels.
+            std::thread::sleep(Duration::from_millis(20));
+            self.until_reply(id)
+        }
+
+        fn clock(&self) -> f64 {
+            self.game.app.ctx.clock
+        }
+    }
+
+    #[test]
+    fn in_lockstep_a_slow_agent_still_answers_a_cue_in_time() {
+        let (mut s, text) = Session::open("lockstep", json!({ "on": true }));
+        assert!(text.starts_with("Lockstep is on"), "{text}");
+        assert!(s
+            .call("wait_for", json!({ "text": "now", "seconds": 5 }))
+            .contains("Now!"));
+        // Three seconds of thinking, ten times the window.
+        let held = s.clock();
+        s.think(3.0);
+        assert_eq!(s.clock(), held, "game time held still between calls");
+        let text = s.call("press", json!({ "key": "space", "settle": 0 }));
+        assert!(text.contains("Hit!"), "{text}");
+        // A press with settle 0 takes its two frames and no more.
+        assert!((s.clock() - held - 2.0 * FRAME_SECONDS).abs() < 1e-9);
+    }
+
+    #[test]
+    fn without_lockstep_the_same_agent_is_too_late() {
+        let (mut s, _) = Session::open("listen", json!({}));
+        assert!(s
+            .call("wait_for", json!({ "text": "now", "seconds": 5 }))
+            .contains("Now!"));
+        s.think(3.0);
+        let text = s.call("press", json!({ "key": "space", "settle": 0 }));
+        assert!(!text.contains("Hit!"), "{text}");
+        assert!(s.game.app.ctx.transcript.iter().any(|l| l == "Missed."));
+    }
+
+    #[test]
+    fn a_wait_in_lockstep_runs_its_time_and_then_holds() {
+        let (mut s, _) = Session::open("lockstep", json!({ "on": true }));
+        let start = s.clock();
+        s.call("wait", json!({ "seconds": 0.25 }));
+        let after = s.clock();
+        assert!(
+            (after - start - 0.25).abs() < FRAME_SECONDS,
+            "ran {}",
+            after - start
+        );
+        s.think(1.0);
+        assert_eq!(s.clock(), after);
+        // Off again, the game runs between calls.
+        s.call("lockstep", json!({ "on": false }));
+        s.think(0.5);
+        assert!(s.clock() > after + 0.4);
+    }
+
+    #[test]
+    fn a_person_can_still_play_while_the_game_is_held() {
+        let (mut s, _) = Session::open("lockstep", json!({ "on": true }));
+        s.call("wait_for", json!({ "text": "now", "seconds": 5 }));
+        let held = s.clock();
+        // A key from the window lands on a held frame.
+        let mut events = vec![InputEvent::key(Key::Space)];
+        let dt = s.agent.frame(&mut s.game.app, &mut events, FRAME_SECONDS);
+        assert_eq!(dt, 0.0);
+        s.game.app.step(events, dt);
+        assert_eq!(s.clock(), held);
+        assert!(s.game.app.ctx.transcript.iter().any(|l| l == "Hit!"));
     }
 }
