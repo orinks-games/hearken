@@ -147,10 +147,26 @@ impl<G: Game> App<G> {
         shell: &mut dyn Shell,
         mut before: impl FnMut(&mut Self, &mut Vec<InputEvent>, f64),
     ) {
+        self.run_paced(shell, |app, events, dt| {
+            before(app, events, dt);
+            dt
+        });
+    }
+
+    /// `run_with`, where `before` also returns how many seconds this
+    /// frame's step moves the game on. 0 holds game time still: the window
+    /// keeps answering, events still land and the screen still redraws,
+    /// but no timer, pulse or countdown moves. The agent server's lockstep
+    /// uses it.
+    pub fn run_paced(
+        &mut self,
+        shell: &mut dyn Shell,
+        mut before: impl FnMut(&mut Self, &mut Vec<InputEvent>, f64) -> f64,
+    ) {
         while self.ctx.running {
             let mut events = shell.poll();
             let dt = shell.frame();
-            before(self, &mut events, dt);
+            let dt = before(self, &mut events, dt);
             self.step(events, dt);
             let lines = self.top_lines();
             shell.render(&lines);
