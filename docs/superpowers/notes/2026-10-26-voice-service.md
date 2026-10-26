@@ -36,6 +36,16 @@ Date: 2026-10-26. Builds on the spike (`2026-10-26-voice-spike.md`).
   voices run on the CPU (local-tts registers no execution provider), so
   DirectML is loaded, not used. The CPU-only route stays documented in the
   README for a game that wants no Microsoft DLL.
+- **DirectML's licence, checked.** The redistributable (NuGet
+  `Microsoft.AI.DirectML` 1.15.4, `LICENSE.txt`) section 1(a): "You may copy
+  and distribute the software ... in applications and services you develop
+  ... and/or games that run on Windows and Xbox." Not on its own (3e), not
+  with its notices removed (3c), Windows and Xbox only. Its
+  `ThirdPartyNotices.txt` covers GSL and half (MIT) and Zstandard
+  (BSD-3-Clause, notice required with binaries), so `hearken release`
+  writes both files beside the DLL (copies in `crates/hearken-cli/licenses`).
+  Section 2(a) says it may collect usage data. It is free to ship in a free
+  or open-source game; the DLL itself stays under Microsoft's terms.
 - **Installing.** Both routes exist: `voices/` in the release zip
   (`include`), and the `voice-download` feature's Settings row and
   `install_confirm` screen, which install into the data folder. Which one

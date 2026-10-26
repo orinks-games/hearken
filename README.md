@@ -400,7 +400,8 @@ corrects how names are said; editing it re-synthesizes the cached lines.
 ONNX Runtime links statically, but the prebuilt one includes Microsoft's
 DirectML, so the program needs `DirectML.dll` beside it. The build puts it
 in `target/<profile>`, and `hearken release` ships it with the other DLLs,
-as it does the Visual C++ runtime. Hearken's voices run on the CPU; DirectML
+as it does the Visual C++ runtime, adding `DirectML-LICENSE.txt` and
+`DirectML-ThirdPartyNotices.txt` beside it. Hearken's voices run on the CPU; DirectML
 is only loaded. A game that wants no Microsoft DLL can build ONNX Runtime
 itself without DirectML and point `ORT_LIB_LOCATION` at it.
 
@@ -452,10 +453,15 @@ but one (`voice` on Windows):
   (MIT or Apache-2.0) and `rustfst` (MIT or Apache-2.0). The voice package
   is data, not code: the Kokoro-82M weights and voices (Apache-2.0) and the
   CMU Pronouncing Dictionary (BSD-2-Clause), whose notices the game's
-  credits carry. On Windows the game also ships `DirectML.dll`, under
-  Microsoft's DirectML licence (Microsoft publishes it as a redistributable
-  for applications to ship); keep that licence text with the game's licence
-  notes, as for the Visual C++ runtime.
+  credits carry. On Windows the game also ships `DirectML.dll` (1.15.4),
+  which is not open source: Microsoft's DirectML licence lets a developer
+  distribute it inside games and applications for Windows and Xbox, but not
+  on its own, and its notices must not be removed. `hearken release` puts
+  the licence and its third-party notices (Microsoft GSL and half, MIT;
+  Zstandard, BSD-3-Clause, whose notice must travel with the binary) beside
+  the DLL. The game's own MIT or Apache-2.0 licence does not cover the DLL,
+  so the game's licence notes say so. The licence also says DirectML may
+  send usage data to Microsoft.
 
 These lists name the notable licences, not every crate's. `cargo about`
 builds the complete notice for what a game actually compiles in.
