@@ -1111,9 +1111,13 @@ dependencies = [
 name = "hearken-voice"
 version = "0.1.0"
 dependencies = [
+ "hearken-app",
  "hearken-audio",
  "local-tts-core",
  "log",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -54,6 +54,8 @@ pub struct Ctx<G: Game> {
     sound: SoundConfig,
     pub(crate) delivery: Delivery<G::Category>,
     pending: Vec<StackOp<G>>,
+    /// The game's own voices, if it installed any (`set_commentary`).
+    pub(crate) commentary: Option<Box<dyn crate::commentary::Commentary<G>>>,
     /// Set while `queued_speech` runs: `say` queues instead of interrupting.
     hold_interrupt: bool,
 }
@@ -89,6 +91,7 @@ impl<G: Game> Ctx<G> {
             sound,
             delivery,
             pending: Vec::new(),
+            commentary: None,
             hold_interrupt: false,
         };
         // So saved bus volumes are in effect from the very first frame, not
@@ -206,6 +209,13 @@ impl<G: Game> Ctx<G> {
         self.record(text);
     }
 
+    /// Writes `line` to the transcript and the session log without
+    /// speaking it, for speech that reached the player another way (the
+    /// commentary's voice).
+    pub fn transcribe(&mut self, line: impl Into<String>) {
+        self.record(line.into());
+    }
+
     pub(crate) fn record(&mut self, line: String) {
         log::info!(target: TRANSCRIPT_TARGET, "{line}");
         self.transcript.push(line);
@@ -216,13 +226,16 @@ impl<G: Game> Ctx<G> {
         }
     }
 
-    /// Silence both voices, and drop the event backlog the pacer was
-    /// projecting.
+    /// Silence both voices and the commentary, and drop the event backlog
+    /// the pacer was projecting.
     pub fn stop_speech(&mut self) {
         self.speech.stop();
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             pacer.reset();
         }
+        self.stop_commentary();
+        // Nothing is talking now, so the duck lifts on the next frame.
+        self.delivery.duck_until = 0.0;
     }
 
     /// Push the saved speech settings to the voices.

@@ -128,8 +128,10 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clippy -p hearken-app --features agent-server --all-targets --locked -- -D warnings
 
-  # The voice spike: local-tts and ONNX Runtime build, and Kokoro speaks a
-  # line that hearken-audio decodes. Pull requests run Windows and Linux like
+  # hearken-voice: local-tts and ONNX Runtime build, Kokoro speaks a line
+  # that hearken-audio decodes, the Voice service's tests pass, and a whole
+  # game (the template, with the voice features on) links Prism and ONNX
+  # Runtime together. Pull requests run Windows and Linux like
   # the tests; a manual run adds macOS. The voice package (92 MB from Hugging
   # Face, pinned by SHA-256) is cached between runs.
   voice:
@@ -173,9 +175,16 @@ jobs:
         run: cargo test -p hearken-voice --features download --locked -- --nocapture --test-threads=1 2>&1 | tee speak.log
       - name: Clippy
         run: cargo clippy -p hearken-voice --features download --all-targets --locked -- -D warnings
-      - name: Build the facade with voice
-        if: runner.os == 'Linux'
-        run: cargo check -p hearken --features voice --locked
+      # A game with voices on: the facade's link arguments, Prism and ONNX
+      # Runtime in one program. On Windows, DirectML.dll must sit beside it
+      # for `hearken release` to ship.
+      - name: Build a game with voice
+        run: |
+          cargo build -p hello-hearken --features hearken/voice-download --locked
+          if [ "$RUNNER_OS" = Windows ]; then
+            ls target/debug/*.dll
+            test -f target/debug/DirectML.dll
+          fi
       # Last, so the numbers sit at the end of the log.
       - name: Report
         run: |
