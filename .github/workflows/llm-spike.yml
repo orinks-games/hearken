@@ -1,0 +1,143 @@
+# Fresh-commentary spike: can a tiny local language model write one-line
+# basketball colour fast enough on an ordinary CPU, and does the Rust
+# binding build on Hearken's three platforms? Runs on demand and on pushes
+# to the spike's branch; see spikes/llm-commentary/README.md. Not part of
+# CI: it downloads several GB of models and proves nothing about Hearken.
+name: LLM spike
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Comma-separated model names from fetch.py (empty: all)"
+        default: ""
+  push:
+    branches: ["claude/project-thread-s98rqx"]
+    paths:
+      - ".github/workflows/llm-spike.yml"
+      - "spikes/llm-commentary/**"
+
+concurrency:
+  group: llm-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned llama.cpp release with prebuilt CPU binaries (MIT).
+  LLAMA_TAG: b11912
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Prebuilt llama-server times every candidate on each OS.
+  bench:
+    name: bench (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            asset: ubuntu-x64.tar.gz
+          - os: windows-2025
+            asset: win-cpu-x64.zip
+          - os: macos-15
+            asset: macos-arm64.tar.gz
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Describe the CPU
+        shell: bash
+        run: |
+          echo "runner: ${{ matrix.os }}"
+          case "$RUNNER_OS" in
+            Linux) nproc; grep -m1 "model name" /proc/cpuinfo; free -g ;;
+            macOS) sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize ;;
+            Windows) echo "$NUMBER_OF_PROCESSORS cpus"; wmic cpu get name 2>/dev/null || true ;;
+          esac
+      - name: Fetch llama.cpp ${{ env.LLAMA_TAG }}
+        shell: bash
+        run: |
+          set -e
+          url="https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/llama-$LLAMA_TAG-bin-${{ matrix.asset }}"
+          echo "$url"
+          curl -sSL --retry 3 -o llama-bin "$url"
+          mkdir llama
+          case "${{ matrix.asset }}" in
+            *.zip) unzip -q llama-bin -d llama ;;
+            *) tar xzf llama-bin -C llama ;;
+          esac
+          find llama -name "llama-server*" -maxdepth 3
+      - name: Fetch the models
+        shell: bash
+        run: python spikes/llm-commentary/fetch.py --out models --only "${{ github.event.inputs.models }}"
+      - name: Time every model (all cores)
+        shell: bash
+        run: |
+          python spikes/llm-commentary/bench.py --server llama --out results \
+            --host-label "${{ matrix.os }}" --threads "$(python -c 'import os;print(os.cpu_count())')" \
+            models/*.gguf
+      # A weaker PC: half the runner's cores, the two smallest and the
+      # likeliest pick.
+      - name: Time the small ones on two threads
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python spikes/llm-commentary/bench.py --server llama --out results \
+            --host-label "${{ matrix.os }}-2threads" --threads 2 \
+            models/qwen3-0.6b-q4.gguf models/lfm2-350m-q8.gguf models/smollm2-360m-q8.gguf models/qwen3.5-0.8b-q4.gguf
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: llm-spike-${{ matrix.os }}
+          path: results/
+          if-no-files-found: warn
+
+  # The Rust binding (llama-cpp-2, MIT/Apache-2.0, llama.cpp built from
+  # vendored source through CMake) on each OS, speaking through Qwen3-0.6B.
+  rust:
+    name: rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/llm-commentary/rust
+          cache-on-failure: true
+      - uses: lukka/get-cmake@latest
+        if: runner.os == 'Windows'
+      - name: Build
+        shell: bash
+        working-directory: spikes/llm-commentary/rust
+        run: |
+          start=$(date +%s)
+          cargo build --release
+          echo "build took $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -la target/release/ | grep -i -E "llm-commentary-spike|\.(dll|so|dylib)$" || true
+      - name: Fetch Qwen3-0.6B Q4_K_M
+        shell: bash
+        run: python spikes/llm-commentary/fetch.py --out models --only qwen3-0.6b-q4
+      - name: Speak six lines
+        shell: bash
+        run: |
+          exe=spikes/llm-commentary/rust/target/release/llm-commentary-spike
+          [ "$RUNNER_OS" = Windows ] && exe="$exe.exe"
+          n=$(python -c 'import os;print(os.cpu_count())')
+          "$exe" models/qwen3-0.6b-q4.gguf "$n" | tee rust-${{ matrix.os }}.txt
+          { echo '### rust (${{ matrix.os }})'; echo '```'; cat rust-${{ matrix.os }}.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: llm-spike-rust-${{ matrix.os }}
+          path: rust-*.txt
+          if-no-files-found: warn
