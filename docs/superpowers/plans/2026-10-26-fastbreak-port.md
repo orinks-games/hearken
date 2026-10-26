@@ -1,7 +1,7 @@
 # Fastbreak on Hearken: port plan
 
 - Date: 2026-10-26
-- Status: plan, awaiting execution
+- Status: approved 2026-10-26, awaiting execution
 - Source game: `Orinks/fate-engine`, `examples/fastbreak` on `dev` at `d043a78`
 - Target engine: `orinks-games/hearken`, `main` at `d826403`
 - Models: this plan was written on Fable 5.1 at high effort. Each execution
@@ -127,7 +127,7 @@ What Hearken does not have, and this plan adds:
 
 | Decision | Choice | Why |
 |---|---|---|
-| Where the game lives | A new repository `orinks-games/fastbreak`, started from `template/`, with `hearken` as a git dependency pinned to a commit. Pending Orinks's answer on the decision card; if the answer is "inside hearken", task 0 adds `games/fastbreak` to the workspace instead and nothing else changes. | Matches Freight Fate and Echo Parlor; `hearken play orinks-games/fastbreak` works by name; Hearken's workspace stays engine-only. |
+| Where the game lives | A new repository `orinks-games/fastbreak`, started from `template/`, with `hearken` as a git dependency pinned to a commit. Approved by Orinks on 2026-10-26. | Matches Freight Fate and Echo Parlor; `hearken play orinks-games/fastbreak` works by name; Hearken's workspace stays engine-only. |
 | Crate layout | `fastbreak-core` (engine-free rules and content, no Hearken dependency) and `fastbreak` (the game: `Game`, screens, sound, commentary). | The Freight Fate precedent: rules in a headless crate so they test without a window and the content parity tests stay fast. |
 | Content parity | Teams, schedule, simulated scores, standings, playoff opponents and every authored line are ported verbatim and checked against a golden JSON generated from the Python modules. | The season's reproducibility is a feature of the design; a port that changes a score is a different game. |
 | Match outcome model | Replace the 2D physics arc with an audio-first shot model: outcome from release timing, shot distance, defender proximity and team ratings, drawn from a per-game seeded RNG. Deep makes score 3. | Hearken has no 2D physics and the Fate arc existed to drive a sprite view. The player hears timing and proximity; a seeded model keeps tests deterministic. |
@@ -494,10 +494,14 @@ Repository: `orinks-games/hearken`.
 - Replacing Genny renders with recordings; a layer is a file and can come
   later with no code change.
 
+## Decisions taken by Orinks
+
+- 2026-10-26: the recommendations stand as written, including the new
+  `orinks-games/fastbreak` repository and Kokoro through local-tts.
+
 ## Open questions for Orinks
 
-1. Repository location (decision card in the planning thread).
-2. Ship the 92 MB voice package in the release zip, or download on first
+1. Ship the 92 MB voice package in the release zip, or download on first
    run? The plan builds both; the release choice is yours.
-3. Voice casting after a listen (task 9 proposes Dana on `bf_emma`, Big M
+2. Voice casting after a listen (task 9 proposes Dana on `bf_emma`, Big M
    on `am_michael`).
