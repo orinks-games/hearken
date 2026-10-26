@@ -127,3 +127,69 @@ jobs:
       - name: Agent server clippy
         if: runner.os == 'Linux'
         run: cargo clippy -p hearken-app --features agent-server --all-targets --locked -- -D warnings
+
+  # The voice spike: local-tts and ONNX Runtime build, and Kokoro speaks a
+  # line that hearken-audio decodes. Pull requests run Windows and Linux like
+  # the tests; a manual run adds macOS. The voice package (92 MB from Hugging
+  # Face, pinned by SHA-256) is cached between runs.
+  voice:
+    name: voice (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["windows-2025","ubuntu-24.04"]' || '["windows-2025","macos-15","ubuntu-24.04"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      HEARKEN_VOICES: ${{ github.workspace }}/voices
+      HEARKEN_VOICE_REQUIRED: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-deps
+        if: runner.os == 'Linux'
+      - run: rustup show
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: voice
+          cache-on-failure: true
+      - uses: actions/cache@v4
+        with:
+          path: voices
+          key: voices-kokoro-en-q8-local-tts-0.7.0
+      # One test-profile build serves both the install example and the
+      # tests, so the crate compiles once.
+      - name: Build
+        run: |
+          start=$(date +%s)
+          cargo test -p hearken-voice --features download --no-run --locked
+          echo "VOICE_BUILD_S=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+      - name: Install the voice package
+        run: target/debug/examples/install voices
+      - name: Speak
+        run: cargo test -p hearken-voice --features download --locked -- --nocapture --test-threads=1 2>&1 | tee speak.log
+      - name: Clippy
+        run: cargo clippy -p hearken-voice --features download --all-targets --locked -- -D warnings
+      - name: Build the facade with voice
+        if: runner.os == 'Linux'
+        run: cargo check -p hearken --features voice --locked
+      # Last, so the numbers sit at the end of the log.
+      - name: Report
+        run: |
+          bin=$(find target/debug/deps -maxdepth 1 -type f -name 'kokoro-*' ! -name '*.d' ! -name '*.pdb' | head -1)
+          case "$RUNNER_OS" in
+            macOS) libs=$(otool -L "$bin") ;;
+            *) libs=$(ldd "$bin" || true) ;;
+          esac
+          echo "$libs"
+          shipped=$(find target/debug -maxdepth 2 -iname '*onnxruntime*' | tr '\n' ' ')
+          if echo "$libs" | grep -qi onnxruntime; then link=dynamic; else link=static; fi
+          {
+            echo "VOICE-REPORT $RUNNER_OS"
+            echo "VOICE-BUILD ${VOICE_BUILD_S} s (test profile, sccache and rust-cache as restored)"
+            echo "VOICE-LINK $link; ONNX Runtime files in target: ${shipped:-none}"
+            grep -E '^load:|^warm-up:|VOICE-LATENCY' speak.log
+          } | tee -a "$GITHUB_STEP_SUMMARY"

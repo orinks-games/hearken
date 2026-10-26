@@ -22,9 +22,13 @@ agent-server = ["hearken-app/agent-server"]
 radio = ["dep:hearken-radio"]
 # HE-AAC for radio, through Fraunhofer's FDK AAC; read the README's licence notes first.
 fdk-aac = ["radio", "hearken-radio/fdk-aac"]
+# AI commentary voices (Kokoro through local-tts and ONNX Runtime):
+# `hearken::voice`. Adds ONNX Runtime to the build; off by default.
+voice = ["dep:hearken-voice", "hearken-voice/voice"]
 
 [dependencies]
 hearken-app.workspace = true
 hearken-radio = { workspace = true, optional = true }
+hearken-voice = { workspace = true, optional = true }
 # A direct dependency, so build.rs sees Prism's link arguments.
 hearken-speech.workspace = true

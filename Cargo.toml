@@ -27,6 +27,7 @@ hearken-synth = { path = "crates/hearken-synth" }
 hearken-pack = { path = "crates/hearken-pack" }
 hearken-audio = { path = "crates/hearken-audio", default-features = false }
 hearken-radio = { path = "crates/hearken-radio" }
+hearken-voice = { path = "crates/hearken-voice" }
 kira = { version = "0.12", default-features = false, features = ["cpal", "symphonia"] }
 # Kira's own versions: hearken-audio opens the device itself.
 cpal = "0.18"
