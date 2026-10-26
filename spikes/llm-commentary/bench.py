@@ -18,6 +18,7 @@ Models are named by file. Qwen3 models get thinking turned off through
 
 import argparse
 import json
+import re
 import os
 import platform
 import subprocess
@@ -26,66 +27,109 @@ import time
 import urllib.error
 import urllib.request
 
-SYSTEM = (
-    "You are Marcus \"Big M\" Cole, the colour commentator on a basketball "
-    "radio broadcast of the Continental Basketball League. Dana Wells does "
-    "the play-by-play; you add one short remark after her call. Speak like a "
-    "warm, veteran ex-player. Write exactly one spoken sentence of at most "
-    "20 words. Use only the facts given. Mention a number only if it is in "
-    "the facts. No lists, no quotation marks, no stage directions, no emoji."
-)
+SYSTEM = """You are Marcus "Big M" Cole, the colour commentator on the radio call of a Continental Basketball League game, beside the play-by-play voice Dana Wells. After Dana's call you add ONE short remark: a warm, direct, veteran ex-player's take, sometimes addressed to Dana, sometimes to the listener's team as "you".
 
-# What the booth knows at each moment. `facts` is what the game would
-# render from its state; the model turns it into a line.
+Rules: one spoken sentence of 6 to 20 words (two very short sentences at most). React to the angle; do not repeat Dana's call and do not read the score back. Use only the facts given. No number unless it appears in the facts. No names other than Dana and the two teams. No quotation marks, lists, emoji or speaker label.
+
+Examples of your remarks:
+Angle: your team's fifth straight basket. -> Somebody call a timeout, the Skyliners have hit five straight!
+Angle: your team takes the lead for the first time. -> There it is, the first lead of the night for the Skyliners.
+Angle: halftime, your team trails by eight. -> Shake it off. One good run changes everything.
+Angle: the final buzzer, a win. -> I loved the effort, Dana. That one's in the books."""
+
+# What the booth knows at each moment. The game would render `facts`
+# from its state: the booth already knows the angle (a run, a lead
+# change, a break), so the model is asked to react to it, not to find it.
 SCENARIOS = [
     {
         "key": "run_of_five",
-        "facts": "Home team: Seattle Skyliners (the listener's team). Away team: Portland Cascades. "
-        "Third quarter, 7 possessions left in the quarter. Score: Skyliners 44, Cascades 41. "
-        "The Skyliners have just scored on five straight possessions, a 12 to 0 run. "
+        "facts": "Game: Seattle Skyliners (the listener's team, you) at home against the Portland Cascades.\n"
+        "Situation: third quarter, 7 possessions left in the quarter. Score: Skyliners 44, Cascades 41.\n"
+        "Angle: the Skyliners have scored on five straight possessions, a 12 to 0 run.\n"
         "Dana just said: Bucket! Two points. The Skyliners lead 44 to 41.",
     },
     {
         "key": "lead_change",
-        "facts": "Home: Seattle Skyliners (the listener's team). Away: Portland Cascades. "
-        "Fourth quarter, 3 possessions left. Score: Skyliners 61, Cascades 60. "
-        "The Skyliners just took the lead for the first time since the first quarter. "
-        "Earlier they trailed by as many as 9. "
+        "facts": "Game: Seattle Skyliners (the listener's team, you) at home against the Portland Cascades.\n"
+        "Situation: fourth quarter, 3 possessions left. Score: Skyliners 61, Cascades 60.\n"
+        "Angle: the Skyliners just took the lead back after trailing by as many as 9; a comeback.\n"
         "Dana just said: Three! The Skyliners lead 61 to 60.",
     },
     {
         "key": "halftime",
-        "facts": "Halftime. Home: Seattle Skyliners (the listener's team). Away: Portland Cascades. "
-        "Score: Cascades 38, Skyliners 30. The Cascades led by as many as 11. "
-        "The Skyliners missed 6 of their last 8 shots and were stripped twice. "
+        "facts": "Game: Seattle Skyliners (the listener's team, you) at home against the Portland Cascades.\n"
+        "Situation: halftime. Score: Cascades 38, Skyliners 30.\n"
+        "Angle: the Skyliners trail by 8 at the half; they missed 6 of their last 8 shots and were stripped twice. The Cascades led by as many as 11.\n"
         "Dana just said: That's the half. Cascades 38, Skyliners 30.",
     },
     {
         "key": "steal_late",
-        "facts": "Home: Seattle Skyliners (the listener's team). Away: Portland Cascades. "
-        "Fourth quarter, 1 possession left. Score: Skyliners 70, Cascades 70. "
-        "The Skyliners just stole the ball. "
+        "facts": "Game: Seattle Skyliners (the listener's team, you) at home against the Portland Cascades.\n"
+        "Situation: fourth quarter, 1 possession left. Score: tied, Skyliners 70, Cascades 70.\n"
+        "Angle: the Skyliners just stole the ball with the game tied and one possession left.\n"
         "Dana just said: Stripped! Your ball.",
     },
     {
         "key": "final_win",
-        "facts": "Final buzzer. Home: Seattle Skyliners (the listener's team). Away: Portland Cascades. "
-        "Final score: Skyliners 74, Cascades 70. The Skyliners trailed by 8 at halftime "
-        "and outscored the Cascades 44 to 32 in the second half. "
+        "facts": "Game: Seattle Skyliners (the listener's team, you) at home against the Portland Cascades.\n"
+        "Situation: final buzzer. Final score: Skyliners 74, Cascades 70.\n"
+        "Angle: a win; the Skyliners trailed by 8 at halftime and outscored the Cascades 44 to 32 in the second half.\n"
         "Dana just said: That's the game. Skyliners 74, Cascades 70.",
     },
     {
         "key": "blowout_loss",
-        "facts": "Home: Seattle Skyliners (the listener's team). Away: Portland Cascades. "
-        "Fourth quarter, 5 possessions left. Score: Cascades 68, Skyliners 49. "
-        "The Cascades lead by 19, their largest lead of the night. "
+        "facts": "Game: Seattle Skyliners (the listener's team, you) at home against the Portland Cascades.\n"
+        "Situation: fourth quarter, 5 possessions left. Score: Cascades 68, Skyliners 49.\n"
+        "Angle: the Cascades lead by 19, their largest lead of the night; the game is slipping away.\n"
         "Dana just said: Another one drops. Cascades 68, Skyliners 49.",
     },
 ]
 
+EXAMPLE_LINES = [
+    "somebody call a timeout, the skyliners have hit five straight",
+    "there it is, the first lead of the night for the skyliners",
+    "shake it off. one good run changes everything",
+    "i loved the effort, dana. that one's in the books",
+]
+
 # Each scenario is sent this many times with the sampler seed changed, so
 # the report shows how varied the wording is.
-VARIANTS = 2
+VARIANTS = 3
+
+
+def judge(text, facts):
+    """Would the game's filter let this line through? Returns the reason
+    it would not, or None."""
+    t = text.strip().replace("\u2019", "'").replace("\u2014", ", ")
+    if not t:
+        return "empty"
+    if "\n" in t:
+        return "several lines"
+    if re.search(r'["\u201c\u201d*#`\[\]]', t):
+        return "quotes or markup"
+    if re.match(r"(?i)^(marcus|big m|cole|dana|m:|big m cole)\b[^a-z]*:", t):
+        return "speaker label"
+    if any(ord(c) > 0x2FFF for c in t):
+        return "emoji"
+    words = re.findall(r"[A-Za-z0-9']+", t)
+    if not 4 <= len(words) <= 25:
+        return f"{len(words)} words"
+    if t[-1] not in ".!?":
+        return "cut off"
+    if len(re.findall(r"[.!?](\s|$)", t)) > 2:
+        return "more than two sentences"
+    if re.search(r"(?i)dana (just )?said", t):
+        return "echoes Dana"
+    dana = re.search(r"Dana just said: (.*)$", facts)
+    if dana and dana.group(1).strip().rstrip(".").lower() in t.lower():
+        return "repeats Dana's call"
+    nums = set(re.findall(r"\d+", t))
+    if nums - set(re.findall(r"\d+", facts)):
+        return "number not in facts"
+    low = re.sub(r"[^a-z0-9 ]", "", t.lower())
+    if any(re.sub(r"[^a-z0-9 ]", "", e) in low for e in EXAMPLE_LINES):
+        return "copies an example"
+    return None
 
 
 def log(msg):
@@ -112,10 +156,10 @@ def chat(url, model_name, facts, seed, no_think):
         "model": model_name,
         "messages": [
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": "Facts: " + facts + "\n\nYour one sentence:"},
+            {"role": "user", "content": facts + "\n\nYour remark:"},
         ],
         "max_tokens": 48,
-        "temperature": 0.8,
+        "temperature": 0.7,
         "top_p": 0.9,
         "seed": seed,
         "stream": False,
@@ -188,12 +232,13 @@ def bench_model(server, model_path, threads, port):
                 r = chat(url, name, sc["facts"], 100 + v, no_think)
                 r["scenario"] = sc["key"]
                 r["variant"] = v
+                r["reject"] = judge(r["text"], sc["facts"])
                 results["runs"].append(r)
                 log(
                     f"[{sc['key']}#{v}] {r['wall_s']:.2f} s "
                     f"(prompt {r['prompt_tokens']} tok @ {r['prompt_per_second'] or 0:.0f} t/s, "
                     f"gen {r['completion_tokens']} tok @ {r['predicted_per_second'] or 0:.1f} t/s, "
-                    f"cached {r['cache_n']}): {r['text']!r}"
+                    f"cached {r['cache_n']}) {'OK' if not r['reject'] else 'X ' + r['reject']}: {r['text']!r}"
                 )
     except Exception as e:  # noqa: BLE001
         results["error"] = str(e)
@@ -215,7 +260,9 @@ def summarize(results):
     gen = [r["predicted_per_second"] for r in runs if r.get("predicted_per_second")]
     pp = [r["prompt_per_second"] for r in runs if r.get("prompt_per_second")]
     toks = [r["completion_tokens"] for r in runs if r.get("completion_tokens")]
+    passed = sum(1 for r in runs if not r.get("reject"))
     return {
+        "pass": f"{passed}/{len(runs)}",
         "n": len(runs),
         "wall_mean_s": round(sum(walls) / len(walls), 2),
         "wall_median_s": round(walls[len(walls) // 2], 2),
@@ -233,25 +280,26 @@ def write_report(all_results, out_dir, host):
         f"logical CPUs: {os.cpu_count()}"
     )
     lines.append("")
-    lines.append("| Model | Size | Threads | Load | Line wall mean / median / max | Gen tok/s | Prompt tok/s | Tokens/line |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| Model | Size | Threads | Load | Line wall mean / median / max | Gen tok/s | Prompt tok/s | Tokens/line | Lines the filter keeps |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for res in all_results:
         s = summarize(res)
         if not s:
-            lines.append(f"| {res['model']} | {res['size_mb']} MB | {res['threads']} | – | error: {res.get('error','?')} | | | |")
+            lines.append(f"| {res['model']} | {res['size_mb']} MB | {res['threads']} | – | error: {res.get('error','?')} | | | | |")
             continue
         lines.append(
             f"| {res['model']} | {res['size_mb']} MB | {res['threads']} | {res.get('load_s','?')} s | "
             f"{s['wall_mean_s']} / {s['wall_median_s']} / {s['wall_max_s']} s | {s['gen_tps_mean']} | "
-            f"{s['prompt_tps_mean']} | {s['completion_tokens_mean']} |"
+            f"{s['prompt_tps_mean']} | {s['completion_tokens_mean']} | {s['pass']} |"
         )
     lines.append("")
     for res in all_results:
         lines.append(f"## {res['model']}")
         lines.append("")
         for r in res.get("runs", []):
+            verdict = "kept" if not r.get("reject") else f"dropped: {r['reject']}"
             lines.append(
-                f"- **{r['scenario']}** ({r['wall_s']} s, {r['completion_tokens']} tok, {r['finish']}): {r['text']}"
+                f"- **{r['scenario']}** ({r['wall_s']} s, {r['completion_tokens']} tok, {verdict}): {r['text']}"
             )
         lines.append("")
     report = "\n".join(lines)

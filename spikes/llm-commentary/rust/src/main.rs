@@ -16,7 +16,7 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel, Special};
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 
 const SYSTEM: &str = "You are Marcus \"Big M\" Cole, the colour commentator on a basketball \
@@ -78,7 +78,8 @@ fn main() -> Result<()> {
         let mut ctx = model.new_context(&backend, ctx_params)?;
 
         let prompt = chatml(facts);
-        let tokens = model.str_to_token(&prompt, AddBos::Never)?;
+        // The ChatML markers are special tokens; the model adds no BOS of its own.
+        let tokens = model.vocab().tokenize(prompt.as_bytes(), false, true);
         let mut batch = LlamaBatch::new(tokens.len().max(1), 1);
         let last = tokens.len() - 1;
         for (i, tok) in tokens.iter().enumerate() {
@@ -101,10 +102,10 @@ fn main() -> Result<()> {
         while n_gen < MAX_TOKENS {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(token);
-            if model.is_eog_token(token) {
+            if model.vocab().is_eog(token) {
                 break;
             }
-            let bytes = model.token_to_bytes(token, Special::Tokenize)?;
+            let bytes = model.vocab().token_to_piece(token, true, None);
             let _ = decoder.decode_to_string(&bytes, &mut text, false);
             batch.clear();
             batch.add(token, n_cur, &[0], true)?;
