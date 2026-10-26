@@ -8,3 +8,6 @@ pub use hearken_speech as speech;
 
 #[cfg(feature = "radio")]
 pub use hearken_radio as radio;
+
+#[cfg(feature = "voice")]
+pub use hearken_voice as voice;
