@@ -324,6 +324,7 @@ impl<G: Game> Ctx<G> {
             pacer.pause();
         }
         self.speech.stop_event();
+        self.stop_commentary();
     }
 
     /// Back in gameplay; nothing from before the pause is news.
@@ -377,10 +378,26 @@ impl<G: Game> Ctx<G> {
         self.audio.set_duck(level);
     }
 
-    /// Per frame: lift the duck once its hold has passed and the pacer says
-    /// the event voice is done.
+    /// Duck the mix for `seconds` from now, as a spoken line does, when
+    /// the player has "Lower game sound under speech" on: for speech the
+    /// engine does not say itself, such as the commentary's voice.
+    pub fn hold_duck(&mut self, seconds: f64) {
+        if !self.settings.audio.duck_for_speech || !seconds.is_finite() || seconds <= 0.0 {
+            return;
+        }
+        let level = self.sound_config().duck_level;
+        self.delivery.duck_until = self.delivery.duck_until.max(self.clock + seconds);
+        self.delivery.ducked = true;
+        self.audio.set_duck(level);
+    }
+
+    /// Per frame: lift the duck once its hold has passed, the pacer says
+    /// the event voice is done, and the commentary is quiet.
     pub(crate) fn update_duck(&mut self) {
         if !self.delivery.ducked || self.clock < self.delivery.duck_until {
+            return;
+        }
+        if self.commentary_speaking() {
             return;
         }
         if self

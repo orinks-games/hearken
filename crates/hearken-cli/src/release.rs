@@ -170,6 +170,7 @@ fn windows_runtime(target: &Path, stage: &Path) -> Result<(), String> {
             copy(&path, &stage.join(entry.file_name()))?;
         }
     }
+    directml_notices(stage)?;
     match vc_runtime() {
         Some(crt) => {
             for entry in std::fs::read_dir(&crt)
@@ -183,6 +184,28 @@ fn windows_runtime(target: &Path, stage: &Path) -> Result<(), String> {
             "Could not find the Visual C++ runtime to ship; players without it installed \
              will need it."
         ),
+    }
+    Ok(())
+}
+
+/// Microsoft's DirectML licence (1.15.4, the redistributable ONNX Runtime
+/// 1.22 is built against) and its third-party notices.
+const DIRECTML_LICENSE: &str = include_str!("../licenses/directml/LICENSE.txt");
+const DIRECTML_NOTICES: &str = include_str!("../licenses/directml/ThirdPartyNotices.txt");
+
+/// A game with AI voices ships `DirectML.dll`. Its licence allows that
+/// inside a game for Windows, and its third-party notices (Zstandard's BSD
+/// licence among them) must travel with it, so both go beside the DLL.
+fn directml_notices(stage: &Path) -> Result<(), String> {
+    if !stage.join("DirectML.dll").is_file() {
+        return Ok(());
+    }
+    for (name, text) in [
+        ("DirectML-LICENSE.txt", DIRECTML_LICENSE),
+        ("DirectML-ThirdPartyNotices.txt", DIRECTML_NOTICES),
+    ] {
+        std::fs::write(stage.join(name), text)
+            .map_err(|e| format!("Could not write {name}: {e}"))?;
     }
     Ok(())
 }
@@ -245,7 +268,21 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{engine_reads_packs, platform};
+    use super::{directml_notices, engine_reads_packs, platform};
+
+    #[test]
+    fn directml_ships_with_its_licence() {
+        let dir = tempfile::tempdir().unwrap();
+        directml_notices(dir.path()).unwrap();
+        assert!(!dir.path().join("DirectML-LICENSE.txt").exists());
+        std::fs::write(dir.path().join("DirectML.dll"), "").unwrap();
+        directml_notices(dir.path()).unwrap();
+        let licence = std::fs::read_to_string(dir.path().join("DirectML-LICENSE.txt")).unwrap();
+        assert!(licence.contains("games that run on Windows and Xbox"));
+        let notices =
+            std::fs::read_to_string(dir.path().join("DirectML-ThirdPartyNotices.txt")).unwrap();
+        assert!(notices.contains("Zstandard"));
+    }
 
     #[test]
     fn packing_needs_an_engine_that_reads_packs() {

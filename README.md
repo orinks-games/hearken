@@ -310,6 +310,100 @@ limit.
   `radio`. Fraunhofer's licence permits using FDK AAC only under AAC patent
   licences the game holds, and grants none itself: a game without them is
   not licensed to use it at all. Read the licence notes below first.
+- `voice`: AI commentary voices, as `hearken::voice`. See Commentary voices.
+  It adds ONNX Runtime to the build (downloaded prebuilt at build time).
+- `voice-download`: `voice`, plus the in-game installer for the voice
+  package. It adds `ureq` and rustls.
+
+## Commentary voices
+
+With `voice` on, a game speaks commentary in Kokoro's voices, synthesized
+on the player's computer by [local-tts](https://github.com/GarAlex/local-tts)
+and ONNX Runtime. No account, key or network is needed once the voice
+package (`kokoro-en-q8`, about 92 MB) is installed.
+
+```rust
+use hearken::voice::{HasVoiceSettings, Role, Voice, VoiceConfig, VoiceSettings};
+use hearken::Line;
+
+const CREW: &[Role] = &[Role {
+    id: "pbp",
+    label: "Play-by-play",
+    default_voice: "bf_emma",
+    sample: "Welcome in, everybody.",
+}];
+
+// Once, at startup: the model loads on a worker thread.
+let voice = Voice::new(&ctx, VoiceConfig::new(CREW));
+ctx.set_commentary(Box::new(voice));
+
+// On entering a screen, get its fixed lines ready.
+ctx.prime_commentary(&[Line::new("pbp", "Tip-off!")]);
+
+// Any time: returns at once, plays when ready.
+ctx.commentate(Line::new("pbp", "Hawks lead 54-49 at the half.").key("score"));
+```
+
+The game's `Settings` type holds a `VoiceSettings` and implements
+`HasVoiceSettings`, and its `Game::settings_rows` adds
+`hearken::voice::settings_rows(CREW)`: who speaks commentary (AI voices,
+screen reader, or off), a voice for each role (Enter plays its sample), and
+the speed.
+
+How lines are delivered:
+
+- One line plays at a time on `Bus::VOICE`, so the crew never talks over
+  itself. The mix ducks under it as it does under event speech, when the
+  player has "Lower game sound under speech" on. F2 stops it.
+- A line takes 1 to 6 seconds to synthesize on a modest computer, so lines
+  are cached in memory and as WAV files under `voice-cache/` in the game's
+  data folder (256 MB at most, oldest first). `prime` fills the cache
+  ahead of time without saying anything. A cached line plays the same frame.
+- The pacer's rules apply: the same line within 2.5 s is said once, a
+  keyed line only when its text changes, and a line that would start more
+  than 4 s (`Ambient`) or 8 s (`Important`) after it was asked for is
+  dropped. A `Critical` line cuts off the voice and clears the queue.
+- The player's verbosity level applies to each line's category, as it does
+  to `say_event_with`.
+- With no package installed, a model that will not load, or the player's
+  setting on the screen reader, every line goes to the event voice through
+  `ctx.say_line`, and Settings says why. A build without `voice` does the
+  same, so `ctx.commentate` always works.
+
+`hearken::voice::FakeVoice` stands in for `Headless` tests: it records each
+line at once (`VoicedLog::texts`), following the voice setting and the
+verbosity level, so tests assert commentary with no model.
+
+### Getting the voice package to players
+
+Either works, and a game can offer both:
+
+- **In the release zip.** Install the package into the game's own `voices`
+  folder and list `voices` in `[package.metadata.hearken] include`; `Voice`
+  finds `voices/kokoro-en-q8` beside the program. The zip grows by about
+  92 MB. To install, call `hearken::voice::install` (with `hearken`'s
+  `voice-download` feature) from a small program of the game's own, or
+  from Hearken's repository run
+  `cargo run -p hearken-voice --example install --features download -- <game>/voices`.
+- **Downloaded on first use.** With `hearken`'s `voice-download` feature,
+  the Settings rows gain "Download the AI voices", which asks first
+  (`install_confirm`) and then downloads into `voices` in the game's data
+  folder, checking each file's pinned SHA-256, and switches to the AI
+  voices when it is done.
+
+`<PREFIX>_VOICES` points any build at another voices folder. A
+`lexicon.txt` (CMU format) in the voices folder, or `VoiceConfig::lexicon`,
+corrects how names are said; editing it re-synthesizes the cached lines.
+
+### On Windows
+
+ONNX Runtime links statically, but the prebuilt one includes Microsoft's
+DirectML, so the program needs `DirectML.dll` beside it. The build puts it
+in `target/<profile>`, and `hearken release` ships it with the other DLLs,
+as it does the Visual C++ runtime, adding `DirectML-LICENSE.txt` and
+`DirectML-ThirdPartyNotices.txt` beside it. Hearken's voices run on the CPU; DirectML
+is only loaded. A game that wants no Microsoft DLL can build ONNX Runtime
+itself without DirectML and point `ORT_LIB_LOCATION` at it.
 
 ## Working on Hearken
 
@@ -335,7 +429,8 @@ and the game's credits or licence notes carry what they ask:
   Broadcom's and Microsoft's Opus patents are licensed royalty-free; Vectis
   IP's Opus pool covers hardware devices, not software.
 
-The opt-in features compile in more, all of it into the game, with no DLLs:
+The opt-in features compile in more, all of it into the game, with no DLLs
+but one (`voice` on Windows):
 
 - `radio`: `ureq`, `icy-metadata` and `url` (each MIT or Apache-2.0),
   `m3u8-rs` and `mpeg2ts` (MIT), and Symphonia's AAC decoder (MPL-2.0, as
@@ -353,6 +448,20 @@ The opt-in features compile in more, all of it into the game, with no DLLs:
   source available free of charge to anyone who gets the game. It permits
   use only under AAC patent licences the game holds, and grants none: see
   Optional features.
+- `voice`: local-tts (MIT), ONNX Runtime (MIT) through `ort` and `ort-sys`
+  (MIT or Apache-2.0), Hugging Face `tokenizers` (Apache-2.0), `ndarray`
+  (MIT or Apache-2.0) and `rustfst` (MIT or Apache-2.0). The voice package
+  is data, not code: the Kokoro-82M weights and voices (Apache-2.0) and the
+  CMU Pronouncing Dictionary (BSD-2-Clause), whose notices the game's
+  credits carry. On Windows the game also ships `DirectML.dll` (1.15.4),
+  which is not open source: Microsoft's DirectML licence lets a developer
+  distribute it inside games and applications for Windows and Xbox, but not
+  on its own, and its notices must not be removed. `hearken release` puts
+  the licence and its third-party notices (Microsoft GSL and half, MIT;
+  Zstandard, BSD-3-Clause, whose notice must travel with the binary) beside
+  the DLL. The game's own MIT or Apache-2.0 licence does not cover the DLL,
+  so the game's licence notes say so. The licence also says DirectML may
+  send usage data to Microsoft.
 
 These lists name the notable licences, not every crate's. `cargo about`
 builds the complete notice for what a game actually compiles in.
