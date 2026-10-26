@@ -160,29 +160,36 @@ jobs:
         with:
           path: voices
           key: voices-kokoro-en-q8-local-tts-0.7.0
+      # One test-profile build serves both the install example and the
+      # tests, so the crate compiles once.
       - name: Build
         run: |
           start=$(date +%s)
-          cargo build -p hearken-voice --features download --all-targets --locked
-          echo "VOICE-BUILD $(( $(date +%s) - start )) s"
+          cargo test -p hearken-voice --features download --no-run --locked
+          echo "VOICE_BUILD_S=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
       - name: Install the voice package
-        run: cargo run -p hearken-voice --features download --example install --locked -- voices
-      - name: How ONNX Runtime is linked
+        run: target/debug/examples/install voices
+      - name: Speak
+        run: cargo test -p hearken-voice --features download --locked -- --nocapture --test-threads=1 2>&1 | tee speak.log
+      - name: Clippy
+        run: cargo clippy -p hearken-voice --features download --all-targets --locked -- -D warnings
+      - name: Build the facade with voice
+        if: runner.os == 'Linux'
+        run: cargo check -p hearken --features voice --locked
+      # Last, so the numbers sit at the end of the log.
+      - name: Report
         run: |
           bin=$(find target/debug/deps -maxdepth 1 -type f -name 'kokoro-*' ! -name '*.d' ! -name '*.pdb' | head -1)
-          echo "test binary: $bin"
           case "$RUNNER_OS" in
             macOS) libs=$(otool -L "$bin") ;;
             *) libs=$(ldd "$bin" || true) ;;
           esac
           echo "$libs"
-          find target/debug -maxdepth 2 -iname '*onnxruntime*' -print || true
-          if echo "$libs" | grep -qi onnxruntime; then
-            echo "VOICE-LINK dynamic"
-          else
-            echo "VOICE-LINK static"
-          fi
-      - name: Clippy
-        run: cargo clippy -p hearken-voice --features download --all-targets --locked -- -D warnings
-      - name: Speak
-        run: cargo test -p hearken-voice --features voice --locked -- --nocapture --test-threads=1
+          shipped=$(find target/debug -maxdepth 2 -iname '*onnxruntime*' | tr '\n' ' ')
+          if echo "$libs" | grep -qi onnxruntime; then link=dynamic; else link=static; fi
+          {
+            echo "VOICE-REPORT $RUNNER_OS"
+            echo "VOICE-BUILD ${VOICE_BUILD_S} s (test profile, sccache and rust-cache as restored)"
+            echo "VOICE-LINK $link; ONNX Runtime files in target: ${shipped:-none}"
+            grep -E '^load:|^warm-up:|VOICE-LATENCY' speak.log
+          } | tee -a "$GITHUB_STEP_SUMMARY"
