@@ -60,6 +60,7 @@ impl<G: Game> App<G> {
         if let Some(top) = self.states.last_mut() {
             top.update(&mut self.ctx, dt);
         }
+        self.ctx.update_commentary(dt);
         self.ctx.speech.poll(dt);
         self.ctx.update_audio();
         self.ctx.update_duck();

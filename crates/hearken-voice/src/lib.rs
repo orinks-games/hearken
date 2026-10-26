@@ -5,19 +5,78 @@
 //! The model is behind the `voice` feature. Without it this crate only finds
 //! the `voices` folder, so a game can say why its AI voices are missing.
 //!
-//! This is the first cut (the voice spike): load the model and turn a line
-//! into WAV bytes that `hearken-audio` plays. The worker thread, cache and
-//! queue come with the `Voice` service.
+//! [`Voice`] is the service a game installs with `ctx.set_commentary`: the
+//! model loads once on a worker thread, lines are synthesized there and
+//! cached in memory and under `voice-cache/` in the game's data folder, and
+//! they play one at a time on `Bus::VOICE` with the pacer's rules. With no
+//! model, or with the player's setting on the screen reader, lines go to the
+//! event voice instead. [`FakeVoice`] records lines for `Headless` tests.
 
 use std::path::{Path, PathBuf};
+
+mod cache;
+mod fake;
+#[cfg(feature = "download")]
+mod install_screen;
+mod rules;
+mod service;
+mod settings;
+mod synth;
+mod worker;
+
+pub use fake::{FakeVoice, Voiced, VoicedLog};
+#[cfg(feature = "download")]
+pub use install_screen::{install_confirm, InstallScreen, INSTALL_QUESTION};
+pub use service::{Voice, VoiceConfig, NOT_INSTALLED, NO_MODEL_IN_BUILD};
+pub use settings::{settings_rows, HasVoiceSettings, Role, VoiceMode, VoiceSettings};
+pub use synth::{Loader, Synth};
+
+/// The 28 English voices of `kokoro-en-q8`, for Settings before the model
+/// has loaded. American (`a`) and British (`b`), female (`f`) and male (`m`).
+pub const KOKORO_VOICES: [&str; 28] = [
+    "af_heart",
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
+];
 
 /// The voice package Hearken uses: Kokoro-82M, 8-bit, 28 English voices.
 pub const PACKAGE: &str = "kokoro-en-q8";
 
 /// Picks a voices folder: the first of `<env_prefix>_VOICES` (non-empty),
-/// the executable's own `voices` folder, or the current directory's
-/// `voices` folder, that exists as a directory.
+/// or else the first of the executable's own `voices` folder and the current
+/// directory's `voices` folder that holds the installed package.
 pub fn find_voices(env_prefix: &str) -> Option<PathBuf> {
+    find_voices_in(env_prefix, None)
+}
+
+/// [`find_voices`], also looking in `data_dir/voices` (where the in-game
+/// installer puts the package) after the executable's folder.
+pub fn find_voices_in(env_prefix: &str, data_dir: Option<&Path>) -> Option<PathBuf> {
     let var = format!("{env_prefix}_VOICES");
     if let Some(dir) = std::env::var_os(&var).filter(|d| !d.is_empty()) {
         let path = PathBuf::from(dir);
@@ -30,8 +89,13 @@ pub fn find_voices(env_prefix: &str) -> Option<PathBuf> {
     let beside_exe = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|p| p.join("voices")));
+    let in_data = data_dir.map(|d| d.join("voices"));
     let in_cwd = std::env::current_dir().ok().map(|d| d.join("voices"));
-    beside_exe.into_iter().chain(in_cwd).find(|p| p.is_dir())
+    beside_exe
+        .into_iter()
+        .chain(in_data)
+        .chain(in_cwd)
+        .find(|p| package_dir(p).is_some())
 }
 
 /// The installed package's folder under `voices`, when it is there.
@@ -95,6 +159,17 @@ impl Speech {
 
 #[cfg(feature = "voice")]
 pub use kokoro::Kokoro;
+
+#[cfg(feature = "voice")]
+impl Synth for Kokoro {
+    fn synthesize(&mut self, text: &str, voice: &str, rate: f32) -> Result<Speech, Error> {
+        Kokoro::synthesize(self, text, voice, rate)
+    }
+
+    fn speakers(&self) -> Vec<String> {
+        Kokoro::speakers(self)
+    }
+}
 
 #[cfg(feature = "voice")]
 mod kokoro {

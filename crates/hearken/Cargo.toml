@@ -25,6 +25,9 @@ fdk-aac = ["radio", "hearken-radio/fdk-aac"]
 # AI commentary voices (Kokoro through local-tts and ONNX Runtime):
 # `hearken::voice`. Adds ONNX Runtime to the build; off by default.
 voice = ["dep:hearken-voice", "hearken-voice/voice"]
+# The in-game installer for the voice package (`hearken::voice::install`,
+# `install_confirm`, a Settings row): HTTPS to Hugging Face through ureq.
+voice-download = ["voice", "hearken-voice/download"]
 
 [dependencies]
 hearken-app.workspace = true
