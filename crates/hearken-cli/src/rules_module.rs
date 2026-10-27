@@ -158,21 +158,29 @@ fn desktop_features(
         .collect())
 }
 
-/// Dependencies of the rules crate that the game's build compiles with other
-/// features than the module does: a feature can change what code runs, so
-/// each is named for the developer to check.
+/// Path dependencies of the rules crate (the game's own crates) that the
+/// game's build compiles with other features than the module does: a
+/// feature can change what code runs, so each is named for the developer
+/// to check.
 fn feature_differences(
     project: &Project,
     rules: &crate::project::Rules,
     features: &[String],
 ) -> Vec<String> {
-    let mut game: Vec<String> = ["-p", &project.package, "-e", "normal"]
+    let mut game: Vec<String> = ["-p", &project.package, "-e", "normal,no-proc-macro"]
         .map(String::from)
         .to_vec();
     game.extend(project.feature_args(false));
-    let mut module: Vec<String> = ["-p", &rules.package, "-e", "normal", "--target", TARGET]
-        .map(String::from)
-        .to_vec();
+    let mut module: Vec<String> = [
+        "-p",
+        &rules.package,
+        "-e",
+        "normal,no-proc-macro",
+        "--target",
+        TARGET,
+    ]
+    .map(String::from)
+    .to_vec();
     module.push("--no-default-features".into());
     if !features.is_empty() {
         module.extend(["--features".to_string(), features.join(",")]);
@@ -186,6 +194,9 @@ fn feature_differences(
     let game = features_by_package(&game);
     features_by_package(&module)
         .into_iter()
+        // The game's own crates, from paths: a registry crate's features
+        // add to what it offers rather than change what the rules do.
+        .filter(|(package, _)| package.contains(" (") && !package.contains("(http"))
         .filter_map(|(package, wasm)| {
             let desktop = game.get(&package)?;
             (desktop != &wasm).then(|| format!("{package}: game [{desktop}], module [{wasm}]"))
