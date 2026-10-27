@@ -82,7 +82,7 @@ fn a_player_connects_and_disconnects_an_account() {
     assert_eq!(h.spoken(), ["Asking example.test for a code."]);
     frames_until(
         &mut h,
-        "Code A, B, C, D, then E, F, 3, 4. Go to example.test/activate and enter it.",
+        "Code A, B, C, D, then E, F, 3, 4. Go to example.test slash activate and enter it.",
     );
     frames_until(&mut h, "Connected to example.test as Ada.");
     assert_eq!(
@@ -129,5 +129,8 @@ fn an_expired_code_offers_a_new_one() {
     h.press(Key::End);
     h.press(Key::Return);
     frames_until(&mut h, "Go to example.test and enter it.");
-    frames_until(&mut h, "The code expired. Press Enter for a new one.");
+    frames_until(
+        &mut h,
+        "The code expired. Enter asks for a new one, Escape goes back.",
+    );
 }

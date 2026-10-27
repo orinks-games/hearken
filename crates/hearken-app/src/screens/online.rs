@@ -32,16 +32,44 @@ impl Default for OnlineAccountScreen {
     }
 }
 
-/// A site's address as it is read out: no `https://`.
-fn spoken_url(url: &str) -> &str {
-    url.trim_start_matches("https://")
+/// A site's address as it is read out: no `https://`, and the slashes and
+/// port colon in words, which screen readers otherwise say or skip as they
+/// please.
+fn spoken_url(url: &str) -> String {
+    let bare = url
+        .trim_start_matches("https://")
         .trim_start_matches("http://")
-        .trim_end_matches('/')
+        .trim_end_matches('/');
+    let mut parts = bare.split('/');
+    let host = parts.next().unwrap_or("");
+    let host = match host.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+            format!("{name} port {port}")
+        }
+        _ => host.to_string(),
+    };
+    std::iter::once(host)
+        .chain(parts.map(str::to_string))
+        .collect::<Vec<_>>()
+        .join(" slash ")
+}
+
+/// What a failed connection says, with what the keys do now.
+fn failed_line(site: &str, e: &crate::online::OnlineError) -> String {
+    match e {
+        crate::online::OnlineError::RateLimited => {
+            format!("{site} is busy. Wait a minute, then Enter asks again. Escape goes back.")
+        }
+        crate::online::OnlineError::CodeExpired => {
+            "The code expired. Enter asks for a new one, Escape goes back.".into()
+        }
+        e => format!("{} Enter tries again, Escape goes back.", e.spoken(site)),
+    }
 }
 
 fn code_line(site: &str, code: &str, url: &str) -> String {
     let place = if url.is_empty() {
-        site
+        site.to_string()
     } else {
         spoken_url(url)
     };
@@ -95,16 +123,11 @@ impl<G: Game> State<G> for OnlineAccountScreen {
             Connect::Waiting { code, url } => ctx.say(code_line(&site, &code, &url)),
             Connect::Connected { name } => {
                 ctx.play_ui(UiSound::Select);
-                ctx.pop_with(format!("Connected to {site} as {name}"));
+                ctx.pop_with(format!("Connected to {site} as {name}."));
             }
             Connect::Failed(e) => {
                 ctx.play_ui(UiSound::Error);
-                let line = e.spoken(&site);
-                if line.contains("Enter") {
-                    ctx.say(line);
-                } else {
-                    ctx.say(format!("{line} Enter tries again, Escape goes back."));
-                }
+                ctx.say(failed_line(&site, &e));
             }
             Connect::Idle | Connect::Asking => {}
         }
@@ -120,10 +143,12 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 ctx.play_ui(UiSound::Back);
                 ctx.pop();
             }
+            // A held Enter repeats; only a fresh press disconnects.
+            Key::Return if self.connected && event.is_repeat() => {}
             Key::Return if self.connected => {
                 ctx.online.disconnect();
                 ctx.play_ui(UiSound::Select);
-                ctx.pop_with(format!("Disconnected from {site}"));
+                ctx.pop_with(format!("Disconnected from {site}."));
             }
             Key::Return => match ctx.online.connect_state().clone() {
                 Connect::Waiting { code, url } => ctx.say(code_line(&site, &code, &url)),
@@ -147,11 +172,12 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 ctx.online.player_name().unwrap_or("your account")
             )],
             Connect::Waiting { code, url } => {
-                vec![format!("Code: {code}"), format!("Enter it at {url}")]
+                let place = if url.is_empty() { site } else { url.as_str() };
+                vec![format!("Code: {code}"), format!("Enter it at {place}")]
             }
             Connect::Asking | Connect::Idle => vec![format!("Asking {site} for a code.")],
             Connect::Connected { name } => vec![format!("Connected as {name}.")],
-            Connect::Failed(e) => vec![e.spoken(site)],
+            Connect::Failed(e) => vec![failed_line(site, e)],
         }
     }
 
@@ -165,5 +191,23 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                  Enter repeats the code, Escape stops connecting."
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spoken_url;
+
+    #[test]
+    fn an_address_is_read_in_words() {
+        assert_eq!(
+            spoken_url("https://example.test/activate"),
+            "example.test slash activate"
+        );
+        assert_eq!(
+            spoken_url("http://127.0.0.1:8787/activate/"),
+            "127.0.0.1 port 8787 slash activate"
+        );
+        assert_eq!(spoken_url("https://example.test"), "example.test");
     }
 }

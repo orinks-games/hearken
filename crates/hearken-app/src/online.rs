@@ -263,7 +263,7 @@ impl OnlineError {
                 message: Some(m), ..
             } => crate::text::end_sentence(m),
             OnlineError::Refused { .. } => format!("{site} did not accept this run."),
-            OnlineError::CodeExpired => "The code expired. Press Enter for a new one.".into(),
+            OnlineError::CodeExpired => "The code expired.".into(),
         }
     }
 

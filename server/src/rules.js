@@ -201,6 +201,15 @@ function asBytes(run) {
  */
 export function publishedRules(list) {
   let loading = null;
+  // A load that failed (a broken module in the list) is tried again on the
+  // next call, rather than refusing every run until a restart.
+  const loaded = () => {
+    loading ??= load().catch((error) => {
+      loading = null;
+      throw error;
+    });
+    return loading;
+  };
   const load = async () => {
     const map = new Map();
     for (const item of list) {
@@ -211,12 +220,10 @@ export function publishedRules(list) {
   };
   return {
     async get(build) {
-      loading ??= load();
-      return (await loading).get(build) ?? null;
+      return (await loaded()).get(build) ?? null;
     },
     async builds() {
-      loading ??= load();
-      return [...(await loading).keys()];
+      return [...(await loaded()).keys()];
     },
   };
 }

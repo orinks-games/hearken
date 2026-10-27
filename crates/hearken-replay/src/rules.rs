@@ -308,9 +308,6 @@ pub fn replay<R: Replayable>(run: &Run) -> Result<R, VerifyError> {
 /// a float, `0.1` for an `f32` and a missing `Option` field all match the
 /// form a recording wrote. Neither side's text is trusted to be in that form.
 fn same_context<R: Replayable>(run: &str, expected: &serde_json::Value) -> bool {
-    if run == canonical_json(expected) {
-        return true;
-    }
     let Ok(ours) = serde_json::from_str::<R::Context>(run) else {
         return false;
     };

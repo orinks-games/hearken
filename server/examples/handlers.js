@@ -57,8 +57,9 @@ export function createHandlers({ now = () => new Date(), secret = "dev only: set
         }
         throw refuse("wrong-day", "That run is not today's challenge.");
       },
-      async accept({ player, verified }) {
-        const day = today(now());
+      async accept({ player, verified, expected }) {
+        // The day the run's seed belongs to, not the day it arrived.
+        const day = expected.day;
         const board = boards.get(day) ?? new Map();
         boards.set(day, board);
         const best = board.get(player.id);

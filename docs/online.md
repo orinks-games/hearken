@@ -156,9 +156,10 @@ it records names the module that can replay it.
 The module is built with the features the game's own release build turns
 on in the rules crate, so the server runs the rules the player played. The
 game must depend on its rules crate; a release refuses one that does not.
-When a dependency of the rules crate gets other features in the game's
-build than in the module (another crate in the game turned one on), the
-release names it: check that none of those features change the rules.
+When one of the game's own crates (a path dependency of the rules crate)
+gets other features in the game's build than in the module, because
+another crate in the game turned one on, the release names it: check that
+none of those features change the rules.
 
 Publish that module on the server. Runs from a build whose module is not
 published are refused. Each platform's release builds its own module. The
@@ -168,8 +169,8 @@ when the project sets Rust flags of its own (`RUSTFLAGS`, or `rustflags` in
 a `.cargo/config.toml`), the release keeps them and leaves the paths as
 they are. Publish every module that differs. Flags that could make the
 module play differently from the game are refused: a `--cfg`, or flags set
-for some targets only (`[target.wasm32-unknown-unknown]`, or
-`CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS`).
+for some targets only (a `[target.…]` section in a Cargo config, or any
+`CARGO_TARGET_<TRIPLE>_RUSTFLAGS`).
 
 What a release cannot see is rules code that is itself different for
 WebAssembly: `#[cfg(target_arch = "wasm32")]`, a build script that acts
@@ -384,7 +385,7 @@ each method must guarantee; a real store mirrors it:
 
 | Interface | Methods | Guarantee |
 |-----------|---------|-----------|
-| `accounts` | `player(token)`, `startActivation()`, `pollActivation(deviceCode)` | Tokens and device codes stored only as SHA-256 hashes; a token handed out once. |
+| `accounts` | `player(token)`, `startActivation({ clientKey, machine })`, `pollActivation(deviceCode)` | Tokens and device codes stored only as SHA-256 hashes; a token handed out once. |
 | `runs` | `claim(key, record)`, `complete(key, claim, reply)`, `release(key, claim)` | `claim` is atomic: of two claims of one key at once, one wins. |
 | `limiter` | `allow(key, limit, windowMs)` | A count per key per window. |
 

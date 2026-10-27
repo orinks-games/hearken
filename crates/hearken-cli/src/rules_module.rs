@@ -74,10 +74,16 @@ fn own_rustflags_with_text(dir: &Path, cargo_home: Option<&Path>) -> Option<(Str
         "CARGO_ENCODED_RUSTFLAGS",
         "RUSTFLAGS",
         "CARGO_BUILD_RUSTFLAGS",
-        "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS",
     ] {
         if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {
             return Some((var.to_string(), v.to_string_lossy().into_owned()));
+        }
+    }
+    // Flags for one target, the module's or the game's.
+    for (name, v) in std::env::vars_os() {
+        let name = name.to_string_lossy();
+        if name.starts_with("CARGO_TARGET_") && name.ends_with("_RUSTFLAGS") && !v.is_empty() {
+            return Some((name.into_owned(), v.to_string_lossy().into_owned()));
         }
     }
     let mut dirs: Vec<PathBuf> = dir.ancestors().map(|d| d.join(".cargo")).collect();
@@ -100,8 +106,8 @@ fn own_rustflags_with_text(dir: &Path, cargo_home: Option<&Path>) -> Option<(Str
 /// build, if they would: a `--cfg` turns code on or off, and flags meant for
 /// WebAssembly only reach the module and not the game.
 fn flags_that_change_rules(source: &str, text: &str) -> Option<&'static str> {
-    if source == "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS" {
-        return Some("sets Rust flags for WebAssembly only");
+    if source.starts_with("CARGO_TARGET_") {
+        return Some("sets Rust flags for one target only");
     }
     if text.contains("--cfg") {
         return Some("sets a --cfg in its Rust flags, which can turn rules code on or off");
@@ -139,6 +145,11 @@ mod flag_tests {
         assert!(why("RUSTFLAGS", "-Copt-level=3").is_none());
         assert!(why("RUSTFLAGS", "--cfg hk").is_some());
         assert!(why("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS", "-Cx").is_some());
+        assert!(why(
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "--cfg hk"
+        )
+        .is_some());
         let linker = "[target.x86_64-unknown-linux-gnu]\nlinker = \"gcc-13\"\n[build]\nrustflags = [\"-Cx\"]";
         assert!(why("config.toml", linker).is_none());
         let wasm_only = "[target.wasm32-unknown-unknown]\nrustflags = [\"-Cx\"]";

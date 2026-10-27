@@ -92,8 +92,6 @@ pub trait Game: Sized + 'static {
         false
     }
 
-    /// The Settings screen's rows, built-in ones first: a chance to hide,
-    /// reorder or add to them. The default keeps every built-in row as is.
     /// The game's server for verified runs (`ctx.online`), or `None` for
     /// no online play. A developer build (any build `hearken release` did
     /// not make) takes `<PREFIX>_ONLINE_URL` in its place, to try a local
@@ -103,6 +101,8 @@ pub trait Game: Sized + 'static {
         None
     }
 
+    /// The Settings screen's rows, built-in ones first: a chance to hide,
+    /// reorder or add to them. The default keeps every built-in row as is.
     fn settings_rows(_ctx: &Ctx<Self>, rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {
         rows
     }

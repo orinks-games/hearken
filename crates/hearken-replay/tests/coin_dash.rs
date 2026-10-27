@@ -205,8 +205,11 @@ fn a_context_too_large_is_refused_up_front() {
 /// Runs for the JavaScript host's tests, with the score native replay gave.
 #[test]
 fn writes_fixtures_for_the_javascript_host() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/hearken-replay-fixtures");
+    // Beside the build, wherever CARGO_TARGET_DIR puts it.
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"));
+    let dir = target.join("hearken-replay-fixtures");
     std::fs::create_dir_all(&dir).unwrap();
     let mut list = Vec::new();
     for (seed, seconds) in [(99u64, 10u32), (u64::MAX, 60), (12345, 30)] {

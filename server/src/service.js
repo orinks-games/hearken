@@ -83,6 +83,14 @@ async function readJson(request, limit = 4096) {
   }
 }
 
+// A seed is a u64 written in decimal. A JavaScript number past 2^53 has
+// already lost digits, so such a seed must come as a string or a BigInt.
+function isSeed(seed) {
+  if (typeof seed === "number" && !Number.isSafeInteger(seed)) return false;
+  const text = String(seed);
+  return /^(0|[1-9][0-9]{0,19})$/.test(text) && BigInt(text) < 2n ** 64n;
+}
+
 /**
  * Makes the service for one game.
  *
@@ -98,18 +106,12 @@ async function readJson(request, limit = 4096) {
  *   Runs a verification; the default runs it inline. Node can pass
  *   `workerReplay()` from `./node.js` for a hard time limit.
  * @param {(request: Request) => string} [options.clientKey]
- *   Who is asking, for the activation rate limit; the first
- *   X-Forwarded-For address by default.
+ *   Who is asking, for the activation rate limit; the last
+ *   X-Forwarded-For address (the one the nearest proxy saw) by default.
+ * @param {(event: object) => void} [options.log]
+ *   Where unexpected errors go; `console.warn` by default.
  * @param {object} [options.limits]
  */
-// A seed is a u64 written in decimal. A JavaScript number past 2^53 has
-// already lost digits, so such a seed must come as a string or a BigInt.
-function isSeed(seed) {
-  if (typeof seed === "number" && !Number.isSafeInteger(seed)) return false;
-  const text = String(seed);
-  return /^(0|[1-9][0-9]{0,19})$/.test(text) && BigInt(text) < 2n ** 64n;
-}
-
 export function createService(options) {
   const {
     rules,

@@ -6,7 +6,8 @@ import { createServer } from "node:http";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { publishedRules } from "./rules.js";
+import { availableParallelism } from "node:os";
+import { publishedRules, RulesError } from "./rules.js";
 
 /**
  * Every `.wasm` file in `dir`, as the published builds. A module joins by
@@ -20,12 +21,31 @@ export async function rulesFromDir(dir) {
 
 /**
  * Runs each verification in a worker thread and stops it after `timeoutMs`,
- * answering { ok: false, error: "too-slow" }. Pass as `replay` to
- * `createService`.
+ * answering { ok: false, error: "too-slow" }. At most `workers` run at once
+ * (one per processor by default); the rest wait their turn. Pass as
+ * `replay` to `createService`.
  */
-export function workerReplay({ timeoutMs = 5000 } = {}) {
-  return (rules, run, expected) =>
+export function workerReplay({ timeoutMs = 5000, workers = availableParallelism() } = {}) {
+  let running = 0;
+  const waiting = [];
+  const next = () => {
+    if (running >= workers || waiting.length === 0) return;
+    running += 1;
+    const job = waiting.shift();
+    one(timeoutMs, ...job.args).then(job.resolve, job.reject).finally(() => {
+      running -= 1;
+      next();
+    });
+  };
+  return (...args) =>
     new Promise((resolve, reject) => {
+      waiting.push({ args, resolve, reject });
+      next();
+    });
+}
+
+function one(timeoutMs, rules, run, expected) {
+  return new Promise((resolve, reject) => {
       const worker = new Worker(new URL("./replay-worker.js", import.meta.url), {
         workerData: { module: rules.module, build: rules.build, run: new Uint8Array(run), expected },
       });
@@ -36,14 +56,16 @@ export function workerReplay({ timeoutMs = 5000 } = {}) {
       worker.once("message", (message) => {
         clearTimeout(timer);
         worker.terminate();
-        if (message.failed) reject(new Error(message.failed));
+        if (message.failed) {
+          reject(message.code ? new RulesError(message.code, message.failed) : new Error(message.failed));
+        }
         else resolve(message.answer);
       });
       worker.once("error", (error) => {
         clearTimeout(timer);
         reject(error);
       });
-    });
+  });
 }
 
 /** Turns a node:http request into a web Request. */

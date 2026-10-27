@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   buildOf,
   createService,
@@ -25,8 +25,9 @@ import {
 import { workerReplay } from "../src/node.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const wasmPath = join(root, "target/wasm32-unknown-unknown/release/examples/coin_dash.wasm");
-const fixtureDir = join(root, "target/hearken-replay-fixtures");
+const target = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(root, "target");
+const wasmPath = join(target, "wasm32-unknown-unknown/release/examples/coin_dash.wasm");
+const fixtureDir = join(target, "hearken-replay-fixtures");
 const ready = existsSync(wasmPath) && existsSync(join(fixtureDir, "fixtures.json"));
 if (!ready && process.env.HEARKEN_REQUIRE_WASM) {
   throw new Error(`build the Coin Dash module and fixtures first (${wasmPath})`);
