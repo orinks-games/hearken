@@ -1,0 +1,12 @@
+[package]
+name = "hearken-bake"
+description = "Bakes a release key into a build as scattered shares, for Hearken's build scripts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -9,6 +9,9 @@ repository.workspace = true
 authors.workspace = true
 build = "build.rs"
 
+[build-dependencies]
+hearken-bake.workspace = true
+
 [dependencies]
 chacha20 = "0.10"
 getrandom = "0.4"
