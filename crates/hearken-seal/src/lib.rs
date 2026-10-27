@@ -19,12 +19,24 @@
 //! developer can look at and change them. Such a build reports a sealed
 //! file as [`Opened::Locked`] and will not overwrite it.
 //!
+//! Every file is also sealed with its folder's random id, kept in the
+//! ledger, so a file from another install never authenticates here, even
+//! when its generation lines up. A file the game removes or sets aside stays
+//! in the ledger as gone, so a plain file or an old copy in its place is
+//! still caught. And a vault given witnesses ([`Vault::with_witnesses`])
+//! leaves a marker outside the folder, so a wiped or fresh folder does not
+//! accept a hand-written plain file as a legacy one.
+//!
 //! What this cannot do: the key is inside the program the player runs.
 //! Someone willing to take that program apart can recover it and forge any
 //! file. Restoring a whole data folder, ledger included, from one earlier
-//! moment also cannot be told apart from never having played since. This
-//! raises cheating from "open a text editor" to "reverse engineer the
-//! program"; no offline scheme can do more.
+//! moment also cannot be told apart from never having played since, and a
+//! whole folder copied from another player's install works, since every
+//! copy of a game shares its key. While a game imports legacy files, a
+//! player who also clears the witnesses (or runs the game as a new user,
+//! on a new computer, or with the platform folders moved) can get a plain
+//! file imported. This raises cheating from "open a text editor" to
+//! "reverse engineer the program"; no offline scheme can do more.
 //!
 //! The file format:
 //!
@@ -40,7 +52,8 @@
 //!
 //! The key is `HKDF-SHA256(salt = "hearken-seal", ikm = secret, info =
 //! "files v1")`, and the associated data is the 40-byte header, then
-//! `"hearken-seal/v1\0"`, then the file's name.
+//! `"hearken-seal/v1\0"`, then the folder's 16-byte id (zeros for the
+//! ledger itself and for witnesses), then the file's name.
 
 mod format;
 mod key;

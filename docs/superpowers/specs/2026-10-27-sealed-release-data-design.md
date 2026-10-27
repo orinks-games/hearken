@@ -47,8 +47,12 @@ from "open a text editor" to "reverse engineer a Rust binary".
 | Restore an older copy of one file (a backup from before a bad run) | `Tampered(RolledBack)` |
 | Delete a sealed file to reset it | `Tampered(Removed)` |
 | Replace a sealed file with a hand-written plain one | `Tampered(Unsealed)` |
-| Copy in someone else's single file, with a history this folder never had | `Tampered(Unexpected)` |
-| Edit or delete the ledger (the folder's history) | `Tampered(LedgerForged)`, or `Unexpected` for files whose history is gone |
+| Copy in someone else's single file, even one whose generation is exactly one ahead of this folder's | `Tampered(Forged)`: every file is sealed with its folder's random id |
+| Copy in someone else's ledger alone | Every file reads `Tampered(Forged)`: the ledger's folder id is not theirs |
+| Edit the ledger (the folder's history) | `Tampered(LedgerForged)` |
+| Delete the ledger | `Tampered(Unexpected)` for every sealed file: the ledger is written before the first file is sealed, so no sealed file without one is genuine |
+| Get a file set aside (or reset), then put a plain file or an old copy in its place | `Tampered(Unsealed)` or `Tampered(RolledBack)`: the ledger keeps a gone file's generation |
+| Delete the ledger and every sealed file, or switch to a fresh folder (`portable.txt`, `XDG_DATA_HOME`), then drop in a hand-written plain file for the legacy import | `Tampered(Unsealed)` while a witness outside the folder is there (see [Legacy plain files](#legacy-plain-files)) |
 | Point `<PREFIX>_DATA_DIR` at a folder of crafted files | Ignored in a sealed build |
 | Search the program for the key's 32 bytes or 64 hex digits | Not found: the key is split into shares (as the pack key already is) |
 | Edit, cut short or reorder `sounds.pak` | The changed sound, or the whole pack, fails to authenticate |
@@ -59,15 +63,25 @@ What it does not stop, and the docs say so:
 
 - **Reverse engineering.** Recovering the key from the program, or patching
   the program, defeats everything here.
-- **Restoring the whole data folder.** If a player restores every file,
-  including the ledger, from one earlier moment, the folder is consistent
-  with itself, and nothing offline can tell. A rollback is only detected
-  when it is partial.
-- **Sharing a whole data folder.** Every copy of a game uses the same key,
-  so a complete saves folder copied from a friend works. Tying saves to one
-  machine would break moving to a new computer. (Per-install binding could
-  be added later as an option.)
-- **Legacy import, while a game allows it.** See [Legacy plain files](#legacy-plain-files).
+- **Restoring the whole data folder** (accepted). If a player restores
+  every file, including the ledger, from one earlier moment, the folder is
+  consistent with itself, and nothing offline can tell. A rollback is only
+  detected when it is partial. This lets a player undo a bad result (retry
+  a challenge), not invent a score. A second counter outside the folder
+  could notice a restore, but it would also turn a player's own legitimate
+  backup restore (after a reinstall, say) into "tampered" and cost them
+  their records, and the outside counter can be snapshotted just as
+  easily. In portable mode the saves sit inside the install, so copying the
+  whole install copies them too.
+- **Sharing a whole data folder** (accepted). Every copy of a game uses the
+  same key, so a complete saves folder (files and ledger together) copied
+  from a friend works. Tying saves to one machine or one install would
+  break moving to a new computer or reinstalling, which players do far more
+  often than they cheat, and the binding would live on the same disk the
+  player controls. Single files cannot be mixed between installs: each is
+  bound to its folder's id.
+- **Legacy import, while a game allows it** (accepted, bounded). See
+  [Legacy plain files](#legacy-plain-files).
 - **Memory editors, speed hacks and the system clock.** Daily challenges go
   by the clock, so they trust it.
 - **Genuine disk corruption.** It looks the same as tampering. Writes are
@@ -125,7 +139,8 @@ offset size
 
 - Key: `HKDF-SHA256(salt = "hearken-seal", ikm = game secret, info = "files v1")`.
 - Associated data: the 40-byte header, then `"hearken-seal/v1\0"`, then the
-  file's name in UTF-8. The game's bytes are encrypted as they are. The
+  folder's 16-byte id from the ledger (zeros for the ledger itself and for
+  witnesses), then the file's name in UTF-8. The game's bytes are encrypted as they are. The
   engine doesn't know or care that they are JSON.
 - A file whose first four bytes are not `HKSL` is **plain**.
 - A file name is a single path component: `[A-Za-z0-9._-]+`, not starting
@@ -135,12 +150,21 @@ offset size
 ### The ledger
 
 `hearken-seal.ledger`, in the same data folder, sealed in the same format
-under the reserved name `hearken-seal.ledger`. Its plaintext is one line per
-sealed file, `name\tgeneration\n`, sorted by name. The vault holds it in
-memory after its first read.
+under the reserved name `hearken-seal.ledger`. Its plaintext starts with
+`folder\t<32 hex digits>\n`, the folder's random id, chosen when the
+ledger is first written. Then comes one line per sealed file, sorted by
+name: `name\tgeneration\n`, or `name\tgeneration\tgone\n` for a file
+the game removed or set aside. A gone file keeps its generation. The vault
+holds the ledger in memory after its first read.
+
+The folder id goes into every file's associated data. A file copied in
+from another install, or from before a forged ledger was started over,
+does not authenticate, whatever its generation.
 
 Write order for `write(name, bytes)`:
 
+0. If the folder has no ledger yet, write one (the new folder id, no
+   entries) first, so no file is ever sealed under an id that was not kept.
 1. `g` = the ledger's generation for `name` + 1 (1 when it has none).
 2. Seal the bytes with generation `g`, write `name.tmp`, flush, and
    rename it over `name`.
@@ -151,24 +175,37 @@ ledger. The read rule accepts that and repairs the ledger.
 
 Read rule for `read(name)` in a sealed build. `L` is the ledger's
 generation for the name, or 0 when the ledger has no entry for it or no
-ledger exists:
+ledger exists. "Expected" means the entry exists and is not gone.
+"History" means the ledger exists, or a witness does:
 
 | File on disk | Ledger | Verdict |
 |---|---|---|
-| none | `L = 0` | `Missing` |
-| none | `L > 0` | `Tampered(Removed)` |
-| plain | `L = 0` | `Legacy(bytes)` |
-| plain | `L > 0` | `Tampered(Unsealed)` |
-| sealed, does not authenticate | any | `Tampered(Forged)` |
-| sealed, generation `g` | `g == L` | `Sealed(bytes)` |
+| none | not expected | `Missing` |
+| none | expected | `Tampered(Removed)` |
+| plain | not expected, no history | `Legacy(bytes)` |
+| plain | expected, or any history | `Tampered(Unsealed)` |
+| sealed | no ledger | `Tampered(Unexpected)` |
+| sealed, does not authenticate with this folder's id | any | `Tampered(Forged)` |
+| sealed, generation `g` | `g == L`, expected | `Sealed(bytes)` |
 | sealed, generation `g` | `g == L + 1` | `Sealed(bytes)`, and the ledger is repaired to `g` |
-| sealed, generation `g` | `g < L` | `Tampered(RolledBack)` |
+| sealed, generation `g` | `g <= L` otherwise | `Tampered(RolledBack)` |
 | sealed, generation `g` | `g > L + 1` | `Tampered(Unexpected)` |
 | any | the ledger exists but does not authenticate | `Tampered(LedgerForged)` |
 
-Deleting the ledger sets every `L` to 0. Any file with a generation above 1
-then reads as `Unexpected`, so deleting the ledger to make a restore work
-fails too. The only state consistent with an empty ledger is a fresh folder.
+The catch-up row only ever accepts a file sealed with this folder's id,
+so it repairs a crash and nothing else. Deleting the ledger leaves every
+sealed file `Unexpected`. The only state consistent with no ledger is a
+fresh folder.
+
+### Witnesses
+
+`Vault::with_witnesses(paths)` names marker files outside the data folder.
+The first time a vault writes its ledger in a run, it writes any missing
+witness (a sealed empty blob; only its existence counts). Writing one is
+best effort: a failure is logged and saving goes on. `hearken-app` gives
+every game two: `<config dir>/<DATA_DIR>.hearken-seal`, and, for a portable
+copy, `hearken-seal.witness` beside the executable. Neither is ever inside
+the data folder. While a witness exists, no folder offers `Legacy`.
 
 ## The key
 
@@ -312,12 +349,18 @@ impl Vault {
     /// sealed file. A sealing build overwriting a plain file first keeps it
     /// as `<name>.plain-backup`.
     pub fn write(&mut self, name: &str, bytes: &[u8]) -> std::io::Result<()>;
-    /// Deletes `name` on purpose (a reset the player chose) and forgets its history.
+    /// Deletes `name` on purpose (a reset the player chose); the ledger marks
+    /// it gone, keeping its generation.
     pub fn remove(&mut self, name: &str) -> std::io::Result<()>;
     /// Moves a file the game will not use to `<name>.tampered[-n]`, so it
-    /// can still be looked at, and forgets its history so the next write
-    /// starts clean. Returns where it went (`None` when there was no file).
+    /// can still be looked at, and marks it gone in the ledger, so the next
+    /// read is `Missing`, a plain file later put there is still `Unsealed`,
+    /// and the next write starts a new generation. Returns where it went
+    /// (`None` when there was no file).
     pub fn set_aside(&mut self, name: &str) -> std::io::Result<Option<std::path::PathBuf>>;
+    /// Leaves markers at `paths` (outside the folder) once it seals, so a
+    /// wiped or fresh folder offers no `Legacy` import. See Witnesses.
+    pub fn with_witnesses(self, paths: Vec<std::path::PathBuf>) -> Vault;
 }
 ```
 
@@ -441,11 +484,21 @@ game decides what to do:
   and for Wicket's once the transition is over): treat `Legacy` as
   tampered.
 
-**Remaining risk while import is allowed:** a player who deletes the ledger
-and every sealed file, then writes a plain file by hand, gets it imported.
-Their folder now looks exactly like a fresh install of an older version.
-The same applies to deleting `portable.txt`, which moves the data folder to
-a fresh place. The risk ends when the game stops importing. Wicket's makes
+`Legacy` is offered only while the folder has never sealed (no ledger)
+and no witness says the game has sealed for this player. Once a file is
+set aside or removed, its gone entry keeps a later plain file `Unsealed`.
+Deleting the ledger and the sealed files, or switching to a fresh folder
+(`portable.txt`, `XDG_DATA_HOME`), still meets the witness, so the plain
+file reads as `Unsealed`.
+
+**Remaining risk while import is allowed (accepted):** a genuine legacy
+file and a hand-written one are the same bytes, so a player who finds and
+deletes the witnesses too, or who runs the game as a new user account, on
+another computer, or with the platform folders moved (`XDG_CONFIG_HOME` on
+Linux, for a copy that is not portable), looks exactly like a player
+upgrading from an older version, and gets their plain file imported. No
+offline check can tell those apart without refusing real upgrades. The
+risk ends when the game stops importing. Wicket's makes
 that a single constant (below), turned off in a later release after most
 players have run a sealed one. Players who skip every transition release
 start fresh. The docs say so.

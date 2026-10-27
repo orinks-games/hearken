@@ -18,18 +18,29 @@ pub fn is_sealed(bytes: &[u8]) -> bool {
     bytes.starts_with(MAGIC)
 }
 
-fn aad(header: &[u8], name: &str) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(header.len() + DOMAIN.len() + name.len());
+/// The 16 random bytes that name one data folder's history. Every file in
+/// the folder is sealed with them, so a file sealed in another folder (or
+/// before the folder's ledger was started over) never authenticates here.
+pub type FolderId = [u8; 16];
+
+/// The folder id the ledger itself, and the witness, are sealed with: they
+/// hold or stand outside the folder's id.
+pub const NO_FOLDER: FolderId = [0; 16];
+
+fn aad(header: &[u8], folder: &FolderId, name: &str) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(header.len() + DOMAIN.len() + folder.len() + name.len());
     aad.extend_from_slice(header);
     aad.extend_from_slice(DOMAIN);
+    aad.extend_from_slice(folder);
     aad.extend_from_slice(name.as_bytes());
     aad
 }
 
-/// `plain` sealed under `name` at `generation` with `file_key` and a fresh
-/// random nonce.
+/// `plain` sealed under `name` at `generation` for `folder`, with
+/// `file_key` and a fresh random nonce.
 pub fn seal(
     file_key: &[u8; 32],
+    folder: &FolderId,
     name: &str,
     generation: u64,
     plain: &[u8],
@@ -47,7 +58,7 @@ pub fn seal(
             &XNonce::from(nonce),
             Payload {
                 msg: plain,
-                aad: &aad(&header, name),
+                aad: &aad(&header, folder, name),
             },
         )
         .map_err(|_| std::io::Error::other("the file is too large to seal"))?;
@@ -55,10 +66,16 @@ pub fn seal(
     Ok(header)
 }
 
-/// The generation and bytes of a file sealed under `name` with `file_key`,
-/// or `None` when it does not authenticate: changed, cut short, sealed
-/// under another name, or with another key.
-pub fn open(file_key: &[u8; 32], name: &str, bytes: &[u8]) -> Option<(u64, Vec<u8>)> {
+/// The generation and bytes of a file sealed under `name` for `folder`
+/// with `file_key`, or `None` when it does not authenticate: changed, cut
+/// short, sealed under another name, for another folder, or with another
+/// key.
+pub fn open(
+    file_key: &[u8; 32],
+    folder: &FolderId,
+    name: &str,
+    bytes: &[u8],
+) -> Option<(u64, Vec<u8>)> {
     if bytes.len() < HEADER_LEN + TAG_LEN || !is_sealed(bytes) || bytes[4] != VERSION {
         return None;
     }
@@ -71,7 +88,7 @@ pub fn open(file_key: &[u8; 32], name: &str, bytes: &[u8]) -> Option<(u64, Vec<u
             &XNonce::from(nonce),
             Payload {
                 msg: body,
-                aad: &aad(header, name),
+                aad: &aad(header, folder, name),
             },
         )
         .ok()?;
@@ -83,37 +100,39 @@ mod tests {
     use super::*;
 
     const KEY: [u8; 32] = [9; 32];
+    const F: FolderId = [5; 16];
 
     #[test]
     fn round_trips_and_hides_the_bytes() {
-        let sealed = seal(&KEY, "a.json", 3, b"{\"best\":12}").unwrap();
+        let sealed = seal(&KEY, &F, "a.json", 3, b"{\"best\":12}").unwrap();
         assert!(is_sealed(&sealed));
         assert!(!sealed.windows(4).any(|w| w == b"best"));
         assert_eq!(
-            open(&KEY, "a.json", &sealed),
+            open(&KEY, &F, "a.json", &sealed),
             Some((3, b"{\"best\":12}".to_vec()))
         );
         assert_ne!(
-            seal(&KEY, "a.json", 3, b"x").unwrap(),
-            seal(&KEY, "a.json", 3, b"x").unwrap()
+            seal(&KEY, &F, "a.json", 3, b"x").unwrap(),
+            seal(&KEY, &F, "a.json", 3, b"x").unwrap()
         );
     }
 
     #[test]
     fn any_changed_byte_fails() {
-        let sealed = seal(&KEY, "a.json", 1, b"hello there").unwrap();
+        let sealed = seal(&KEY, &F, "a.json", 1, b"hello there").unwrap();
         for at in 0..sealed.len() {
             for flip in [0x01, 0x80] {
                 let mut bad = sealed.clone();
                 bad[at] ^= flip;
-                assert_eq!(open(&KEY, "a.json", &bad), None, "byte {at}");
+                assert_eq!(open(&KEY, &F, "a.json", &bad), None, "byte {at}");
             }
         }
-        assert_eq!(open(&KEY, "a.json", &sealed[..sealed.len() - 1]), None);
+        assert_eq!(open(&KEY, &F, "a.json", &sealed[..sealed.len() - 1]), None);
         let mut longer = sealed.clone();
         longer.push(0);
-        assert_eq!(open(&KEY, "a.json", &longer), None);
-        assert_eq!(open(&KEY, "b.json", &sealed), None);
-        assert_eq!(open(&[8; 32], "a.json", &sealed), None);
+        assert_eq!(open(&KEY, &F, "a.json", &longer), None);
+        assert_eq!(open(&KEY, &F, "b.json", &sealed), None);
+        assert_eq!(open(&[8; 32], &F, "a.json", &sealed), None);
+        assert_eq!(open(&KEY, &[6; 16], "a.json", &sealed), None);
     }
 }

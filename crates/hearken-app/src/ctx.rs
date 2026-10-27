@@ -78,7 +78,7 @@ impl<G: Game> Ctx<G> {
         let sound = G::sound();
         let ui_sounds = sound.ui.clone();
         let delivery = Delivery::new(sound.pacer, G::verbosity());
-        let vault = Vault::new(&paths.data_dir);
+        let vault = Vault::new(&paths.data_dir).with_witnesses(paths.witnesses.clone());
         let mut ctx = Ctx {
             speech,
             settings,

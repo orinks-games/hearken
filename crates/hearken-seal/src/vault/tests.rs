@@ -165,7 +165,7 @@ fn deleting_the_ledger_leaves_later_files_unexpected() {
 }
 
 #[test]
-fn a_file_with_a_history_this_folder_never_had_is_unexpected() {
+fn a_file_from_another_folder_is_forged() {
     let (dir, mut vault, key) = sealing();
     vault.write("other.json", b"x").unwrap();
     // The same game on another computer, played longer.
@@ -175,7 +175,40 @@ fn a_file_with_a_history_this_folder_never_had_is_unexpected() {
         theirs.write(NAME, format!("{n}").as_bytes()).unwrap();
     }
     std::fs::copy(elsewhere.path().join(NAME), dir.path().join(NAME)).unwrap();
-    assert_eq!(tampered(reopen(&dir, &key).read(NAME)), Tamper::Unexpected);
+    assert_eq!(tampered(reopen(&dir, &key).read(NAME)), Tamper::Forged);
+}
+
+#[test]
+fn a_file_from_another_folder_is_forged_even_one_generation_ahead() {
+    // The attack: this folder's ledger is at 3, another install's file is
+    // at 4, which the crash repair would otherwise take as this folder's.
+    let (dir, mut vault, key) = sealing();
+    for n in 0..3 {
+        vault.write(NAME, format!("mine {n}").as_bytes()).unwrap();
+    }
+    let elsewhere = tempfile::tempdir().unwrap();
+    let mut theirs = Vault::with_key(elsewhere.path(), Some(key.clone()));
+    for n in 0..4 {
+        theirs
+            .write(NAME, format!("theirs {n}").as_bytes())
+            .unwrap();
+    }
+    std::fs::copy(elsewhere.path().join(NAME), dir.path().join(NAME)).unwrap();
+    let mut vault = reopen(&dir, &key);
+    assert_eq!(tampered(vault.read(NAME)), Tamper::Forged);
+    // And the ledger did not move on: the attempt changes nothing.
+    assert_eq!(tampered(reopen(&dir, &key).read(NAME)), Tamper::Forged);
+}
+
+#[test]
+fn another_folders_ledger_does_not_vouch_for_this_folders_files() {
+    let (dir, mut vault, key) = sealing();
+    vault.write(NAME, b"mine").unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let mut theirs = Vault::with_key(elsewhere.path(), Some(key.clone()));
+    theirs.write(NAME, b"theirs").unwrap();
+    std::fs::copy(elsewhere.path().join(LEDGER), dir.path().join(LEDGER)).unwrap();
+    assert_eq!(tampered(reopen(&dir, &key).read(NAME)), Tamper::Forged);
 }
 
 #[test]
@@ -245,13 +278,47 @@ fn a_crash_between_the_file_and_the_ledger_is_repaired() {
     assert_eq!(sealed(reopen(&dir, &key).read(NAME)), b"three");
 }
 
+/// The folder's ledger as it would be with `name`'s entry left out: what
+/// a crash between a first write and its ledger update leaves.
+fn ledger_without(dir: &tempfile::TempDir, key: &Key, name: &str) -> Vec<u8> {
+    let path = dir.path().join(LEDGER);
+    let (generation, text) = format::open(
+        &key.file_key(),
+        &NO_FOLDER,
+        LEDGER,
+        &std::fs::read(path).unwrap(),
+    )
+    .unwrap();
+    let (folder, mut entries) = ledger::from_text(&text).unwrap();
+    entries.remove(name);
+    let text = ledger::to_text(&folder, &entries);
+    format::seal(
+        &key.file_key(),
+        &NO_FOLDER,
+        LEDGER,
+        generation - 1,
+        text.as_bytes(),
+    )
+    .unwrap()
+}
+
 #[test]
-fn a_crash_before_the_first_ledger_is_repaired() {
+fn a_crash_after_the_first_write_is_repaired() {
     let (dir, mut vault, key) = sealing();
     vault.write(NAME, b"one").unwrap();
-    std::fs::remove_file(dir.path().join(LEDGER)).unwrap();
+    let before = ledger_without(&dir, &key, NAME);
+    std::fs::write(dir.path().join(LEDGER), before).unwrap();
     assert_eq!(sealed(reopen(&dir, &key).read(NAME)), b"one");
-    assert!(dir.path().join(LEDGER).is_file());
+    assert_eq!(sealed(reopen(&dir, &key).read(NAME)), b"one");
+}
+
+#[test]
+fn the_ledger_is_kept_before_the_first_file_is_sealed() {
+    let (dir, mut vault, key) = sealing();
+    vault.write(NAME, b"one").unwrap();
+    // No ledger at all with a sealed file can only be a deleted ledger.
+    std::fs::remove_file(dir.path().join(LEDGER)).unwrap();
+    assert_eq!(tampered(reopen(&dir, &key).read(NAME)), Tamper::Unexpected);
 }
 
 #[test]
@@ -398,4 +465,99 @@ fn only_sealed_and_plain_are_trusted() {
     assert_eq!(Opened::Locked.trusted(), None);
     assert_eq!(Opened::Missing.trusted(), None);
     assert_eq!(Opened::Tampered(Tamper::Forged).trusted(), None);
+}
+
+#[test]
+fn a_plain_file_after_a_set_aside_is_unsealed_not_legacy() {
+    // The attack: get a file set aside as tampered, then drop in a plain
+    // one, hoping the forgotten history lets it import.
+    let (dir, mut vault, key) = sealing();
+    vault.write(NAME, b"{\"best\":20}").unwrap();
+    std::fs::write(dir.path().join(NAME), b"garbled").unwrap();
+    let mut vault = reopen(&dir, &key);
+    assert_eq!(tampered(vault.read(NAME)), Tamper::Unsealed);
+    vault.set_aside(NAME).unwrap();
+    assert!(matches!(reopen(&dir, &key).read(NAME), Opened::Missing));
+    std::fs::write(dir.path().join(NAME), b"{\"best\":999999}").unwrap();
+    assert_eq!(tampered(reopen(&dir, &key).read(NAME)), Tamper::Unsealed);
+}
+
+#[test]
+fn a_plain_file_after_a_remove_is_unsealed_and_an_old_copy_rolled_back() {
+    let (dir, mut vault, key) = sealing();
+    vault.write(NAME, b"one").unwrap();
+    let old = std::fs::read(dir.path().join(NAME)).unwrap();
+    vault.remove(NAME).unwrap();
+    assert!(matches!(reopen(&dir, &key).read(NAME), Opened::Missing));
+    std::fs::write(dir.path().join(NAME), b"plain").unwrap();
+    assert_eq!(tampered(reopen(&dir, &key).read(NAME)), Tamper::Unsealed);
+    std::fs::write(dir.path().join(NAME), &old).unwrap();
+    assert_eq!(tampered(reopen(&dir, &key).read(NAME)), Tamper::RolledBack);
+    // The next write starts past the old history, and reads back.
+    let mut vault = reopen(&dir, &key);
+    vault.set_aside(NAME).unwrap();
+    vault.write(NAME, b"two").unwrap();
+    assert_eq!(sealed(reopen(&dir, &key).read(NAME)), b"two");
+}
+
+#[test]
+fn a_folder_that_has_sealed_never_reads_a_plain_file_as_legacy() {
+    let (dir, mut vault, key) = sealing();
+    vault.write("other.json", b"x").unwrap();
+    std::fs::write(dir.path().join(NAME), b"plain").unwrap();
+    assert_eq!(tampered(reopen(&dir, &key).read(NAME)), Tamper::Unsealed);
+}
+
+/// A sealing vault on a folder of its own, with one witness in `elsewhere`.
+fn witnessed(key: &Key, elsewhere: &tempfile::TempDir) -> (tempfile::TempDir, Vault) {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = Vault::with_key(dir.path(), Some(key.clone()))
+        .with_witnesses(vec![elsewhere.path().join("game").join("witness")]);
+    (dir, vault)
+}
+
+#[test]
+fn a_witness_stops_a_wiped_folder_from_importing_a_plain_file() {
+    // The attack: delete the sealed file and the ledger, then drop in a
+    // hand-written plain file, as if from before sealing.
+    let key = Key::generate().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (dir, mut vault) = witnessed(&key, &elsewhere);
+    std::fs::write(dir.path().join(NAME), b"{\"best\":20}").unwrap();
+    // The genuine first import still works: nothing has sealed yet.
+    assert!(matches!(vault.read(NAME), Opened::Legacy(_)));
+    vault.write(NAME, b"{\"best\":20}").unwrap();
+    assert!(elsewhere.path().join("game").join("witness").is_file());
+    std::fs::remove_file(dir.path().join(NAME)).unwrap();
+    std::fs::remove_file(dir.path().join(LEDGER)).unwrap();
+    std::fs::write(dir.path().join(NAME), b"{\"best\":999999}").unwrap();
+    let mut again = Vault::with_key(dir.path(), Some(key.clone()))
+        .with_witnesses(vec![elsewhere.path().join("game").join("witness")]);
+    assert_eq!(tampered(again.read(NAME)), Tamper::Unsealed);
+}
+
+#[test]
+fn a_witness_stops_a_fresh_folder_from_importing_a_plain_file() {
+    // The attack: point the game at a new folder (portable.txt, XDG_DATA_HOME)
+    // holding a hand-written plain file.
+    let key = Key::generate().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (_dir, mut vault) = witnessed(&key, &elsewhere);
+    vault.write(NAME, b"{\"best\":20}").unwrap();
+    let (fresh, mut other) = witnessed(&key, &elsewhere);
+    std::fs::write(fresh.path().join(NAME), b"{\"best\":999999}").unwrap();
+    assert_eq!(tampered(other.read(NAME)), Tamper::Unsealed);
+    // An empty fresh folder is simply empty.
+    let (_empty, mut empty) = witnessed(&key, &elsewhere);
+    assert!(matches!(empty.read(NAME), Opened::Missing));
+}
+
+#[test]
+fn a_witness_that_cannot_be_written_does_not_stop_saving() {
+    let key = Key::generate().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(elsewhere.path().join("game"), b"a file, not a folder").unwrap();
+    let (dir, mut vault) = witnessed(&key, &elsewhere);
+    vault.write(NAME, b"x").unwrap();
+    assert_eq!(sealed(reopen(&dir, &key).read(NAME)), b"x");
 }

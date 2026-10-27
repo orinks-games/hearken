@@ -94,7 +94,7 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     let (paths, lock) = if agent.is_some() {
         let real = Paths::discover(G::DATA_DIR, G::ENV_PREFIX);
         (
-            Paths::at(real.data_dir.join("agent-sandbox")),
+            real.nested("agent-sandbox"),
             format!("{}-agent", G::DATA_DIR),
         )
     } else {

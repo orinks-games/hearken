@@ -333,8 +333,10 @@ ctx.vault.write("progress.json", &bytes)?;
 
 In a release, each file is encrypted and authenticated with its name bound
 in, and a sealed ledger in the same folder remembers how often each was
-written. A file edited in any editor, copied over another, restored from
-an older copy, deleted, or replaced by a plain one reads as `Tampered`;
+written. Each file is also bound to its folder, so a file from another
+player's install does not load. A file edited in any editor, copied over
+another, restored from an older copy, deleted, or replaced by a plain one
+reads as `Tampered`;
 what the game does then is its own choice. Developer builds, tests and
 `hearken play` read and write plain files, so you can look at them, and
 never overwrite a release's sealed files. Settings stay plain: they are
@@ -353,10 +355,12 @@ The limits are those of the sound pack, and a few more. The key is in the
 program, so someone who takes it apart can forge any file. Restoring a
 whole data folder, ledger and all, from one earlier moment looks like
 never having played since, and a complete folder copied from a friend
-works. While a game still imports `Legacy` files, a player who deletes
-every sealed file and the ledger can write a plain one by hand; a game
-closes that by refusing `Legacy` once its players have moved to sealed
-releases. This raises cheating from "open a text editor" to "reverse
+works. `Legacy` is offered only in a folder that has never sealed, and
+only while no marker the vault left outside the folder (in the config
+folder, and beside a portable copy's executable) says the game has sealed
+before. A player who deletes those markers too, or plays as a new user,
+can still have a hand-written plain file imported; a game closes that by
+refusing `Legacy` once its players have moved to sealed releases. This raises cheating from "open a text editor" to "reverse
 engineer the program", which is as far as any offline game can go.
 
 ## Optional features
