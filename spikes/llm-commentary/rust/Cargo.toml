@@ -1,0 +1,21 @@
+# A spike, not part of the Hearken workspace: does the llama.cpp binding
+# build on Hearken's three platforms, and what does one commentary line
+# cost through it? See ../README.md.
+[package]
+name = "llm-commentary-spike"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+# No default features: OpenMP is not on Apple's clang, and ggml's own
+# thread pool is what a game would ship anyway.
+llama-cpp-2 = { version = "0.1.160", default-features = false }
+anyhow = "1"
+encoding_rs = "0.8"
+
+[profile.release]
+debug = 1
