@@ -25,7 +25,9 @@ port ships.** Measured on GitHub's 4-vCPU Windows and Linux runners:
   to 2.3 s when it is not. Loading takes about a second. Resident memory is
   roughly the file size plus 300 MB. The Rust binding (`llama-cpp-2`)
   builds llama.cpp from source on Windows, Linux and macOS in 3 to 6
-  minutes and speaks on all three.
+  minutes and writes a correct line on all three; recomputing the whole
+  prompt every time, a line costs about 1.5 s on the Windows and Linux
+  runners.
 - **Writing is the problem.** With a bare prompt every model under 1B read
   the score back or echoed Dana. With the angle stated and four example
   remarks in Big M's voice, the 0.6B model mostly repeated an example
@@ -172,25 +174,61 @@ the prefix changes. LFM2's first lines are 2 to 4 s and the rest 0.3 s:
 its hybrid convolution layers cannot resume a partial prefix, so a
 changed prompt is a full reprocess. Qwen's attention layers resume.
 
-**The Rust binding (round 2).** `llama-cpp-2` 0.1.160 with no default
-features built from source in about 3.5 min on Linux and macOS and 5.5 min
-on Windows (cold; seconds with the cache), with CMake and the platform
-compiler only. It ran Qwen3-0.6B Q4 at 39 generation tokens/s on Linux
-and 45 on Windows, each line recomputing the full prompt from a fresh
-context (1.3 s and 1.65 s mean per line). On macOS the first run split the
-graph between Metal and CPU 397 ways and crawled at 5 tokens/s: ggml's
-Metal backend is compiled in on Apple and a model left on the CPU still
-hands it pieces. Round 3 puts the whole model on Metal there, which is
-what llama.cpp's own tools do. The binding's `token_to_piece` and
-`encoding_rs` need the output string's capacity reserved first; round 2
-printed empty text for that reason, round 3 fixes it.
+**The Rust binding (rounds 2 and 3).** `llama-cpp-2` 0.1.160 with no
+default features built from source in about 3.5 min on Linux and macOS and
+5.5 min on Windows (cold; seconds with the cache), with CMake and the
+platform compiler only. Round 3 ran Qwen3-0.6B Q4 with a fresh context per
+line, so every line pays the whole 206-token prompt:
 
-**macOS:** the `macos-15` bench job did not finish in rounds 1 and 2 (the Windows and Linux jobs took 3 minutes; the macOS one was still on its first pass after 13 and was cancelled by the next push). Round 3 times the four models that matter there with a per-line timeout; its numbers go here when it lands. Apple silicon runs the prebuilt `llama-server` on Metal, so it is the fast case rather than the one that decides anything.
+| Runner | Prompt tok/s | Generation tok/s | Per line (mean of 6) | A line it wrote |
+|---|---|---|---|---|
+| ubuntu-24.04, 4 threads | 188 to 195 | 55 to 56 | 1.69 s (1.3 to 1.6 s after a 3 s first line) | "The game was decided with the Skyliners winning 74-70." |
+| windows-2025, 4 threads | 175 to 186 | 45 to 50 | 1.66 s (1.4 to 1.6 s) | "The Cascades led with 38, Skyliners 30." |
+| macos-15, Metal, 3 threads | 131 to 149 | 4.4 to 5.8 | 6.97 s | "The Skyliners 74, Cascades 70." |
+
+The text is real this time (round 2 printed empty strings: `encoding_rs`
+writes only into the output string's spare capacity, so the binding's
+`token_to_piece` bytes need `reserve` before decoding). The lines are
+correct and plain, as expected from 0.6B with a short prompt. The macOS
+row is the hosted runner, not a Mac; see the next paragraph.
+
+**macOS: the hosted runner cannot time this.** Round 3's `macos-15` job
+(3 cores, 7 GB, "Apple M1 (Virtual)") finished in 7.5 minutes on the four
+models that matter, and every one of them generated at 3 to 7 tokens/s,
+through llama.cpp's own Metal build of `llama-server` and through the Rust
+binding alike, about ten times slower than the Linux runner's CPU:
+
+| Model | Load | Line wall mean / median / max | Gen tok/s | Lines the filter keeps |
+|---|---|---|---|---|
+| Qwen3-0.6B Q4_K_M | 30.2 s (cold disk) | 5.37 / 4.99 / 8.91 s | 3.4 | 15/18 |
+| Qwen3.5-0.8B Q4_0 | 4.2 s | 5.91 / 5.53 / 11.09 s | 3.4 | 18/18 |
+| Qwen3-1.7B Q4_K_M | 9.9 s | 6.86 / 6.74 / 11.32 s | 2.7 | 16/18 |
+| LFM2.5-1.2B Q4_K_M | 3.0 s | 3.06 / 2.68 / 5.53 s | 7.1 | 18/18 |
+
+The reason is in the Rust job's log: `ggml_metal_init: found device:
+Apple Paravirtual device`. The runner's GPU is a virtualised Metal device
+that lacks most of what ggml's kernels need, so the model and KV cache sit
+on "Metal" while the graph still splits 397 ways and crawls. These numbers
+describe GitHub's macOS VM, not Apple silicon; a real M1 runs these models
+on Metal faster than the Linux runner's four cores. What the job does
+prove is that the build, Metal initialisation, loading and the lines all
+work on macOS arm64. The first measurement on a real Mac belongs in W1,
+and its CI job must not gate on macOS timings. The lines themselves
+followed the Windows and Linux pattern: 0.6B copied the examples (nine of
+its eighteen lines were "I love the effort, Dana. That one's in the
+books."), 0.8B wrote fluent nonsense ("You're the one who knows the game
+before the minutes"), 1.7B was correct but leaned on the example openers
+("Shake it off" opened four lines, "Shout it out" three), and LFM2.5 read
+the most naturally and said the least ("The Cascades are in a strong
+position at halftime").
 
 ### What the lines read like
 
 Round 2, the angle-led prompt. Full output is in each run's job log and
-`report-*.md` artifact.
+`report-*.md` artifact. Round 3 repeated the Windows and Linux passes with
+the same prompt and the pattern held: Qwen3-0.6B Q4 kept 14 of 18 on both,
+Qwen3.5-0.8B 18 of 18 but empty, Qwen3-1.7B 18 of 18 on Linux and 15 of
+18 on Windows, LFM2.5-1.2B 18 of 18; LFM2 and SmolLM2 kept 0 to 4.
 
 - **Qwen3-0.6B Q4** passed the filter 14 of 18 times and still failed:
   twelve of its lines were "I love the effort, Dana. That one's in the
@@ -286,9 +324,17 @@ match event ──► Booth::hear ──► Dana's pooled line ──► Voice (
 
 ## Risks
 
-- **Build.** `llama-cpp-2` has open Windows issues; the spike's `rust`
-  job is the evidence. If it fails, candle's `quantized_qwen3` is the
-  pure-Rust fallback at some CPU speed cost.
+- **Build.** `llama-cpp-2` has open Windows issues, but the spike's
+  `rust` job built and ran it on all three runners in every round, so the
+  live risk is upstream churn (the crate has no semver) rather than a
+  build that does not work. Pin the version; if a future one fails,
+  candle's `quantized_qwen3` is the pure-Rust fallback at some CPU speed
+  cost.
+- **macOS speed is unmeasured.** The hosted macOS runner's GPU is a
+  paravirtual Metal device and ran everything at 3 to 7 tokens/s, so the
+  spike says nothing about a real Mac. Expectation, not measurement: Apple
+  silicon on Metal beats the Linux runner. W1 must time it once on real
+  hardware before "also during play" is offered there.
 - **Quality at 0.6B.** Small models repeat the facts back, hallucinate a
   player name, or add a second sentence. The filter and the examples in
   the prompt handle most of it; the fallback handles the rest. The spike
@@ -353,6 +399,8 @@ runs only in a CI job, as the voices do. Estimated at Opus 5.5 medium.
 - CI: a `writer` job (Linux on PRs, three OSs on dispatch) that builds the
   feature, installs the pinned model, writes six briefs and asserts every
   line passes the filter or falls back, with the lines in the job summary.
+  The macOS job checks the build and the lines only; its GPU is
+  paravirtual and its timings mean nothing.
 - Accept: `cargo test -p hearken-writer` with `FakeWriter`; the CI job
   green on three platforms; the note updated with real-binding timings
   (prompt prefix resident, lines of 15 to 25 tokens) on each.
