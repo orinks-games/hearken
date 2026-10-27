@@ -56,10 +56,10 @@ export class RulesError extends Error {
  * precompiled module.
  */
 export async function loadRules(source, { build } = {}) {
-  let module;
+  let compiled;
   let id = build;
   if (source instanceof WebAssembly.Module) {
-    module = source;
+    compiled = source;
     if (!/^[0-9a-f]{64}$/.test(id ?? "")) {
       throw new RulesError("bad-module", "a precompiled module needs its build ID");
     }
@@ -70,19 +70,19 @@ export async function loadRules(source, { build } = {}) {
       throw new RulesError("bad-module", `the module's SHA-256 is ${computed}, not ${id}`);
     }
     id = computed;
-    module = await WebAssembly.compile(bytes);
+    compiled = await WebAssembly.compile(bytes);
   }
-  const imports = WebAssembly.Module.imports(module);
+  const imports = WebAssembly.Module.imports(compiled);
   if (imports.length > 0) {
     const names = imports.map((i) => `${i.module}.${i.name}`).join(", ");
     throw new RulesError("bad-module", `rules may not import anything, and this module imports ${names}`);
   }
-  const exported = new Set(WebAssembly.Module.exports(module).map((e) => e.name));
+  const exported = new Set(WebAssembly.Module.exports(compiled).map((e) => e.name));
   const missing = REQUIRED.filter((name) => !exported.has(name));
   if (missing.length > 0) {
     throw new RulesError("bad-module", `the module lacks ${missing.join(", ")}`);
   }
-  const rules = new Rules(module, id);
+  const rules = new Rules(compiled, id);
   const abi = rules.call((x) => x.hearken_abi());
   if (abi !== ABI) {
     throw new RulesError("bad-module", `the module speaks ABI ${abi}, not ${ABI}`);

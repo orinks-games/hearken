@@ -120,7 +120,7 @@ export function createService(options) {
     limiter,
     handlers,
     basePath = "",
-    replay = async (module, run, expected) => module.verify(run, expected),
+    replay = async (published, run, expected) => published.verify(run, expected),
     // The last X-Forwarded-For address is the one the nearest proxy saw;
     // earlier ones are whatever the client sent. Hosts that name the client
     // another way (Cloudflare's CF-Connecting-IP) should pass their own.
@@ -159,8 +159,8 @@ export function createService(options) {
     if (body === null) return error(413, "too-large");
     const build = buildOf(body);
     if (!build) return error(422, "not-a-run");
-    const module = await rules.get(build);
-    if (!module) return error(422, "unknown-build");
+    const published = await rules.get(build);
+    if (!published) return error(422, "unknown-build");
 
     const runId = await sha256Hex(body);
     // Copies are told apart by what was played, not by which published
@@ -169,7 +169,7 @@ export function createService(options) {
     const played = body.slice();
     played.fill(0, BUILD_OFFSET, BUILD_OFFSET + 32);
     const playId = await sha256Hex(played);
-    const info = module.inspect(body);
+    const info = published.inspect(body);
     if (!info.ok) return error(422, info.error);
 
     // The run is claimed before any work, so a repeat is answered from what
@@ -190,7 +190,7 @@ export function createService(options) {
       if (!expected || typeof expected.rules !== "string") {
         throw new Error(`the handler for "${kind}" expected nothing`);
       }
-      const verified = await replay(module, body, expected);
+      const verified = await replay(published, body, expected);
       if (!verified.ok) {
         await runs.release(key, claim);
         return error(422, verified.error);
