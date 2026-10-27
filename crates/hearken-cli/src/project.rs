@@ -7,6 +7,7 @@
 //! pack = true                                      # sounds in an encrypted sounds.pak
 //! seal = true                                      # data written through ctx.vault is sealed
 //! seal-id = "k1:3f9a0c2e7b14d685"                  # the seal key's ID, checked by release
+//! rules = "my-game-rules"                          # built for WebAssembly, for verified runs
 //! include = ["sounds", "README.md", "LICENSE"]     # shipped in a release
 //! bin = "my-game"                                  # when it has several
 //! ```
@@ -39,6 +40,18 @@ pub struct Project {
     pub seal_id: Option<String>,
     /// Files and folders, relative to `dir`, that a release ships.
     pub include: Vec<String>,
+    /// The game's rules crate, which a release also builds for WebAssembly
+    /// so a server can replay its runs (see `rules_module`).
+    pub rules: Option<Rules>,
+}
+
+/// A game's rules crate: a workspace package that is a `cdylib` and calls
+/// `hearken_replay::export_rules!`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rules {
+    pub package: String,
+    /// Its library's name, as the `.wasm` file is named.
+    pub lib: String,
 }
 
 impl Project {
@@ -116,6 +129,11 @@ impl Project {
                 .map(String::from)
                 .to_vec(),
         };
+        let rules = match hearken.get("rules") {
+            None => None,
+            Some(Value::String(rules)) => Some(rules_crate(&packages, rules)?),
+            Some(_) => return Err("`rules` names the game's rules crate, as a string.".into()),
+        };
         let dir = PathBuf::from(meta["workspace_root"].as_str().unwrap_or("."));
         let target_dir = meta["target_directory"]
             .as_str()
@@ -131,6 +149,7 @@ impl Project {
             seal: hearken["seal"].as_bool().unwrap_or(false),
             seal_id: hearken["seal-id"].as_str().map(String::from),
             include,
+            rules,
             package: name,
         })
     }
@@ -198,6 +217,35 @@ impl Project {
     }
 }
 
+/// The rules crate `name`, which must be a workspace package with a
+/// `cdylib` library.
+fn rules_crate(packages: &[Value], name: &str) -> Result<Rules, String> {
+    let pkg = packages
+        .iter()
+        .find(|p| p["name"] == name)
+        .ok_or_else(|| format!("The rules crate {name} is not in this workspace."))?;
+    let lib = pkg["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|t| {
+            t["kind"]
+                .as_array()
+                .is_some_and(|k| k.contains(&"cdylib".into()))
+        })
+        .and_then(|t| t["name"].as_str())
+        .ok_or_else(|| {
+            format!(
+                "The rules crate {name} must be a cdylib: add `crate-type = [\"cdylib\", \"rlib\"]` \
+                 under [lib] in its Cargo.toml."
+            )
+        })?;
+    Ok(Rules {
+        package: name.to_string(),
+        lib: lib.replace('-', "_"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +278,31 @@ mod tests {
         assert_eq!(p.seal_id, None);
         assert_eq!(p.include, ["sounds", "README.md", "LICENSE"]);
         assert_eq!(p.target_dir, Path::new("/games/parlor").join("target"));
+        assert_eq!(p.rules, None);
+    }
+
+    #[test]
+    fn finds_the_rules_crate() {
+        let mut meta = game(
+            serde_json::json!({}),
+            serde_json::json!({ "rules": "parlor-core" }),
+        );
+        let err = Project::from_metadata(&meta, None).err().unwrap();
+        assert!(err.contains("must be a cdylib"), "{err}");
+        meta["packages"][0]["targets"][0]["kind"] = serde_json::json!(["cdylib", "rlib"]);
+        let p = Project::from_metadata(&meta, None).unwrap();
+        assert_eq!(
+            p.rules,
+            Some(Rules {
+                package: "parlor-core".into(),
+                lib: "parlor_core".into()
+            })
+        );
+        let meta = game(
+            serde_json::json!({}),
+            serde_json::json!({ "rules": "missing" }),
+        );
+        assert!(Project::from_metadata(&meta, None).is_err());
     }
 
     #[test]

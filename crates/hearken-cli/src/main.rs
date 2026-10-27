@@ -15,6 +15,7 @@
 
 mod project;
 mod release;
+mod rules_module;
 mod seal_key;
 
 use std::path::{Path, PathBuf};
@@ -29,7 +30,8 @@ const USAGE: &str = "Usage: hearken play [game] [--download | --source]
 play     starts a game. With Rust installed it builds the latest source as a
          developer build; otherwise it downloads the latest release.
          --download and --source choose.
-release  builds the zip players get, without the agent server, into dist/.
+release  builds the zip players get, without the agent server, into dist/,
+         and the rules module for verified runs when the game names one.
 seal-key shows where a game's seal key is kept and its ID; --print shows
          the key itself, for a CI secret.
 
