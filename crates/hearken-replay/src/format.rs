@@ -82,12 +82,20 @@ impl BuildId {
         Some(BuildId(out))
     }
 
+    /// The rules ID `hearken release` baked into this program; `None` for
+    /// any other build.
+    pub fn baked() -> Option<BuildId> {
+        option_env!("HEARKEN_RULES_ID")
+            .and_then(BuildId::from_hex)
+            .filter(|id| !id.is_none())
+    }
+
     /// The rules module this program was released with: the ID `hearken
     /// release` baked in through `HEARKEN_RULES_ID`. A build without one
     /// reads `HEARKEN_RULES_ID` when it runs instead, so a developer can try
     /// a local server; a build with neither gets [`BuildId::NONE`].
     pub fn this_build() -> BuildId {
-        if let Some(id) = option_env!("HEARKEN_RULES_ID").and_then(BuildId::from_hex) {
+        if let Some(id) = BuildId::baked() {
             return id;
         }
         #[cfg(not(target_arch = "wasm32"))]

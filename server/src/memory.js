@@ -129,6 +129,7 @@ export function memoryAccounts({
         user_code: userCode,
         verify_url: verifyUrl,
         expires_in: Math.round(ttlMs / 1000),
+        interval: 5,
       };
     },
     async pollActivation(deviceCode) {

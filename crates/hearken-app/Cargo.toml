@@ -19,6 +19,9 @@ testing = ["dep:tempfile"]
 # by ear (see `agent_server`). For developer builds; `hearken release`
 # leaves a game's `agent-server` feature out.
 agent-server = []
+# `ctx.online`: verified runs sent to the game's server (see `online`), and
+# connecting an account from Settings. HTTPS through ureq.
+online = ["dep:ureq", "dep:hearken-replay"]
 
 [dependencies]
 hearken-speech.workspace = true
@@ -32,6 +35,8 @@ serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
 tempfile = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+hearken-replay = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

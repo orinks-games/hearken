@@ -127,6 +127,36 @@ jobs:
       - name: Agent server clippy
         if: runner.os == 'Linux'
         run: cargo clippy -p hearken-app --features agent-server --all-targets --locked -- -D warnings
+      # Online play is behind a feature no workspace crate turns on either.
+      - name: Online tests
+        if: runner.os == 'Linux'
+        run: cargo test -p hearken-app --features online --locked
+      - name: Online clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy -p hearken-app --features online --all-targets --locked -- -D warnings
+
+  # Verified runs: the replay crate builds for WebAssembly, and the server
+  # library verifies the runs its Rust tests record with the real module.
+  # Needs no system libraries, so it skips the desktop dependencies.
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show && rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo test -p hearken-replay --locked
+      - run: cargo build -p hearken-replay --example coin-dash --target wasm32-unknown-unknown --release --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Server library tests
+        working-directory: server
+        env:
+          HEARKEN_REQUIRE_WASM: "1"
+        run: npm test
 
   # hearken-voice: local-tts and ONNX Runtime build, Kokoro speaks a line
   # that hearken-audio decodes, the Voice service's tests pass, and a whole

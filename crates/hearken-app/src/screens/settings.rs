@@ -275,6 +275,34 @@ impl<G: Game> Menu for SettingsScreen<G> {
             .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_controller(ctx)),
         ));
 
+        #[cfg(feature = "online")]
+        if ctx.online.is_offered() {
+            rows.push(SettingsRow::new(
+                "online",
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        match ctx
+                            .online
+                            .player_name()
+                            .filter(|_| ctx.online.is_connected())
+                        {
+                            Some(name) => format!("Online account: {name}"),
+                            None => "Online account: not connected".to_string(),
+                        }
+                    }),
+                    |_s: &mut Self, ctx: &mut Ctx<G>| {
+                        ctx.push(crate::screens::OnlineAccountScreen::new())
+                    },
+                )
+                .help(Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                    format!(
+                        "Connect an account on {} to send your runs there, or disconnect it.",
+                        ctx.online.site()
+                    )
+                })),
+            ));
+        }
+
         let rows = G::settings_rows(&*ctx, rows);
         self.row_ids = rows.iter().map(|r| r.id.clone()).collect();
         rows.into_iter().map(|r| r.item).collect()

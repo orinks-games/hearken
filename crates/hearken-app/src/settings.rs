@@ -32,8 +32,40 @@ pub struct Settings<GS> {
     pub bindings: SavedBindings,
     #[serde(default)]
     pub audio: AudioSettings,
+    /// The player's online account, for a game with online play.
+    #[serde(default, skip_serializing_if = "OnlineSettings::is_empty")]
+    pub online: OnlineSettings,
     #[serde(default)]
     pub game: GS,
+}
+
+/// A secret kept in `settings.json`: never shown by `Debug`, so it stays
+/// out of logs.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(hidden)")
+    }
+}
+
+/// The player's online account, saved in `settings.json`.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnlineSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<Secret>,
+    /// The name the server knows the player by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl OnlineSettings {
+    pub fn is_empty(&self) -> bool {
+        self.token.is_none() && self.name.is_none()
+    }
 }
 
 /// How menus read their rows.

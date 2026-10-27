@@ -94,6 +94,15 @@ pub trait Game: Sized + 'static {
 
     /// The Settings screen's rows, built-in ones first: a chance to hide,
     /// reorder or add to them. The default keeps every built-in row as is.
+    /// The game's server for verified runs (`ctx.online`), or `None` for
+    /// no online play. A build without a rules ID of its own (any build but
+    /// a release made with `rules`) takes `<PREFIX>_ONLINE_URL` in its
+    /// place, to try a local server.
+    #[cfg(feature = "online")]
+    fn online() -> Option<crate::online::OnlineConfig> {
+        None
+    }
+
     fn settings_rows(_ctx: &Ctx<Self>, rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {
         rows
     }
