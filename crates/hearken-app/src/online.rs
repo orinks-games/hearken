@@ -282,7 +282,8 @@ impl OnlineError {
                 message: reply.body["message"]
                     .as_str()
                     .filter(|m| !m.trim().is_empty())
-                    .map(|m| m.chars().take(200).collect()),
+                    .map(|m| clean_text(m, 200))
+                    .filter(|m| !m.is_empty()),
             },
             _ => OnlineError::Unavailable,
         }
@@ -599,15 +600,53 @@ impl Online {
     }
 }
 
+/// Whether `c` is spoken or shown as nothing, or as a break: control
+/// characters, line and paragraph separators, and the invisible format
+/// characters (zero-width spaces and joiners, direction overrides, the
+/// byte-order mark) a hostile server could use to disguise text.
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
+/// Text from the server, made safe to speak and log: hidden characters
+/// dropped, runs of whitespace made one space, at most `max` characters.
+pub fn clean_text(text: &str, max: usize) -> String {
+    let mut out = String::new();
+    for word in text
+        .chars()
+        .filter(|c| !hidden(*c) || c.is_whitespace())
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect::<String>()
+        .split(' ')
+        .filter(|w| !w.is_empty())
+    {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out.chars().take(max).collect::<String>().trim().to_string()
+}
+
+/// The host of an `http(s)://` URL, lowercased, without a port.
+fn host_of(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let host = rest.split(['/', '?', '#']).next()?;
+    if host.contains('@') {
+        return None;
+    }
+    let host = host.rsplit_once(':').map_or(host, |(h, _)| h);
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
 /// A name from the server, cut to something sensible to speak.
 fn clean_name(name: Option<&str>) -> String {
-    let name: String = name
-        .unwrap_or("")
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(32)
-        .collect();
-    let name = name.trim();
+    let name = clean_text(name.unwrap_or(""), 32);
     if name.is_empty() {
         "your account".to_string()
     } else {
@@ -644,13 +683,16 @@ fn activate(
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
         .take(16)
         .collect();
-    let url: String = body["verify_url"]
-        .as_str()
-        .unwrap_or("")
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(200)
-        .collect();
+    // The page to enter the code on is spoken only when it is on the game's
+    // own server; anything else is a server trying to send the player
+    // somewhere, and the site's name is spoken instead.
+    let url = clean_text(body["verify_url"].as_str().unwrap_or(""), 200);
+    let url =
+        if url.contains(' ') || host_of(&url).is_none() || host_of(&url) != host_of(&config.url) {
+            String::new()
+        } else {
+            url
+        };
     if code.is_empty() || device.len() > 128 {
         return Err(OnlineError::Unavailable);
     }
@@ -965,6 +1007,43 @@ pub(crate) mod tests {
             Plan::from_answer(&json!({ "seed": "99999999999999999999" })),
             None
         );
+    }
+
+    #[test]
+    fn server_text_is_cleaned_before_it_is_spoken() {
+        assert_eq!(
+            clean_text("Mallory\u{202E}\u{200B}gnp.exe\nINFO fake log line", 64),
+            "Mallorygnp.exe INFO fake log line"
+        );
+        assert_eq!(clean_text("  a\u{2028}b  ", 10), "a b");
+        assert_eq!(
+            host_of("https://Orinks.net:443/activate"),
+            Some("orinks.net".into())
+        );
+        assert_eq!(host_of("https://evil.test@orinks.net/"), None);
+        assert_eq!(host_of("javascript:alert(1)"), None);
+    }
+
+    #[test]
+    fn a_code_page_elsewhere_is_not_spoken() {
+        let transport = Scripted::answering(vec![reply(
+            200,
+            json!({ "device_code": "d".repeat(64), "user_code": "ABCD-EF34",
+                    "verify_url": "https://evil.test/activate" }),
+        )]);
+        let mut online = Online::new(config(), &OnlineSettings::default());
+        online.set_transport(transport);
+        online.connect();
+        for _ in 0..200 {
+            online.update();
+            if let Connect::Waiting { url, .. } = online.connect_state() {
+                assert_eq!(url, "");
+                online.cancel_connect();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("no code");
     }
 
     #[test]

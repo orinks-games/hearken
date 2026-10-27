@@ -52,6 +52,14 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
         platform(std::env::consts::OS, std::env::consts::ARCH)
     );
     let dist = project.dir.join("dist");
+    // An earlier release's module is not this one's.
+    let stale = format!("{}-{}-rules-", project.package, project.version);
+    for entry in std::fs::read_dir(&dist).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(&stale) && name.ends_with(".wasm") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
     if let Some(module) = &rules {
         // Beside the archive, not in it: players never need it, and the
         // server is given it to publish the build.
@@ -128,11 +136,13 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
 
 /// The keys and rules ID a release's build gets: all always set, empty
 /// when unused, so none in the developer's shell reaches a release.
-fn key_env<'a>(pack: &'a str, seal: &'a str, rules: &'a str) -> [(&'static str, &'a str); 3] {
+fn key_env<'a>(pack: &'a str, seal: &'a str, rules: &'a str) -> [(&'static str, &'a str); 4] {
     [
         (PACK_KEY_VAR, pack),
         (crate::seal_key::BUILD_VAR, seal),
         (crate::rules_module::RULES_VAR, rules),
+        // A release, with or without rules: no developer override is read.
+        (crate::rules_module::RELEASE_VAR, "1"),
     ]
 }
 
@@ -330,7 +340,8 @@ mod tests {
             [
                 ("HEARKEN_PACK_KEY", ""),
                 ("HEARKEN_SEAL_KEY", ""),
-                ("HEARKEN_RULES_ID", "")
+                ("HEARKEN_RULES_ID", ""),
+                ("HEARKEN_RELEASE", "1")
             ]
         );
     }

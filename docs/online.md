@@ -79,6 +79,15 @@ instead of relying on the menus to prevent it.
 `hearken_replay::assert_replays(&recording)` is the determinism check: it
 writes the run to a file, reads it back, replays it and compares outcomes.
 Run it in the game's tests for each set of rules before turning them on.
+It replays natively, so also verify a recorded run with the built module
+once, through `@hearken/online` (`server/test/service.test.js` does this
+for the example rules), to catch anything that differs in WebAssembly.
+
+`Recording` gives the rules the context and inputs as the run file carries
+them, so a `#[serde(skip)]` field or a lossy `InputCode` is lost in play
+too, where a test notices. `Recording::too_long` says when a run has grown
+past what a server replays. Rules that change through a shared reference
+(`Cell`, `RefCell`) must not be changed through `Recording::sim`.
 
 ### 2. Record runs in the game
 
@@ -144,10 +153,24 @@ module imports nothing and exports what a server needs, and puts it in
 SHA-256 is the release's **rules ID**, which goes into the game so every run
 it records names the module that can replay it.
 
+The module is built with the features the game's own release build turns
+on in the rules crate, so the server runs the rules the player played. The
+game must depend on its rules crate; a release refuses one that does not.
+When a dependency of the rules crate gets other features in the game's
+build than in the module (another crate in the game turned one on), the
+release names it: check that none of those features change the rules.
+
 Publish that module on the server. Runs from a build whose module is not
-published are refused, so an old or modified build cannot submit. Each
-platform's release builds its own module; the build strips local paths so
-they usually match, but publish every one that differs.
+published are refused. Each platform's release builds its own module. The
+build writes the workspace, Cargo's home and path dependencies under fixed
+names, so the same source usually gives the same module everywhere; but
+when the project sets Rust flags of its own (`RUSTFLAGS`, or `rustflags` in
+a `.cargo/config.toml`), the release keeps them and leaves the paths as
+they are. Publish every module that differs.
+
+A release made by `hearken release` never reads `<PREFIX>_ONLINE_URL` or
+`HEARKEN_RULES_ID`, with or without rules, so nothing in a player's
+environment can point it at another server.
 
 The rules target must be installed: `rustup target add
 wasm32-unknown-unknown`, or `targets = ["wasm32-unknown-unknown"]` in the
@@ -405,6 +428,10 @@ Accepted limits, which no replay can close:
   When every player gets the same seed, a player can send another's run
   (with a harmless input added) and tie their score. Seeds of each player's
   own close this, at the cost of a shared course.
+- **A compromised server.** It can tell the player anything in its refusal
+  messages, and send the connect flow to a page of its own. The game
+  speaks only cleaned text (no control or invisible characters), and only
+  a code page on the game's own host, but trusts the server it names.
 - **Phished codes.** An attacker could talk a player into entering the
   attacker's connect code, which connects the player's account to the
   attacker's computer. This is the nature of code sign-in, as on a TV; the

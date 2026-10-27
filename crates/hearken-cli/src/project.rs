@@ -171,6 +171,15 @@ impl Project {
             // A release builds exactly the dependencies Cargo.lock pins.
             args.push("--locked".into());
         }
+        args.extend(self.feature_args(dev));
+        args
+    }
+
+    /// The feature flags a build of the game gets: none for a developer
+    /// build, and for a release, the game's defaults without the agent
+    /// server.
+    pub fn feature_args(&self, dev: bool) -> Vec<String> {
+        let mut args = Vec::new();
         if !dev && self.default_features.iter().any(|f| f == AGENT_SERVER) {
             let keep: Vec<&str> = self
                 .default_features

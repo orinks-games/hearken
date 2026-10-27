@@ -397,12 +397,12 @@ impl<G: Game> Ctx<G> {
     }
 }
 
-/// The game's server: `Game::online`, or in a build without a rules ID of
-/// its own, `<PREFIX>_ONLINE_URL` when it is set.
+/// The game's server: `Game::online`, or in a developer build (not made by
+/// `hearken release`), `<PREFIX>_ONLINE_URL` when it is set.
 #[cfg(feature = "online")]
 fn online_config<G: Game>() -> Option<crate::online::OnlineConfig> {
     let config = G::online();
-    if hearken_replay::BuildId::baked().is_some() {
+    if hearken_replay::BuildId::is_release() || hearken_replay::BuildId::baked().is_some() {
         return config;
     }
     match std::env::var(format!("{}_ONLINE_URL", G::ENV_PREFIX)) {

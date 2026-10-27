@@ -230,3 +230,45 @@ fn writes_fixtures_for_the_javascript_host() {
     )
     .unwrap();
 }
+
+#[test]
+fn play_starts_from_the_context_the_file_carries() {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Mode {
+        #[serde(skip)]
+        hard: bool,
+    }
+    struct Skip(u32);
+    impl hearken_replay::Replayable for Skip {
+        const RULES: &'static str = "skip";
+        const MAX_TICKS: u64 = 1;
+        type Input = Control;
+        type Context = Mode;
+        type Outcome = u32;
+        fn new(_: u64, mode: &Mode) -> Self {
+            Skip(if mode.hard { 50 } else { 5 })
+        }
+        fn step(&mut self, _: &[Control]) {}
+        fn finished(&self) -> bool {
+            true
+        }
+        fn outcome(&self) -> u32 {
+            self.0
+        }
+    }
+    let rec = Recording::<Skip>::new(1, &Mode { hard: true }).unwrap();
+    // The file cannot carry `hard`, so play does not see it either.
+    assert_eq!(rec.outcome(), 5);
+    assert_replays(&rec);
+}
+
+#[test]
+fn a_run_can_tell_it_has_outgrown_a_server() {
+    let mut rec = Recording::<Dash>::new(1, &Setup { seconds: 600 }).unwrap();
+    assert!(!rec.too_long());
+    for _ in 0..(600 * coin_dash::HZ) {
+        rec.step(&[]);
+    }
+    assert!(rec.finished());
+    assert!(!rec.too_long());
+}

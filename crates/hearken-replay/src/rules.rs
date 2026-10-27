@@ -83,8 +83,13 @@ impl<R: Replayable> Recording<R> {
         if context_json.len() > crate::format::MAX_CONTEXT_LEN {
             return Err(FormatError::BadContext);
         }
+        // The rules start from the context as the run file will carry it,
+        // so a field the file drops (`#[serde(skip)]`) or changes is dropped
+        // or changed in play too, not only in the replay.
+        let carried: R::Context =
+            serde_json::from_str(&context_json).map_err(|_| FormatError::BadContext)?;
         Ok(Recording {
-            sim: R::new(seed, context),
+            sim: R::new(seed, &carried),
             run: Run {
                 build: BuildId::this_build(),
                 rules: R::RULES.to_string(),
@@ -96,7 +101,9 @@ impl<R: Replayable> Recording<R> {
         })
     }
 
-    /// The rules as they stand, to read from.
+    /// The rules as they stand, to read from. Rules that change through a
+    /// shared reference (a `Cell` or `RefCell` inside) must not be changed
+    /// here: that change would not be in the recording.
     pub fn sim(&self) -> &R {
         &self.sim
     }
@@ -118,18 +125,43 @@ impl<R: Replayable> Recording<R> {
 
     /// Runs one step with `inputs` and records it. Does nothing once the
     /// run is over, and returns whether the step ran.
+    ///
+    /// The rules are given each input as the run file will carry it (its
+    /// code read back with `from_code`), so play and replay see the same
+    /// inputs. An input whose code does not read back is a bug in the
+    /// game's `InputCode`: debug builds panic, and others leave it out of
+    /// both the step and the record.
     pub fn step(&mut self, inputs: &[R::Input]) -> bool {
         if self.sim.finished() {
             return false;
         }
         let tick = self.run.ticks;
+        let mut carried = Vec::with_capacity(inputs.len());
         for input in inputs {
             let (code, value) = input.to_code();
+            let Some(read) =
+                R::Input::from_code(code, value).filter(|r| r.to_code() == (code, value))
+            else {
+                debug_assert!(
+                    false,
+                    "an input's code ({code}, {value}) does not read back"
+                );
+                continue;
+            };
             self.run.inputs.push(Input { tick, code, value });
+            carried.push(read);
         }
-        self.sim.step(inputs);
+        self.sim.step(&carried);
         self.run.ticks += 1;
         true
+    }
+
+    /// Whether the run has outgrown what a server replays: more steps than
+    /// `R::MAX_TICKS`, or more inputs than a run file holds. A game can end
+    /// such a run, or tell the player it will not count, instead of finding
+    /// out when the server refuses it.
+    pub fn too_long(&self) -> bool {
+        self.run.ticks > R::MAX_TICKS || self.run.inputs.len() > crate::format::MAX_INPUTS
     }
 
     /// The run so far, to submit or save.

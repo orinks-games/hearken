@@ -82,6 +82,13 @@ impl BuildId {
         Some(BuildId(out))
     }
 
+    /// Whether `hearken release` made this program. A release reads no
+    /// developer override (`HEARKEN_RULES_ID` here, `<PREFIX>_ONLINE_URL`
+    /// in the engine) whether or not it has rules of its own.
+    pub fn is_release() -> bool {
+        option_env!("HEARKEN_RELEASE") == Some("1")
+    }
+
     /// The rules ID `hearken release` baked into this program; `None` for
     /// any other build.
     pub fn baked() -> Option<BuildId> {
@@ -93,10 +100,15 @@ impl BuildId {
     /// The rules module this program was released with: the ID `hearken
     /// release` baked in through `HEARKEN_RULES_ID`. A build without one
     /// reads `HEARKEN_RULES_ID` when it runs instead, so a developer can try
-    /// a local server; a build with neither gets [`BuildId::NONE`].
+    /// a local server, unless it is a release; a build with neither gets
+    /// [`BuildId::NONE`].
     pub fn this_build() -> BuildId {
         if let Some(id) = BuildId::baked() {
             return id;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if BuildId::is_release() {
+            return BuildId::NONE;
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(id) = std::env::var("HEARKEN_RULES_ID")

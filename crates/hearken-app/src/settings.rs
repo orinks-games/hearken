@@ -210,6 +210,27 @@ impl<GS: Serialize + DeserializeOwned + Default> Settings<GS> {
     }
 }
 
+/// Writes `bytes` to `path`, readable by this user alone on Unix: the
+/// settings can hold an online account's token.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        // A leftover file keeps its old mode through `open`; set it again.
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)
+}
+
 impl<GS: Serialize> Settings<GS> {
     /// Write the settings as pretty JSON, through a temporary file, so a
     /// crash mid-write never leaves half a file behind.
@@ -217,7 +238,7 @@ impl<GS: Serialize> Settings<GS> {
         let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         let file = paths.settings_file();
         let tmp = file.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
+        write_private(&tmp, json.as_bytes())?;
         std::fs::rename(&tmp, &file)
     }
 }
