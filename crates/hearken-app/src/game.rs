@@ -19,8 +19,17 @@ pub trait Game: Sized + 'static {
     /// Prefix of the game's environment overrides: `<PREFIX>_DATA_DIR`,
     /// `<PREFIX>_LOG`, `<PREFIX>_LOG_FILE`, `<PREFIX>_NO_SPEECH`, `<PREFIX>_SPEECH_BACKEND`,
     /// `<PREFIX>_STREAM_TRANSCRIPT`, `<PREFIX>_AUDIO_BACKEND` (`silent` turns sound off),
-    /// `<PREFIX>_SOUNDS` (the loose sounds folder).
+    /// `<PREFIX>_SOUNDS` (the loose sounds folder). A release made with a
+    /// sound pack ignores `<PREFIX>_SOUNDS`, and one made with `seal = true`
+    /// ignores `<PREFIX>_DATA_DIR`, so neither can swap in other files.
     const ENV_PREFIX: &'static str;
+    /// Whether a release made with `seal = true` still imports plain save
+    /// files an older, unsealed version left (`Opened::Legacy`). While this
+    /// is true, the vault leaves one small marker outside the data folder so
+    /// a wiped folder cannot pass a hand-written plain file off as old saves.
+    /// Leave it false (the default) and no marker is ever written; turn it
+    /// off once players have had a sealing release.
+    const IMPORTS_PLAIN_SAVES: bool = false;
 
     /// What the game's rules emit. The top screen receives each one in
     /// `State::on_event`.

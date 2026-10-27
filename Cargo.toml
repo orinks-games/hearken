@@ -25,6 +25,8 @@ hearken = { path = "crates/hearken" }
 hearken-app = { path = "crates/hearken-app", default-features = false }
 hearken-synth = { path = "crates/hearken-synth" }
 hearken-pack = { path = "crates/hearken-pack" }
+hearken-bake = { path = "crates/hearken-bake" }
+hearken-seal = { path = "crates/hearken-seal" }
 hearken-audio = { path = "crates/hearken-audio", default-features = false }
 hearken-radio = { path = "crates/hearken-radio" }
 hearken-voice = { path = "crates/hearken-voice" }

@@ -48,7 +48,9 @@ A game depends on one crate, `hearken`, which brings in the rest:
 | `hearken-speech` | Screen reader, braille and text-to-speech output through Prism. Includes an event voice with pacing, priorities and repeat suppression, and a verbosity table the player sets. |
 | `hearken-audio` | A pool of positioned sounds, buses and live voices, played through [Kira](https://github.com/tesselode/kira), which compiles into the game. |
 | `hearken-synth` | Sound made with [fundsp](https://github.com/SamiPerttu/fundsp): built-in menu earcons, a default sound for every category, and recipes for live voices such as engines. A game can make sound with no sound files at all. |
-| `hearken-pack` | A release's sounds in one encrypted `sounds.pak`, so players cannot browse them. Written by `hearken release`, read by `hearken-audio`. |
+| `hearken-pack` | A release's sounds in one encrypted, authenticated `sounds.pak`, so players cannot browse or replace them. Written by `hearken release`, read by `hearken-audio`. |
+| `hearken-seal` | A game's records and saves, sealed in a release so a player cannot edit, swap or restore them (`ctx.vault`, `hearken::seal`). |
+| `hearken-bake` | Build scripts only: puts a release's keys into the program as scattered shares. |
 | `hearken-radio` | Internet radio, played as a sound: HTTP and ICY stations, playlists and live HLS, with now-playing titles. Optional. |
 
 Some of what that gives a game:
@@ -227,8 +229,8 @@ on one machine never share them. For a prefix of `MY_GAME`:
 
 | Variable | Effect |
 |----------|--------|
-| `MY_GAME_DATA_DIR` | Keep settings and logs in this folder instead. A `portable.txt` beside the executable keeps them in a `saves` folder there. |
-| `MY_GAME_SOUNDS` | Load sound files from this folder. |
+| `MY_GAME_DATA_DIR` | Keep settings and logs in this folder instead. A `portable.txt` beside the executable keeps them in a `saves` folder there. A sealed release ignores it. |
+| `MY_GAME_SOUNDS` | Load sound files from this folder. A packed release ignores it. |
 | `MY_GAME_LOG`, `MY_GAME_LOG_FILE` | Set the log level and where the log goes. |
 | `MY_GAME_NO_SPEECH` | Turn speech off, for test runs. |
 | `MY_GAME_SPEECH_BACKEND` | Speak through this Prism backend only. |
@@ -254,6 +256,8 @@ cargo install --git https://github.com/orinks-games/hearken hearken-cli
   same GitHub release. `hearken play --download` picks the one for the
   player's computer, and on an Arm Windows PC or Mac takes the x64 build
   when there is no Arm one.
+- `hearken seal-key <game>` shows where a sealing game's key is kept and
+  its ID; `--print` shows the key itself, for a CI secret.
 
 The command knows no games of its own: a game is its GitHub repository or
 a folder on this computer.
@@ -277,6 +281,8 @@ holds:
 [package.metadata.hearken]
 portable = true                               # saves beside the game
 pack = true                                   # sounds in an encrypted sounds.pak
+seal = true                                   # data written through ctx.vault is sealed
+seal-id = "k1:3f9a0c2e7b14d685"               # the seal key's ID, added after the first release
 include = ["sounds", "README.md", "LICENSE"]  # the default
 ```
 
@@ -285,21 +291,89 @@ saves and log in a `saves` folder beside it instead of the user's folder.
 
 A packed release ships the `sounds` folder as one file, `sounds.pak`, so a
 player who opens the zip cannot listen to the sounds or read their names,
-and a game's secrets stay secret. Each release is encrypted (ChaCha20) with
+and a game's secrets stay secret. Each release is encrypted and
+authenticated (ChaCha20-Poly1305) with
 a new random key, built into that release's program and kept nowhere else,
 so no one tool opens every Hearken game, and a tool made for one release
 does not open the next. The key is split into shares that are put back
 together only when the pack is opened, so it is not sitting whole in the
 program's bytes, and sounds stay encrypted in memory except while they
-play. Files in `sounds` that are not sounds, such as
-credits, still ship loose. Developer builds and `hearken play` read the
-loose folder as before, and `MY_GAME_SOUNDS` still points any build at a
-folder.
+play. Any changed byte is caught: a damaged pack plays only the game's
+built-in sounds and tells the player to reinstall, and a changed sound
+plays nothing. A packed release reads its pack and nothing else, so a
+loose `sounds` folder or `MY_GAME_SOUNDS` cannot replace its sounds. Files
+in `sounds` that are not sounds, such as credits, still ship loose.
+Developer builds and `hearken play` read the loose folder as before, and
+`MY_GAME_SOUNDS` points them at any folder.
 
 This stops browsing, not a determined person: the key is inside the program
 players run, and someone willing to take that program apart can find it.
 Any game that plays its own sounds on the player's computer has the same
 limit.
+
+### Sealed saves
+
+A game that keeps high scores, unlocks or progress can stop players
+editing them. It writes those files through `ctx.vault` instead of
+`std::fs`, and sets `seal = true`:
+
+```rust
+use hearken::{Opened, Tamper};
+
+match ctx.vault.read("progress.json") {
+    Opened::Sealed(bytes) | Opened::Plain(bytes) => load(&bytes),
+    Opened::Missing => start_fresh(),
+    // A plain file from a version before sealing: import it, or don't.
+    Opened::Legacy(bytes) => load(&bytes),
+    Opened::Tampered(how) => {
+        log::warn!("progress was changed outside the game: {how}");
+        let _ = ctx.vault.set_aside("progress.json");
+        start_fresh();
+    }
+    // A developer build with a release's saves, or a disk error: keep the
+    // file and don't save over it.
+    Opened::Locked | Opened::Failed(_) => start_fresh_without_saving(),
+}
+ctx.vault.write("progress.json", &bytes)?;
+```
+
+In a release, each file is encrypted and authenticated with its name bound
+in, and a sealed ledger in the same folder remembers how often each was
+written. Each file is also bound to its folder, so a file from another
+player's install does not load. A file edited in any editor, copied over
+another, restored from an older copy, deleted, or replaced by a plain one
+reads as `Tampered`;
+what the game does then is its own choice. Developer builds, tests and
+`hearken play` read and write plain files, so you can look at them, and
+never overwrite a release's sealed files. Settings stay plain: they are
+the player's own. A sealed release ignores `MY_GAME_DATA_DIR`.
+
+The key is the game's own, the same for every release, so updates keep
+players' saves. The first `hearken release` makes it in your config
+folder (`hearken/seal-keys/<package>.key`) and says where. **Back it up:**
+if it is lost, players' saves stop loading in the next release. It also
+prints a `seal-id = "k1:..."` line to commit; from then on a release with
+no key, or another key, is refused. On CI, store the key
+(`hearken seal-key --print` shows it) as a secret and pass it as
+`HEARKEN_SEAL_SECRET`; keys are never made on CI. Never commit the key.
+
+The limits are those of the sound pack, and a few more. The key is in the
+program, so someone who takes it apart can forge any file. Restoring a
+whole data folder, ledger and all, from one earlier moment looks like
+never having played since, and a complete folder copied from a friend
+works. A game that sets `IMPORTS_PLAIN_SAVES = true` on its `Game` gets
+`Legacy` for plain saves an older, unsealed version left, but only in a
+folder that has never sealed, and only while no marker the vault left
+outside the folder says the game has sealed before. That marker is one
+small file: in the config folder for an installed copy, or beside the
+executable for a portable one, so a portable copy leaves nothing in the
+player's user folders. A player who deletes the marker too, or plays as a
+new user, can still have a hand-written plain file imported; turn
+`IMPORTS_PLAIN_SAVES` off once players have moved to sealed releases, and
+no marker is written at all. Games that never import (the default) leave
+no marker. This raises cheating from "open a text
+editor" to "reverse engineer the program", which is as far as any offline
+game can go.
 
 ## Optional features
 

@@ -1,0 +1,23 @@
+[package]
+name = "hearken-seal"
+description = "A game's data files sealed against editing in a release: authenticated, encrypted, and checked against the folder's history"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build.rs"
+
+[build-dependencies]
+hearken-bake.workspace = true
+
+[dependencies]
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+hkdf = "0.13"
+sha2 = { version = "0.11", default-features = false }
+getrandom = "0.4"
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

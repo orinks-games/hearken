@@ -35,6 +35,8 @@ impl<G: Game> Headless<G> {
             Paths::at(dir.path()),
             game,
         );
+        // Game tests read and write plain files, whatever the build.
+        ctx.vault = crate::Vault::with_key(dir.path(), None);
         let (backend, sounds) = RecordingBackend::new();
         ctx.install_audio(Audio::new(
             Box::new(backend),

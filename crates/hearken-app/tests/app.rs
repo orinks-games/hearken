@@ -455,3 +455,42 @@ fn run_releases_speech_while_pumping_the_shell() {
     assert!(*pumped.borrow());
     assert!(shell.queued.is_empty(), "the pump never polled the shell");
 }
+
+/// Witnesses only guard the import of old plain saves, so a game that does
+/// not import (the default) never leaves one outside its data folder.
+#[test]
+fn a_game_that_imports_no_plain_saves_leaves_no_witnesses() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut paths = Paths::at(dir.path().join("data"));
+    paths.witnesses = vec![dir.path().join("Game.hearken-seal")];
+    let ctx: Ctx<TestGame> = Ctx::new(
+        Box::new(SharedCapture(Rc::new(RefCell::new(CaptureSpeech::new())))),
+        Settings::default(),
+        paths,
+        TestData::default(),
+    );
+    assert!(ctx.vault.witnesses().is_empty());
+}
+
+#[test]
+fn the_vault_is_the_data_folder_and_plain_outside_a_sealed_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx: Ctx<TestGame> = Ctx::new(
+        Box::new(SharedCapture(Rc::new(RefCell::new(CaptureSpeech::new())))),
+        Settings::default(),
+        Paths::at(dir.path()),
+        TestData::default(),
+    );
+    assert_eq!(ctx.vault.dir(), dir.path());
+    assert!(!ctx.vault.is_sealing());
+    assert!(matches!(
+        ctx.vault.read("progress.json"),
+        hearken_app::Opened::Missing
+    ));
+    ctx.vault.write("progress.json", b"{}").unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("progress.json")).unwrap(),
+        b"{}"
+    );
+    assert_eq!(ctx.vault.read("progress.json").trusted().unwrap(), b"{}");
+}

@@ -5,6 +5,8 @@
 //! [package.metadata.hearken]
 //! portable = true                                  # saves beside the game
 //! pack = true                                      # sounds in an encrypted sounds.pak
+//! seal = true                                      # data written through ctx.vault is sealed
+//! seal-id = "k1:3f9a0c2e7b14d685"                  # the seal key's ID, checked by release
 //! include = ["sounds", "README.md", "LICENSE"]     # shipped in a release
 //! bin = "my-game"                                  # when it has several
 //! ```
@@ -31,6 +33,10 @@ pub struct Project {
     /// Whether a release ships the `sounds` folder as an encrypted
     /// `sounds.pak` instead of loose files.
     pub pack: bool,
+    /// Whether a release seals the game's data files (see `seal_key`).
+    pub seal: bool,
+    /// The committed ID of the game's seal key, which a release must match.
+    pub seal_id: Option<String>,
     /// Files and folders, relative to `dir`, that a release ships.
     pub include: Vec<String>,
 }
@@ -122,6 +128,8 @@ impl Project {
             default_features: strings(&pkg["features"]["default"]),
             portable: hearken["portable"].as_bool().unwrap_or(false),
             pack: hearken["pack"].as_bool().unwrap_or(false),
+            seal: hearken["seal"].as_bool().unwrap_or(false),
+            seal_id: hearken["seal-id"].as_str().map(String::from),
             include,
             package: name,
         })
@@ -218,6 +226,8 @@ mod tests {
         assert_eq!(p.version, "0.2.0");
         assert!(p.portable);
         assert!(!p.pack);
+        assert!(!p.seal);
+        assert_eq!(p.seal_id, None);
         assert_eq!(p.include, ["sounds", "README.md", "LICENSE"]);
         assert_eq!(p.target_dir, Path::new("/games/parlor").join("target"));
     }
@@ -230,6 +240,14 @@ mod tests {
         assert!(p
             .exe()
             .starts_with(Path::new("/cache/cargo-target").join("release")));
+    }
+
+    #[test]
+    fn reads_the_seal_settings() {
+        let hearken = serde_json::json!({ "seal": true, "seal-id": "k1:0011223344556677" });
+        let p = Project::from_metadata(&game(serde_json::json!({}), hearken), None).unwrap();
+        assert!(p.seal);
+        assert_eq!(p.seal_id.as_deref(), Some("k1:0011223344556677"));
     }
 
     #[test]

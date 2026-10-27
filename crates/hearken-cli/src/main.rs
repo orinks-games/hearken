@@ -15,6 +15,7 @@
 
 mod project;
 mod release;
+mod seal_key;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -23,11 +24,14 @@ use project::Project;
 
 const USAGE: &str = "Usage: hearken play [game] [--download | --source]
        hearken release [game]
+       hearken seal-key [game] [--print]
 
 play     starts a game. With Rust installed it builds the latest source as a
          developer build; otherwise it downloads the latest release.
          --download and --source choose.
 release  builds the zip players get, without the agent server, into dist/.
+seal-key shows where a game's seal key is kept and its ID; --print shows
+         the key itself, for a CI secret.
 
 A game is its GitHub repository, as owner/name or its URL, or a folder on
 this computer. Inside a game's own folder it can be left out.";
@@ -81,9 +85,12 @@ fn main() -> ExitCode {
         words.iter().skip(1).partition(|w| !w.starts_with("--"));
     let game = names.first().map(|n| Game::parse(n)).transpose();
     let result = match (words.first().copied(), names.len(), game) {
-        (Some("play" | "release"), _, Err(e)) => Err(e),
+        (Some("play" | "release" | "seal-key"), _, Err(e)) => Err(e),
         (Some("play"), 0 | 1, Ok(game)) => play(game, &flags),
         (Some("release"), 0 | 1, Ok(game)) if flags.is_empty() => release_game(game),
+        (Some("seal-key"), 0 | 1, Ok(game)) if matches!(flags[..], [] | ["--print"]) => {
+            show_seal_key(game, !flags.is_empty())
+        }
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -151,6 +158,15 @@ fn release_game(game: Option<Game>) -> Result<(), String> {
     let archive = release::release(&project)?;
     println!("Packed {}", archive.display());
     Ok(())
+}
+
+fn show_seal_key(game: Option<Game>, print: bool) -> Result<(), String> {
+    let project = match game {
+        Some(Game::Repo(repo)) => Project::load(&checkout(&repo, false)?, None)?,
+        Some(Game::Folder(dir)) => Project::load(&dir, None)?,
+        None => Project::load(Path::new("."), None)?,
+    };
+    seal_key::command(&project, print)
 }
 
 /// The repository's checkout: the one holding the current folder, or else

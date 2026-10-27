@@ -35,7 +35,10 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
         None
     };
     let hex = key.as_ref().map(hearken_pack::key_hex).unwrap_or_default();
-    project.build_with(false, &[(PACK_KEY_VAR, &hex)])?;
+    // Always passed, empty when the game does not seal, so a key in the
+    // developer's shell never reaches a release by accident.
+    let seal = crate::seal_key::release_key(project)?.map(|k| k.to_hex());
+    project.build_with(false, &key_env(&hex, &seal.unwrap_or_default()))?;
     let stem = format!(
         "{}-{}-{}",
         project.package,
@@ -68,8 +71,10 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
             println!("Skipping {item}: it is not in the workspace.");
         }
     }
-    if project.pack && !packed {
+    if let (Some(key), false) = (&key, packed) {
+        // A packed build reads only its pack, so it still gets one.
         println!("Nothing to pack: the release includes no {SOUNDS} folder.");
+        pack(&stage.join(".nothing-to-pack"), &stage, key)?;
     }
     if cfg!(windows) {
         windows_runtime(&project.release_dir(), &stage)?;
@@ -101,6 +106,11 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
         return Err(format!("Could not pack {archive}."));
     }
     Ok(dist.join(archive))
+}
+
+/// The keys a release's build gets: both always set, empty when unused.
+fn key_env<'a>(pack: &'a str, seal: &'a str) -> [(&'static str, &'a str); 2] {
+    [(PACK_KEY_VAR, pack), (crate::seal_key::BUILD_VAR, seal)]
 }
 
 /// Refuses a packed release of a game whose Hearken predates sound packs:
@@ -280,7 +290,15 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{directml_notices, engine_reads_packs, platform, vc_arch};
+    use super::{directml_notices, engine_reads_packs, key_env, platform, vc_arch};
+
+    #[test]
+    fn a_build_without_keys_still_clears_them() {
+        assert_eq!(
+            key_env("", ""),
+            [("HEARKEN_PACK_KEY", ""), ("HEARKEN_SEAL_KEY", "")]
+        );
+    }
 
     #[test]
     fn ships_the_runtime_for_the_build_processor() {

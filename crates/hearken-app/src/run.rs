@@ -94,7 +94,7 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     let (paths, lock) = if agent.is_some() {
         let real = Paths::discover(G::DATA_DIR, G::ENV_PREFIX);
         (
-            Paths::at(real.data_dir.join("agent-sandbox")),
+            real.nested("agent-sandbox"),
             format!("{}-agent", G::DATA_DIR),
         )
     } else {
@@ -133,15 +133,17 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
 
     let (settings, notice) = Settings::load(&paths);
     let mut ctx = Ctx::new(Box::new(start_speech::<G>()), settings, paths, game);
+    let sounds = hearken_audio::discover_clips(G::ENV_PREFIX);
     ctx.install_audio(Audio::deferred(
         open_backend::<G>,
-        crate::sound::clip_source::<G>(hearken_audio::discover_clips(G::ENV_PREFIX)),
+        crate::sound::clip_source::<G>(sounds.clips),
     ));
     ctx.controller = ControllerManager::new(
         ctx.settings.controller.enabled,
         Some(shell.controller_factory()),
     );
     ctx.notices.extend(notice);
+    ctx.notices.extend(sounds.notice);
     ctx.apply_speech_settings();
 
     let mut app = App::new(ctx, first());

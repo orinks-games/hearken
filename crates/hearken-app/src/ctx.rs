@@ -13,6 +13,7 @@ use crate::settings::Settings;
 use crate::sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
 use crate::speech_delivery::Delivery;
 use crate::state::{Reveal, StackOp, State};
+use hearken_seal::Vault;
 
 /// The `log` target every spoken line is written under, so a session log
 /// reads as a transcript of the run.
@@ -25,6 +26,11 @@ pub struct Ctx<G: Game> {
     pub speech: Box<dyn SpeechSink>,
     pub settings: Settings<G::Settings>,
     pub paths: Paths,
+    /// The game's data folder, read and written through the seal: the
+    /// place for records, saves and progress a player should not be able
+    /// to edit. Sealed in a release built with `seal = true`, plain in
+    /// every other build (see [`hearken_seal`]).
+    pub vault: Vault,
     pub game: G::Data,
     /// Which keys are down now, for a screen that polls instead of reacting
     /// to presses.
@@ -72,9 +78,18 @@ impl<G: Game> Ctx<G> {
         let sound = G::sound();
         let ui_sounds = sound.ui.clone();
         let delivery = Delivery::new(sound.pacer, G::verbosity());
+        // Witnesses only guard the import of old plain files, so a game that
+        // does not import leaves none.
+        let witnesses = if G::IMPORTS_PLAIN_SAVES {
+            paths.witnesses.clone()
+        } else {
+            Vec::new()
+        };
+        let vault = Vault::new(&paths.data_dir).with_witnesses(witnesses);
         let mut ctx = Ctx {
             speech,
             settings,
+            vault,
             paths,
             game,
             held: HeldKeys::default(),
