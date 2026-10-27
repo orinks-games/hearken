@@ -35,7 +35,11 @@
 //! copy of a game shares its key. While a game imports legacy files, a
 //! player who also clears the witnesses (or runs the game as a new user,
 //! on a new computer, or with the platform folders moved) can get a plain
-//! file imported. This raises cheating from "open a text editor" to
+//! file imported, and can then copy that sealed folder over a real one.
+//! A ledger kept at one generation also accepts any file written one
+//! generation later (the crash repair), which lets a player choose among
+//! results they really played, as a full-folder snapshot already would.
+//! This raises cheating from "open a text editor" to
 //! "reverse engineer the program"; no offline scheme can do more.
 //!
 //! The file format:

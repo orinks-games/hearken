@@ -215,6 +215,9 @@ impl Vault {
         } else if Some(generation) == last.checked_add(1) {
             // The game wrote the file, then stopped before the ledger: catch
             // the ledger up. Only a file sealed for this folder gets here.
+            // A ledger copy kept at the old generation therefore takes any
+            // file written next; that is a partial form of restoring the
+            // whole folder, which is accepted (see the crate docs).
             let entry = Entry {
                 generation,
                 gone: false,

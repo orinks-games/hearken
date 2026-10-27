@@ -62,7 +62,12 @@ from "open a text editor" to "reverse engineer a Rust binary".
 What it does not stop, and the docs say so:
 
 - **Reverse engineering.** Recovering the key from the program, or patching
-  the program, defeats everything here.
+  the program, defeats everything here. The key is split into random
+  shares, so searching the program for it finds nothing, but a debugger
+  and some scripting can rebuild it, and any sealed file confirms a guess.
+  Because the key stays the same across releases (so updates keep saves),
+  one extraction works for every release until the developer changes the
+  key, which starts every player over.
 - **Restoring the whole data folder** (accepted). If a player restores
   every file, including the ledger, from one earlier moment, the folder is
   consistent with itself, and nothing offline can tell. A rollback is only
@@ -73,6 +78,16 @@ What it does not stop, and the docs say so:
   their records, and the outside counter can be snapshotted just as
   easily. In portable mode the saves sit inside the install, so copying the
   whole install copies them too.
+
+  A finer form of the same thing: the ledger catches up when a file is
+  exactly one generation ahead of it (the repair for a crash between the
+  file and the ledger). A player who keeps a copy of the ledger at
+  generation N can put it back beside any of several files written at
+  N+1 and keep the one they like. That picks among results the game
+  really produced, which a full-folder snapshot of each result already
+  allows, so tightening the catch-up (a "pending" ledger entry written
+  before each file, say) would cost a second synced write per save and
+  stop nothing a snapshot does not.
 - **Sharing a whole data folder** (accepted). Every copy of a game uses the
   same key, so a complete saves folder (files and ledger together) copied
   from a friend works. Tying saves to one machine or one install would
@@ -82,6 +97,19 @@ What it does not stop, and the docs say so:
   bound to its folder's id.
 - **Legacy import, while a game allows it** (accepted, bounded). See
   [Legacy plain files](#legacy-plain-files).
+- **Legacy import laundered through a whole folder** (accepted while a game
+  imports; the main reason to stop importing soon). The two gaps above
+  chain: a player runs the game once with a fresh home or config folder
+  (or with the witnesses deleted) and a hand-written plain file, which the
+  game imports and seals into a folder that is consistent with itself.
+  They then copy that whole folder (files and ledger) over their real
+  one, which a real install accepts the same way it accepts a friend's
+  folder. The result is any score they like, with file copies and one
+  environment variable. Binding a folder to its install (its id recorded
+  in the witness, say) does not close it, since the forged witness is
+  just as easy to copy, and it would cost players who move their saves
+  between computers. It closes when the game stops importing: from then
+  on no plain file is ever sealed, so there is nothing to launder.
 - **Memory editors, speed hacks and the system clock.** Daily challenges go
   by the clock, so they trust it.
 - **Genuine disk corruption.** It looks the same as tampering. Writes are
@@ -501,7 +529,14 @@ offline check can tell those apart without refusing real upgrades. The
 risk ends when the game stops importing. Wicket's makes
 that a single constant (below), turned off in a later release after most
 players have run a sealed one. Players who skip every transition release
-start fresh. The docs say so.
+start fresh. The docs say so. While import is on, an imported folder
+can also be copied over a real install's folder (see
+[What this can and cannot stop](#what-this-can-and-cannot-stop)), so a
+forged import reaches any install, not only the fresh one it was made in.
+That is why the import should be on for one transition period, not for
+good. A game that can tell implausible values (a score above what a board
+allows) may also check imported ones before trusting them; the engine
+cannot, since it does not know what the bytes mean.
 
 ## How Wicket's adopts it
 
