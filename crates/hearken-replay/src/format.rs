@@ -205,7 +205,9 @@ pub fn valid_rules_name(name: &str) -> bool {
 
 /// `value` as canonical JSON: no spaces, object keys sorted by their
 /// bytes, numbers as serde_json writes them. The same value gives the same
-/// text on every platform and with any serde_json features.
+/// text on every platform. This holds with serde_json's own number
+/// handling; its `arbitrary_precision` feature keeps each number's text as
+/// written, and rules built with it lose the one-text-per-value guarantee.
 pub fn canonical_json(value: &serde_json::Value) -> String {
     let mut out = String::new();
     write_canonical(value, &mut out);

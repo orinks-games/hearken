@@ -12,7 +12,7 @@
 //
 // docs/online.md in the Hearken repository is the protocol in full.
 
-import { buildOf, MAX_RUN_BYTES, RulesError, sha256Hex } from "./rules.js";
+import { BUILD_OFFSET, buildOf, MAX_RUN_BYTES, RulesError, sha256Hex } from "./rules.js";
 
 export const KIND_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
@@ -153,6 +153,12 @@ export function createService(options) {
     if (!module) return error(422, "unknown-build");
 
     const runId = await sha256Hex(body);
+    // Copies are told apart by what was played, not by which published
+    // module the file names: the same run stamped with another build of the
+    // same rules is the same run.
+    const played = body.slice();
+    played.fill(0, BUILD_OFFSET, BUILD_OFFSET + 32);
+    const playId = await sha256Hex(played);
     const info = module.inspect(body);
     if (!info.ok) return error(422, info.error);
 
@@ -160,7 +166,7 @@ export function createService(options) {
     // was stored and two copies sent at once cannot both be accepted. A run
     // is claimed once per kind: another player sending the same run file
     // (a copied ghost, say) is refused, unless the handler allows copies.
-    const key = handler.copies === "allow" ? `${kind}:${player.id}:${runId}` : `${kind}:${runId}`;
+    const key = handler.copies === "allow" ? `${kind}:${player.id}:${playId}` : `${kind}:${playId}`;
     const claim = await runs.claim(key, { player: player.id, kind });
     if (!claim.claimed) {
       const prior = claim.existing ?? {};

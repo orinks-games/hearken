@@ -232,7 +232,11 @@ Built by `export_rules!`. It imports nothing and exports (ABI 1):
 An answer is a `u64` with a pointer in the high half and a length in the
 low half, JSON, freed by the host. The request is
 `{"rules":"sonar-dive","seed":"123","context":{...}}`, the seed as a decimal
-string. A verified answer is
+string. The request's context matches the run's when both mean the same
+to the rules: each is read as the rules' `Context` type and written back,
+so a handler may send `1` for a float field, `0.1` for an `f32`, and leave
+out an `Option` field that is `None`. A field the rules' `Context` does not
+have is a mismatch. A verified answer is
 `{"ok":true,"run_id":"...","rules":"...","build":"...","seed":"...","ticks":N,"outcome":{...}}`;
 a refused one is `{"ok":false,"error":"wrong-seed"}`. The server library
 runs each call in a fresh instance, so one run can leave nothing behind for
@@ -335,7 +339,8 @@ A handler can also have `start({ kind, player })`, which answers
 `POST start` with the seed and context to play (see "Choosing seeds").
 
 By default a handler refuses a run file another player already sent for the
-same kind (`409 already-submitted`). That stops only a byte-for-byte copy:
+same kind (`409 already-submitted`), whichever published build the copy
+names. That stops only a copy of what was played:
 adding an input that changes nothing (a key let go that was never pressed)
 makes a different file with the same outcome. Binding runs to players is
 done with seeds, below. A handler that refuses nothing can set

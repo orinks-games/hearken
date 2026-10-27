@@ -290,3 +290,35 @@ test("the activation limit counts the address the nearest proxy saw", { skip }, 
   }
   assert.deepEqual(statuses, [200, 200, 429]);
 });
+
+test("a copy stamped with another build of the same rules is still a copy", { skip }, async () => {
+  // The same module with a custom section added: another build ID, same rules.
+  const name = new TextEncoder().encode("x");
+  const other = new Uint8Array([...wasm, 0, name.length + 1, name.length, ...name]);
+  const rules = publishedRules([{ bytes: wasm }, { bytes: other }]);
+  const [first, second] = await rules.builds();
+  assert.notEqual(first, second);
+  const accounts = memoryAccounts();
+  const service = createService({
+    rules,
+    accounts,
+    runs: memoryRuns(),
+    limiter: memoryLimiter(),
+    handlers: { ghost: { expect: practice.expect, accept: () => ({ kept: true }) } },
+    basePath: "/api/games/coin",
+    log: () => {},
+  });
+  const ada = await accounts.tokenFor("Ada");
+  const bo = await accounts.tokenFor("Bo");
+  assert.equal((await submit(service, "ghost", ada, runFile(fixtures[0], first))).status, 200);
+  const copied = await submit(service, "ghost", bo, runFile(fixtures[0], second));
+  assert.equal((await copied.json()).error, "already-submitted");
+});
+
+test("a seed JavaScript has already rounded is refused", { skip }, async () => {
+  const rules = await loadRules(wasm);
+  assert.throws(
+    () => rules.verify(runFile(fixtures[0], rules.build), { rules: "coin-dash", seed: 2 ** 60, context: {} }),
+    /2\^53/,
+  );
+});

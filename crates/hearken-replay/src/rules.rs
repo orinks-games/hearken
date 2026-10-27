@@ -3,6 +3,7 @@
 //! and [`replay`] and [`verify`], which play a run again.
 
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde::Serialize;
 
 use crate::format::{canonical_json, valid_rules_name, BuildId, FormatError, Input, Run};
@@ -302,6 +303,46 @@ pub fn replay<R: Replayable>(run: &Run) -> Result<R, VerifyError> {
     Ok(sim)
 }
 
+/// Whether the run's context and the one a server expects mean the same to
+/// `R`: each is read as `R::Context` and written back, so `1` and `1.0` for
+/// a float, `0.1` for an `f32` and a missing `Option` field all match the
+/// form a recording wrote. Neither side's text is trusted to be in that form.
+fn same_context<R: Replayable>(run: &str, expected: &serde_json::Value) -> bool {
+    if run == canonical_json(expected) {
+        return true;
+    }
+    let Ok(ours) = serde_json::from_str::<R::Context>(run) else {
+        return false;
+    };
+    let Ok(theirs) = R::Context::deserialize(expected) else {
+        return false;
+    };
+    match (serde_json::to_value(&ours), serde_json::to_value(&theirs)) {
+        (Ok(a), Ok(b)) => canonical_json(&a) == canonical_json(&b) && keeps(expected, &b),
+        _ => false,
+    }
+}
+
+/// Whether `read` (the expected context as `R` read it back) still has every
+/// field the server asked for. A field the rules do not know is dropped on
+/// reading, and a server that asks for one is asking for something no run
+/// can show it played, so that is a mismatch, not a match.
+fn keeps(asked: &serde_json::Value, read: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (asked, read) {
+        (Value::Object(a), Value::Object(r)) => a.iter().all(|(k, v)| match r.get(k) {
+            Some(rv) => keeps(v, rv),
+            None => v.is_null(),
+        }),
+        (Value::Object(_), _) => false,
+        (Value::Array(a), Value::Array(r)) => {
+            a.len() == r.len() && a.iter().zip(r).all(|(a, r)| keeps(a, r))
+        }
+        (Value::Array(_), _) => false,
+        _ => true,
+    }
+}
+
 /// Checks that `run` is what `expected` asks for, replays it, and gives the
 /// outcome the replay computed. This is the whole of what a server trusts:
 /// nothing the run says about its own result is read.
@@ -315,7 +356,7 @@ pub fn verify<R: Replayable>(
     if run.seed != expected.seed {
         return Err(VerifyError::WrongSeed);
     }
-    if run.context != canonical_json(&expected.context) {
+    if !same_context::<R>(&run.context, &expected.context) {
         return Err(VerifyError::WrongContext);
     }
     let run_id = run.id()?;
@@ -348,4 +389,84 @@ where
         recording.outcome(),
         "the replay came to another outcome than the live run"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Serialize, Deserialize)]
+    struct Setup {
+        speed: f64,
+        slow: f32,
+        mode: Option<String>,
+    }
+
+    struct Tap;
+    impl InputCode for Tap {
+        fn to_code(&self) -> (u16, i32) {
+            (0, 0)
+        }
+        fn from_code(code: u16, value: i32) -> Option<Self> {
+            (code == 0 && value == 0).then_some(Tap)
+        }
+    }
+
+    struct Once(bool);
+    impl Replayable for Once {
+        const RULES: &'static str = "once";
+        const MAX_TICKS: u64 = 10;
+        type Input = Tap;
+        type Context = Setup;
+        type Outcome = u8;
+        fn new(_: u64, _: &Setup) -> Self {
+            Once(false)
+        }
+        fn step(&mut self, _: &[Tap]) {
+            self.0 = true;
+        }
+        fn finished(&self) -> bool {
+            self.0
+        }
+        fn outcome(&self) -> u8 {
+            1
+        }
+    }
+
+    #[test]
+    fn a_context_matches_by_what_it_means() {
+        let setup = Setup {
+            speed: 1.0,
+            slow: 0.1,
+            mode: None,
+        };
+        let mut rec = Recording::<Once>::new(5, &setup).unwrap();
+        rec.step(&[]);
+        let run = rec.into_run();
+        // As a JavaScript handler would write it: 1 not 1.0, 0.1 as typed,
+        // and no key for the missing mode.
+        let expect = |context| Expected {
+            rules: "once".into(),
+            seed: 5,
+            context,
+        };
+        let js = serde_json::json!({ "speed": 1, "slow": 0.1 });
+        assert_eq!(verify::<Once>(&run, &expect(js)).unwrap().outcome, 1);
+        let other = serde_json::json!({ "speed": 2, "slow": 0.1 });
+        assert_eq!(
+            verify::<Once>(&run, &expect(other)),
+            Err(VerifyError::WrongContext)
+        );
+        let extra = serde_json::json!({ "speed": 1, "slow": 0.1, "event": "fair" });
+        assert_eq!(
+            verify::<Once>(&run, &expect(extra)),
+            Err(VerifyError::WrongContext)
+        );
+        let junk = serde_json::json!({ "speed": "fast" });
+        assert_eq!(
+            verify::<Once>(&run, &expect(junk)),
+            Err(VerifyError::WrongContext)
+        );
+    }
 }

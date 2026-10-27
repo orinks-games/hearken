@@ -140,10 +140,17 @@ export class Rules {
   /** What a run file says about itself. Nothing in it is verified. */
   inspect(run) {
     const bytes = asBytes(run);
-    return this.call((x) => {
-      const [p, n] = this.put(x, bytes);
-      return this.answer(x, x.hearken_inspect(p, n));
-    });
+    try {
+      return this.call((x) => {
+        const [p, n] = this.put(x, bytes);
+        return this.answer(x, x.hearken_inspect(p, n));
+      });
+    } catch (error) {
+      if (error instanceof WebAssembly.RuntimeError) {
+        return { ok: false, error: "rules-crashed" };
+      }
+      throw error;
+    }
   }
 
   /**
@@ -154,6 +161,10 @@ export class Rules {
    */
   verify(run, expected) {
     const bytes = asBytes(run);
+    if (typeof expected.seed === "number" && !Number.isSafeInteger(expected.seed)) {
+      // Past 2^53 a JavaScript number is already rounded: send a string or a BigInt.
+      throw new RulesError("bad-seed", "a seed above 2^53 must be a string or a BigInt");
+    }
     const request = encoder.encode(
       JSON.stringify({
         rules: expected.rules,
