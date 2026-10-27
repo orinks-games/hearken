@@ -166,7 +166,16 @@ build writes the workspace, Cargo's home and path dependencies under fixed
 names, so the same source usually gives the same module everywhere; but
 when the project sets Rust flags of its own (`RUSTFLAGS`, or `rustflags` in
 a `.cargo/config.toml`), the release keeps them and leaves the paths as
-they are. Publish every module that differs.
+they are. Publish every module that differs. Flags that could make the
+module play differently from the game are refused: a `--cfg`, or flags set
+for some targets only (`[target.wasm32-unknown-unknown]`, or
+`CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS`).
+
+What a release cannot see is rules code that is itself different for
+WebAssembly: `#[cfg(target_arch = "wasm32")]`, a build script that acts
+on the target, or a dependency that does either. Keep the rules crate free
+of those, and before a release goes online, verify one run the game
+recorded with the module in `dist/`, as above.
 
 A release made by `hearken release` never reads `<PREFIX>_ONLINE_URL` or
 `HEARKEN_RULES_ID`, with or without rules, so nothing in a player's

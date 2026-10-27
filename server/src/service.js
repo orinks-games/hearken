@@ -102,6 +102,14 @@ async function readJson(request, limit = 4096) {
  *   X-Forwarded-For address by default.
  * @param {object} [options.limits]
  */
+// A seed is a u64 written in decimal. A JavaScript number past 2^53 has
+// already lost digits, so such a seed must come as a string or a BigInt.
+function isSeed(seed) {
+  if (typeof seed === "number" && !Number.isSafeInteger(seed)) return false;
+  const text = String(seed);
+  return /^(0|[1-9][0-9]{0,19})$/.test(text) && BigInt(text) < 2n ** 64n;
+}
+
 export function createService(options) {
   const {
     rules,
@@ -211,7 +219,7 @@ export function createService(options) {
     }
     try {
       const plan = await handlers[kind].start({ kind, player });
-      if (!plan || !/^(0|[1-9][0-9]{0,19})$/.test(String(plan.seed))) {
+      if (!plan || !isSeed(plan.seed)) {
         throw new Error(`the handler for "${kind}" started no seed`);
       }
       return json({ ok: true, ...plan, seed: String(plan.seed), context: plan.context ?? null });

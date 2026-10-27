@@ -67,16 +67,17 @@ pub fn remaps(
 /// Where the developer has set Rust flags of their own: an environment
 /// variable, or a Cargo config file that mentions `rustflags`. Cargo lets
 /// the first of those replace the rest, so the module's path remapping is
-/// left out rather than drop the developer's flags.
-fn own_rustflags(dir: &Path, cargo_home: Option<&Path>) -> Option<String> {
+/// left out rather than drop the developer's flags. Gives the source and
+/// the flags' text (the variable's value, or the whole config file).
+fn own_rustflags_with_text(dir: &Path, cargo_home: Option<&Path>) -> Option<(String, String)> {
     for var in [
         "CARGO_ENCODED_RUSTFLAGS",
         "RUSTFLAGS",
         "CARGO_BUILD_RUSTFLAGS",
         "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS",
     ] {
-        if std::env::var_os(var).is_some_and(|v| !v.is_empty()) {
-            return Some(var.to_string());
+        if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+            return Some((var.to_string(), v.to_string_lossy().into_owned()));
         }
     }
     let mut dirs: Vec<PathBuf> = dir.ancestors().map(|d| d.join(".cargo")).collect();
@@ -84,12 +85,72 @@ fn own_rustflags(dir: &Path, cargo_home: Option<&Path>) -> Option<String> {
     for d in dirs {
         for name in ["config.toml", "config"] {
             let file = d.join(name);
-            if std::fs::read_to_string(&file).is_ok_and(|t| t.contains("rustflags")) {
-                return Some(file.display().to_string());
+            if let Some(text) = std::fs::read_to_string(&file)
+                .ok()
+                .filter(|t| t.contains("rustflags"))
+            {
+                return Some((file.display().to_string(), text));
             }
         }
     }
     None
+}
+
+/// Why Rust flags would make the rules module differ from the desktop
+/// build, if they would: a `--cfg` turns code on or off, and flags meant for
+/// WebAssembly only reach the module and not the game.
+fn flags_that_change_rules(source: &str, text: &str) -> Option<&'static str> {
+    if source == "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS" {
+        return Some("sets Rust flags for WebAssembly only");
+    }
+    if text.contains("--cfg") {
+        return Some("sets a --cfg in its Rust flags, which can turn rules code on or off");
+    }
+    let mut section = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            section = line.replace([' ', '"', '\''], "");
+            continue;
+        }
+        let key = line
+            .split('=')
+            .next()
+            .unwrap_or("")
+            .replace([' ', '"', '\''], "");
+        let full = if section.is_empty() {
+            key
+        } else {
+            format!("{}.{key}", section.trim_matches(|c| c == '[' || c == ']'))
+        };
+        if full.starts_with("target.") && full.ends_with("rustflags") {
+            return Some("sets Rust flags for some targets and not others");
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::flags_that_change_rules as why;
+
+    #[test]
+    fn flags_that_would_change_the_rules_are_named() {
+        assert!(why("RUSTFLAGS", "-Copt-level=3").is_none());
+        assert!(why("RUSTFLAGS", "--cfg hk").is_some());
+        assert!(why("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS", "-Cx").is_some());
+        let linker = "[target.x86_64-unknown-linux-gnu]\nlinker = \"gcc-13\"\n[build]\nrustflags = [\"-Cx\"]";
+        assert!(why("config.toml", linker).is_none());
+        let wasm_only = "[target.wasm32-unknown-unknown]\nrustflags = [\"-Cx\"]";
+        assert!(why("config.toml", wasm_only).is_some());
+        let by_cfg = "[target.'cfg(target_arch = \"wasm32\")']\nrustflags = [\"-Cx\"]";
+        assert!(why("config.toml", by_cfg).is_some());
+        assert!(why(
+            "config.toml",
+            "target.wasm32-unknown-unknown.rustflags = [\"-Cx\"]"
+        )
+        .is_some());
+    }
 }
 
 /// `cargo tree` lines as package and features: `serde v1.0.0|default,std`.
@@ -267,7 +328,16 @@ pub fn build(project: &Project, rules: &crate::project::Rules) -> Result<Module,
     }
     // For the module alone: its memory is capped.
     cargo.args(["--", &format!("-Clink-arg=--max-memory={MAX_MEMORY}")]);
-    match own_rustflags(&project.dir, cargo_home.as_deref()) {
+    let own = own_rustflags_with_text(&project.dir, cargo_home.as_deref());
+    if let Some((source, text)) = &own {
+        if let Some(reason) = flags_that_change_rules(source, text) {
+            return Err(format!(
+                "The rules module would not play like the game: {source} {reason}. Remove that \
+                 for the release, or give both builds the same flags without --cfg."
+            ));
+        }
+    }
+    match own.map(|(source, _)| source) {
         None => {
             let outside = outside_paths(&project.dir);
             cargo.env(
@@ -395,7 +465,12 @@ fn sections(bytes: &[u8]) -> Option<Sections> {
                 }
             }
             5 => {
-                if s.u32()? > 0 {
+                let count = s.u32()?;
+                // Rules have one memory; a second would go uncapped.
+                if count > 1 {
+                    return None;
+                }
+                if count > 0 {
                     let flags = s.byte()?;
                     // Bit 2 is a 64-bit memory, which rules never need.
                     if flags & !0b11 != 0 {
