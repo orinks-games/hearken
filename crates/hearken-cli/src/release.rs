@@ -77,7 +77,7 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
         pack(&stage.join(".nothing-to-pack"), &stage, key)?;
     }
     if cfg!(windows) {
-        windows_runtime(&project.dir.join("target").join("release"), &stage)?;
+        windows_runtime(&project.release_dir(), &stage)?;
     }
     if project.portable {
         std::fs::write(stage.join(PORTABLE_MARKER), PORTABLE_NOTE).map_err(|e| e.to_string())?;
@@ -220,12 +220,13 @@ fn directml_notices(stage: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The newest x64 `Microsoft.VC*.CRT` folder of the installed Visual Studio.
+/// The newest `Microsoft.VC*.CRT` folder of the installed Visual Studio,
+/// for the processor the game was built for.
 fn vc_runtime() -> Option<PathBuf> {
+    let (arch, tools) = vc_arch(std::env::consts::ARCH)?;
     let vswhere = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe";
     let out = Command::new(vswhere)
-        .args(["-latest", "-products", "*", "-requires"])
-        .arg("Microsoft.VisualStudio.Component.VC.Tools.x86.x64")
+        .args(["-latest", "-products", "*", "-requires", tools])
         .args(["-property", "installationPath"])
         .output()
         .ok()?;
@@ -245,7 +246,7 @@ fn vc_runtime() -> Option<PathBuf> {
             .map(|n| n.parse::<u32>().unwrap_or(0))
             .collect::<Vec<_>>()
     });
-    std::fs::read_dir(versions.pop()?.join("x64"))
+    std::fs::read_dir(versions.pop()?.join(arch))
         .ok()?
         .flatten()
         .map(|e| e.path())
@@ -257,6 +258,17 @@ fn vc_runtime() -> Option<PathBuf> {
                 .to_string();
             name.starts_with("Microsoft.VC") && name.ends_with(".CRT")
         })
+}
+
+/// Visual Studio's redist folder for `arch`, and the C++ tools component
+/// that builds for it.
+fn vc_arch(arch: &str) -> Option<(&'static str, &'static str)> {
+    match arch {
+        "x86_64" => Some(("x64", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64")),
+        "x86" => Some(("x86", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64")),
+        "aarch64" => Some(("arm64", "Microsoft.VisualStudio.Component.VC.Tools.ARM64")),
+        _ => None,
+    }
 }
 
 /// Copies a file, or a folder and everything in it.
@@ -278,7 +290,7 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{directml_notices, engine_reads_packs, key_env, platform};
+    use super::{directml_notices, engine_reads_packs, key_env, platform, vc_arch};
 
     #[test]
     fn a_build_without_keys_still_clears_them() {
@@ -286,6 +298,13 @@ mod tests {
             key_env("", ""),
             [("HEARKEN_PACK_KEY", ""), ("HEARKEN_SEAL_KEY", "")]
         );
+    }
+
+    #[test]
+    fn ships_the_runtime_for_the_build_processor() {
+        assert_eq!(vc_arch("x86_64").map(|a| a.0), Some("x64"));
+        assert_eq!(vc_arch("aarch64").map(|a| a.0), Some("arm64"));
+        assert_eq!(vc_arch("riscv64"), None);
     }
 
     #[test]

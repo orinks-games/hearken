@@ -289,20 +289,49 @@ fn download(repo: &str) -> Result<(PathBuf, PathBuf), String> {
     Ok((exe_dir, exe))
 }
 
-/// The release file for this OS and architecture: the `release::platform`
-/// name, or Freight Fate's `windows-portable`.
+/// The release file for this OS and architecture. Linux takes a `.tar.gz`,
+/// Windows and macOS a `.zip`, named for the OS (`linux`, `windows`/`win64`,
+/// `macos`/`mac`/`osx`/`darwin`). Among those, in order: one built for this
+/// processor; on a Mac a `universal` one; one that names no processor, as
+/// Freight Fate's `windows-portable` and `macos` do, taken as x64; and on an
+/// Arm Windows PC or Mac, which run x64 programs, an x64 one.
 fn pick_asset(names: &[&str], os: &str, arch: &str) -> Option<usize> {
-    let platform = release::platform(os, arch);
-    let wanted = match os {
-        "windows" => vec!["windows".to_string(), ".zip".to_string()],
-        "linux" => vec![format!("{platform}."), ".tar.gz".to_string()],
-        "macos" => vec![format!("{platform}.zip")],
+    let (ext, os_words): (&str, &[&str]) = match os {
+        "linux" => (".tar.gz", &["linux"]),
+        "windows" => (".zip", &["windows", "win64", "win"]),
+        "macos" => (".zip", &["macos", "mac", "osx", "darwin"]),
         _ => return None,
     };
-    names.iter().position(|n| {
-        let n = n.to_lowercase();
-        wanted.iter().all(|w| n.contains(w.as_str()))
-    })
+    let runs_x64 = arch == "x86_64" || (arch == "aarch64" && os != "linux");
+    let rank = |name: &str| -> Option<u8> {
+        let name = name.to_lowercase();
+        let words: Vec<&str> = name
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .collect();
+        if !name.ends_with(ext) || !words.iter().any(|w| os_words.contains(w)) {
+            return None;
+        }
+        let built_for = words.iter().find_map(|w| match *w {
+            "x64" | "x86_64" | "amd64" => Some("x86_64"),
+            "arm64" | "aarch64" => Some("aarch64"),
+            "x86" | "i386" | "i686" => Some("x86"),
+            "universal" => Some("universal"),
+            _ => None,
+        });
+        match built_for {
+            Some(a) if a == arch => Some(0),
+            Some("universal") if os == "macos" => Some(1),
+            None if runs_x64 => Some(2),
+            Some("x86_64") if runs_x64 => Some(3),
+            _ => None,
+        }
+    };
+    names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| Some((rank(n)?, i)))
+        .min()
+        .map(|(_, i)| i)
 }
 
 /// The programs in an unpacked release, from the shallowest folder that
@@ -420,6 +449,42 @@ mod tests {
         assert_eq!(pick_asset(names, "windows", "x86_64"), Some(0));
         assert_eq!(pick_asset(names, "linux", "x86_64"), Some(1));
         assert_eq!(pick_asset(names, "linux", "aarch64"), None);
+    }
+
+    #[test]
+    fn picks_this_processor_before_another() {
+        // Listed in name order, so arm64 comes first.
+        let names = &[
+            "game-1.0.0-windows-arm64.zip",
+            "game-1.0.0-windows-x64.zip",
+            "game-1.0.0-macos-arm64.zip",
+            "game-1.0.0-macos.zip",
+            "game-1.0.0-linux-arm64.tar.gz",
+            "game-1.0.0-linux-x64.tar.gz",
+        ];
+        assert_eq!(pick_asset(names, "windows", "x86_64"), Some(1));
+        assert_eq!(pick_asset(names, "windows", "aarch64"), Some(0));
+        assert_eq!(pick_asset(names, "linux", "aarch64"), Some(4));
+    }
+
+    #[test]
+    fn an_arm_windows_pc_or_mac_falls_back_to_x64() {
+        let names = &[
+            "game-windows-x64.zip",
+            "game-macos.zip",
+            "game-linux-x64.tar.gz",
+        ];
+        assert_eq!(pick_asset(names, "windows", "aarch64"), Some(0));
+        assert_eq!(pick_asset(names, "macos", "aarch64"), Some(1));
+        // Linux on Arm does not run x64 programs.
+        assert_eq!(pick_asset(names, "linux", "aarch64"), None);
+    }
+
+    #[test]
+    fn a_universal_mac_build_suits_either_mac() {
+        let names = &["game-macos-universal.zip", "game-windows-x64.zip"];
+        assert_eq!(pick_asset(names, "macos", "aarch64"), Some(0));
+        assert_eq!(pick_asset(names, "macos", "x86_64"), Some(0));
     }
 
     #[test]

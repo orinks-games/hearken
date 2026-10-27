@@ -22,6 +22,9 @@ pub const AGENT_SERVER: &str = "agent-server";
 pub struct Project {
     /// The workspace root.
     pub dir: PathBuf,
+    /// Where Cargo puts builds: `target` in the workspace, unless
+    /// `CARGO_TARGET_DIR` or a Cargo config moves it.
+    pub target_dir: PathBuf,
     pub package: String,
     pub bin: String,
     pub version: String,
@@ -113,8 +116,13 @@ impl Project {
                 .map(String::from)
                 .to_vec(),
         };
+        let dir = PathBuf::from(meta["workspace_root"].as_str().unwrap_or("."));
+        let target_dir = meta["target_directory"]
+            .as_str()
+            .map_or_else(|| dir.join("target"), PathBuf::from);
         Ok(Project {
-            dir: PathBuf::from(meta["workspace_root"].as_str().unwrap_or(".")),
+            dir,
+            target_dir,
             bin,
             version: pkg["version"].as_str().unwrap_or("0.0.0").to_string(),
             default_features: strings(&pkg["features"]["default"]),
@@ -160,12 +168,14 @@ impl Project {
         args
     }
 
+    /// The folder a release build lands in.
+    pub fn release_dir(&self) -> PathBuf {
+        self.target_dir.join("release")
+    }
+
     pub fn exe(&self) -> PathBuf {
-        self.dir.join("target").join("release").join(format!(
-            "{}{}",
-            self.bin,
-            std::env::consts::EXE_SUFFIX
-        ))
+        self.release_dir()
+            .join(format!("{}{}", self.bin, std::env::consts::EXE_SUFFIX))
     }
 
     /// Builds the game; `dev` keeps the agent server.
@@ -219,6 +229,17 @@ mod tests {
         assert!(!p.seal);
         assert_eq!(p.seal_id, None);
         assert_eq!(p.include, ["sounds", "README.md", "LICENSE"]);
+        assert_eq!(p.target_dir, Path::new("/games/parlor").join("target"));
+    }
+
+    #[test]
+    fn builds_are_found_where_cargo_puts_them() {
+        let mut meta = game(serde_json::json!({}), serde_json::json!({}));
+        meta["target_directory"] = "/cache/cargo-target".into();
+        let p = Project::from_metadata(&meta, None).unwrap();
+        assert!(p
+            .exe()
+            .starts_with(Path::new("/cache/cargo-target").join("release")));
     }
 
     #[test]

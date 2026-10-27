@@ -233,8 +233,9 @@ mod tests {
     fn project(seal: bool, seal_id: Option<&str>) -> Project {
         Project {
             dir: PathBuf::from("."),
-            package: "parlor".into(),
-            bin: "parlor".into(),
+            target_dir: PathBuf::from("target"),
+            package: "my-game".into(),
+            bin: "my-game".into(),
             version: "0.1.0".into(),
             default_features: Vec::new(),
             portable: false,
@@ -249,7 +250,7 @@ mod tests {
         Inputs {
             secret: None,
             ci: false,
-            key_file: Some(dir.path().join("seal-keys").join("parlor.key")),
+            key_file: Some(dir.path().join("seal-keys").join("my-game.key")),
             lock: LOCK.into(),
         }
     }

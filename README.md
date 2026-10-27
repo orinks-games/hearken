@@ -249,7 +249,13 @@ cargo install --git https://github.com/orinks-games/hearken hearken-cli
   GitHub release instead.
 - `hearken release <game>` builds the zip players get, in `dist/`: the
   executable, the game's files, and on Windows SDL2 and the Visual C++
-  runtime. It leaves out an `agent-server` Cargo feature.
+  runtime. It leaves out an `agent-server` Cargo feature. The archive is
+  named for the computer it was built on (`windows-x64.zip`,
+  `macos-arm64.zip`, `macos.zip` for Intel Macs, `linux-x64.tar.gz`), so
+  run it once on each system you ship for and upload every archive to the
+  same GitHub release. `hearken play --download` picks the one for the
+  player's computer, and on an Arm Windows PC or Mac takes the x64 build
+  when there is no Arm one.
 - `hearken seal-key <game>` shows where a sealing game's key is kept and
   its ID; `--print` shows the key itself, for a CI secret.
 
@@ -360,8 +366,13 @@ only while no marker the vault left outside the folder (in the config
 folder, and beside a portable copy's executable) says the game has sealed
 before. A player who deletes those markers too, or plays as a new user,
 can still have a hand-written plain file imported; a game closes that by
-refusing `Legacy` once its players have moved to sealed releases. This raises cheating from "open a text editor" to "reverse
-engineer the program", which is as far as any offline game can go.
+refusing `Legacy` once its players have moved to sealed releases. The
+markers have a cost too: once any copy of the game has sealed for a user,
+plain saves in a second copy are `Tampered`, not `Legacy`, so tell players
+to update by unpacking over their old copy, or to move their old saves in
+before the new one first runs. This raises cheating from "open a text
+editor" to "reverse engineer the program", which is as far as any offline
+game can go.
 
 ## Optional features
 
