@@ -235,6 +235,15 @@ every game two: `<config dir>/<DATA_DIR>.hearken-seal`, and, for a portable
 copy, `hearken-seal.witness` beside the executable. Neither is ever inside
 the data folder. While a witness exists, no folder offers `Legacy`.
 
+The cost falls on a player with more than one copy of the game. The
+config-folder witness is shared by every copy for that user, so once any
+copy has sealed, a plain file in another copy's folder (a second portable
+copy, or old saves copied into a new copy that already ran) reads as
+`Tampered(Unsealed)`, not `Legacy`. The game sets it aside rather than
+deleting it, so it can still be recovered by hand, but it is not imported.
+A game that imports should tell players to update by unpacking over their
+old copy, or by moving their old saves in before the new copy first runs.
+
 ## The key
 
 ### Its lifecycle
@@ -552,9 +561,9 @@ cannot, since it does not know what the bytes mean.
   |---|---|
   | `Sealed`, `Plain` | parse as today |
   | `Missing` | start fresh |
-  | `Legacy` | import while `IMPORT_PLAIN_RECORDS` (a `pub const` in records.rs, `true` for now) is true; otherwise as `Tampered` |
+  | `Legacy` | import while `IMPORT_LEGACY` (a `pub const` in records.rs, `true` for now) is true; otherwise `set_aside` and start fresh |
   | `Locked` | start fresh in memory and don't save. The vault refuses anyway. Log it. |
-  | `Tampered(_)` | `set_aside`, start fresh, and say once: "Your records were changed outside the game, so they start fresh." |
+  | `Tampered(_)` | `set_aside`, start fresh, and say once: "Your records were changed outside the game, so they start over." |
   | `Failed` | start fresh in memory, don't save over the file, log it |
 
   "Start fresh" after `Tampered` is the honest choice offline. Keeping the
