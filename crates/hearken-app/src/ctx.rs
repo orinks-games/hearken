@@ -32,6 +32,10 @@ pub struct Ctx<G: Game> {
     /// every other build (see [`hearken_seal`]).
     pub vault: Vault,
     pub game: G::Data,
+    /// Verified runs sent to the game's server, and the player's account
+    /// there (see [`crate::online`]).
+    #[cfg(feature = "online")]
+    pub online: crate::online::Online,
     /// Which keys are down now, for a screen that polls instead of reacting
     /// to presses.
     pub held: HeldKeys,
@@ -86,7 +90,11 @@ impl<G: Game> Ctx<G> {
             Vec::new()
         };
         let vault = Vault::new(&paths.data_dir).with_witnesses(witnesses);
+        #[cfg(feature = "online")]
+        let online = crate::online::Online::new(online_config::<G>(), &settings.online);
         let mut ctx = Ctx {
+            #[cfg(feature = "online")]
+            online,
             speech,
             settings,
             vault,
@@ -179,6 +187,16 @@ impl<G: Game> Ctx<G> {
         self.audio.update(&|pos| G::occluded(game, listener, pos));
         if let Some(notice) = self.audio.take_notice() {
             self.say_queued(notice);
+        }
+    }
+
+    /// Collects finished online requests, and saves the account when it
+    /// changed. Once a frame.
+    #[cfg(feature = "online")]
+    pub(crate) fn update_online(&mut self) {
+        if self.online.update() {
+            self.settings.online = self.online.saved();
+            self.save_settings();
         }
     }
 
@@ -376,5 +394,22 @@ impl<G: Game> Ctx<G> {
 
     pub(crate) fn clear_pending(&mut self) {
         self.pending.clear();
+    }
+}
+
+/// The game's server: `Game::online`, or in a developer build (not made by
+/// `hearken release`), `<PREFIX>_ONLINE_URL` when it is set.
+#[cfg(feature = "online")]
+fn online_config<G: Game>() -> Option<crate::online::OnlineConfig> {
+    let config = G::online();
+    if hearken_replay::BuildId::is_release() || hearken_replay::BuildId::baked().is_some() {
+        return config;
+    }
+    match std::env::var(format!("{}_ONLINE_URL", G::ENV_PREFIX)) {
+        Ok(url) if !url.trim().is_empty() => {
+            let site = config.map_or_else(|| "the test server".to_string(), |c| c.site);
+            Some(crate::online::OnlineConfig::new(url.trim(), site))
+        }
+        _ => config,
     }
 }

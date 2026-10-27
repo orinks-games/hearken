@@ -29,8 +29,14 @@ voice = ["dep:hearken-voice", "hearken-voice/voice"]
 # `install_confirm`, a Settings row): HTTPS to Hugging Face through ureq.
 voice-download = ["voice", "hearken-voice/download"]
 
+# Verified runs sent to the game's server: `ctx.online`, and connecting an
+# account from Settings. HTTPS through ureq.
+online = ["hearken-app/online"]
+
 [dependencies]
 hearken-app.workspace = true
+# `hearken::replay`: recording runs, and the rules a server replays them with.
+hearken-replay.workspace = true
 hearken-radio = { workspace = true, optional = true }
 hearken-voice = { workspace = true, optional = true }
 # A direct dependency, so build.rs sees Prism's link arguments.

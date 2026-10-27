@@ -32,8 +32,40 @@ pub struct Settings<GS> {
     pub bindings: SavedBindings,
     #[serde(default)]
     pub audio: AudioSettings,
+    /// The player's online account, for a game with online play.
+    #[serde(default, skip_serializing_if = "OnlineSettings::is_empty")]
+    pub online: OnlineSettings,
     #[serde(default)]
     pub game: GS,
+}
+
+/// A secret kept in `settings.json`: never shown by `Debug`, so it stays
+/// out of logs.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(hidden)")
+    }
+}
+
+/// The player's online account, saved in `settings.json`.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnlineSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<Secret>,
+    /// The name the server knows the player by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl OnlineSettings {
+    pub fn is_empty(&self) -> bool {
+        self.token.is_none() && self.name.is_none()
+    }
 }
 
 /// How menus read their rows.
@@ -178,6 +210,27 @@ impl<GS: Serialize + DeserializeOwned + Default> Settings<GS> {
     }
 }
 
+/// Writes `bytes` to `path`, readable by this user alone on Unix: the
+/// settings can hold an online account's token.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        // A leftover file keeps its old mode through `open`; set it again.
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)
+}
+
 impl<GS: Serialize> Settings<GS> {
     /// Write the settings as pretty JSON, through a temporary file, so a
     /// crash mid-write never leaves half a file behind.
@@ -185,7 +238,7 @@ impl<GS: Serialize> Settings<GS> {
         let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         let file = paths.settings_file();
         let tmp = file.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
+        write_private(&tmp, json.as_bytes())?;
         std::fs::rename(&tmp, &file)
     }
 }

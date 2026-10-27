@@ -243,6 +243,7 @@ mod tests {
             seal,
             seal_id: seal_id.map(String::from),
             include: Vec::new(),
+            rules: None,
         }
     }
 

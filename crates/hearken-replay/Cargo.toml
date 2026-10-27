@@ -1,0 +1,24 @@
+[package]
+name = "hearken-replay"
+description = "Verified runs: a game's seed and inputs recorded, replayed by its own rules on a server, and the result computed there"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# No audio, speech or window code, so a game's rules crate built on this
+# compiles for wasm32-unknown-unknown and runs on a server.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { version = "0.11", default-features = false }
+
+# A tiny game's rules, exported for the server. `cargo build --example
+# coin-dash --target wasm32-unknown-unknown --release` gives the module the
+# JavaScript host's tests verify runs with.
+[[example]]
+name = "coin-dash"
+path = "examples/coin_dash.rs"
+crate-type = ["cdylib", "rlib"]

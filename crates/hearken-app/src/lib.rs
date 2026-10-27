@@ -15,6 +15,8 @@ pub mod held_keys;
 pub mod input;
 pub mod logging;
 pub mod menu;
+#[cfg(feature = "online")]
+pub mod online;
 pub mod paths;
 pub mod run;
 pub mod screens;
@@ -52,11 +54,15 @@ pub use hearken_speech::{
 pub use hearken_synth as synth;
 pub use held_keys::HeldKeys;
 pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent, Key, Mods};
+#[cfg(feature = "online")]
+pub use online::{Connect, Online, OnlineConfig, OnlineError, Plan, Ticket};
 pub use paths::Paths;
 pub use run::{already_running_line, run};
 pub use screens::SettingsRow;
 pub use sdl_shell::SdlShell;
-pub use settings::{default_volume, AudioSettings, ControllerSettings, MenuSettings, Settings};
+pub use settings::{
+    default_volume, AudioSettings, ControllerSettings, MenuSettings, OnlineSettings, Settings,
+};
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
 pub use speech_delivery::SayEvent;

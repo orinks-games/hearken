@@ -50,6 +50,7 @@ A game depends on one crate, `hearken`, which brings in the rest:
 | `hearken-synth` | Sound made with [fundsp](https://github.com/SamiPerttu/fundsp): built-in menu earcons, a default sound for every category, and recipes for live voices such as engines. A game can make sound with no sound files at all. |
 | `hearken-pack` | A release's sounds in one encrypted, authenticated `sounds.pak`, so players cannot browse or replace them. Written by `hearken release`, read by `hearken-audio`. |
 | `hearken-seal` | A game's records and saves, sealed in a release so a player cannot edit, swap or restore them (`ctx.vault`, `hearken::seal`). |
+| `hearken-replay` | Verified online runs: a run recorded as its seed and inputs, and the game's rules built for WebAssembly so a server can replay it and trust only the result it computes (`hearken::replay`, `ctx.online` with the `online` feature). The server side is `server/`; see `docs/online.md`. |
 | `hearken-bake` | Build scripts only: puts a release's keys into the program as scattered shares. |
 | `hearken-radio` | Internet radio, played as a sound: HTTP and ICY stations, playlists and live HLS, with now-playing titles. Optional. |
 

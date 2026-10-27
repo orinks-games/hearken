@@ -38,7 +38,13 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
     // Always passed, empty when the game does not seal, so a key in the
     // developer's shell never reaches a release by accident.
     let seal = crate::seal_key::release_key(project)?.map(|k| k.to_hex());
-    project.build_with(false, &key_env(&hex, &seal.unwrap_or_default()))?;
+    // The rules module first: its ID goes into the game.
+    let rules = match &project.rules {
+        Some(rules) => Some(crate::rules_module::build(project, rules)?),
+        None => None,
+    };
+    let rules_id = rules.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+    project.build_with(false, &key_env(&hex, &seal.unwrap_or_default(), &rules_id))?;
     let stem = format!(
         "{}-{}-{}",
         project.package,
@@ -46,6 +52,26 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
         platform(std::env::consts::OS, std::env::consts::ARCH)
     );
     let dist = project.dir.join("dist");
+    // An earlier release's module is not this one's.
+    let stale = format!("{}-{}-rules-", project.package, project.version);
+    for entry in std::fs::read_dir(&dist).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(&stale) && name.ends_with(".wasm") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    if let Some(module) = &rules {
+        // Beside the archive, not in it: players never need it, and the
+        // server is given it to publish the build.
+        std::fs::create_dir_all(&dist).map_err(|e| e.to_string())?;
+        let name = rules_file_name(&project.package, &project.version, &module.id);
+        copy(&module.path, &dist.join(&name))?;
+        println!(
+            "Rules module: dist/{name}\nRules ID: {}\nPublish this module on the game's server, or \
+             runs from this build are refused.",
+            module.id
+        );
+    }
     let stage = dist.join(&stem);
     if stage.exists() {
         std::fs::remove_dir_all(&stage)
@@ -108,9 +134,22 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
     Ok(dist.join(archive))
 }
 
-/// The keys a release's build gets: both always set, empty when unused.
-fn key_env<'a>(pack: &'a str, seal: &'a str) -> [(&'static str, &'a str); 2] {
-    [(PACK_KEY_VAR, pack), (crate::seal_key::BUILD_VAR, seal)]
+/// The keys and rules ID a release's build gets: all always set, empty
+/// when unused, so none in the developer's shell reaches a release.
+fn key_env<'a>(pack: &'a str, seal: &'a str, rules: &'a str) -> [(&'static str, &'a str); 4] {
+    [
+        (PACK_KEY_VAR, pack),
+        (crate::seal_key::BUILD_VAR, seal),
+        (crate::rules_module::RULES_VAR, rules),
+        // A release, with or without rules: no developer override is read.
+        (crate::rules_module::RELEASE_VAR, "1"),
+    ]
+}
+
+/// The rules module's name in `dist`: the game, its version, and the
+/// start of its ID, since each platform's release may build its own.
+fn rules_file_name(package: &str, version: &str, id: &str) -> String {
+    format!("{package}-{version}-rules-{}.wasm", &id[..id.len().min(12)])
 }
 
 /// Refuses a packed release of a game whose Hearken predates sound packs:
@@ -290,13 +329,28 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{directml_notices, engine_reads_packs, key_env, platform, vc_arch};
+    use super::{
+        directml_notices, engine_reads_packs, key_env, platform, rules_file_name, vc_arch,
+    };
 
     #[test]
     fn a_build_without_keys_still_clears_them() {
         assert_eq!(
-            key_env("", ""),
-            [("HEARKEN_PACK_KEY", ""), ("HEARKEN_SEAL_KEY", "")]
+            key_env("", "", ""),
+            [
+                ("HEARKEN_PACK_KEY", ""),
+                ("HEARKEN_SEAL_KEY", ""),
+                ("HEARKEN_RULES_ID", ""),
+                ("HEARKEN_RELEASE", "1")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rules_module_is_named_for_its_build() {
+        assert_eq!(
+            rules_file_name("wickets", "1.2.0", &"ab".repeat(32)),
+            "wickets-1.2.0-rules-abababababab.wasm"
         );
     }
 

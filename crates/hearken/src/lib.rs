@@ -4,6 +4,7 @@
 //! features of this crate, not further dependencies.
 
 pub use hearken_app::*;
+pub use hearken_replay as replay;
 pub use hearken_speech as speech;
 
 #[cfg(feature = "radio")]
