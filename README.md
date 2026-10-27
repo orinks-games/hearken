@@ -247,7 +247,13 @@ cargo install --git https://github.com/orinks-games/hearken hearken-cli
   GitHub release instead.
 - `hearken release <game>` builds the zip players get, in `dist/`: the
   executable, the game's files, and on Windows SDL2 and the Visual C++
-  runtime. It leaves out an `agent-server` Cargo feature.
+  runtime. It leaves out an `agent-server` Cargo feature. The archive is
+  named for the computer it was built on (`windows-x64.zip`,
+  `macos-arm64.zip`, `macos.zip` for Intel Macs, `linux-x64.tar.gz`), so
+  run it once on each system you ship for and upload every archive to the
+  same GitHub release. `hearken play --download` picks the one for the
+  player's computer, and on an Arm Windows PC or Mac takes the x64 build
+  when there is no Arm one.
 
 The command knows no games of its own: a game is its GitHub repository or
 a folder on this computer.
