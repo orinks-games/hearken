@@ -1,0 +1,21 @@
+{
+  "name": "@hearken/online",
+  "version": "0.1.0",
+  "description": "The server side of Hearken's verified runs: replays a run with the game's own WebAssembly rules and hands the result to the game's handler",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.js",
+    "./node": "./src/node.js"
+  },
+  "bin": {
+    "hearken-online-dev": "./bin/dev-server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
