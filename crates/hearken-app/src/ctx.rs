@@ -78,7 +78,14 @@ impl<G: Game> Ctx<G> {
         let sound = G::sound();
         let ui_sounds = sound.ui.clone();
         let delivery = Delivery::new(sound.pacer, G::verbosity());
-        let vault = Vault::new(&paths.data_dir).with_witnesses(paths.witnesses.clone());
+        // Witnesses only guard the import of old plain files, so a game that
+        // does not import leaves none.
+        let witnesses = if G::IMPORTS_PLAIN_SAVES {
+            paths.witnesses.clone()
+        } else {
+            Vec::new()
+        };
+        let vault = Vault::new(&paths.data_dir).with_witnesses(witnesses);
         let mut ctx = Ctx {
             speech,
             settings,

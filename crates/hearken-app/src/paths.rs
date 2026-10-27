@@ -92,24 +92,22 @@ pub fn portable_dir(exe_dir: &Path) -> Option<PathBuf> {
         .then(|| exe_dir.join("saves"))
 }
 
-/// The witness file names: one in the platform's config folder, named for
-/// the game, and, for a portable copy, one beside the executable. Any that
-/// would fall inside `data_dir` is left out: it would go with the folder.
+/// The witness file name: for a portable copy, one beside the executable,
+/// so the copy leaves nothing in the player's user folders; otherwise one
+/// in the platform's config folder, named for the game. One that would fall
+/// inside `data_dir` is left out: it would go with the folder.
 fn witnesses(
     dir_name: &str,
     exe_dir: Option<&Path>,
     config_dir: Option<&Path>,
     data_dir: &Path,
 ) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Some(config) = config_dir {
-        out.push(config.join(format!("{dir_name}.hearken-seal")));
-    }
-    if let Some(exe_dir) = exe_dir {
-        if portable_dir(exe_dir).is_some() {
-            out.push(exe_dir.join("hearken-seal.witness"));
-        }
-    }
+    let portable = exe_dir.filter(|dir| portable_dir(dir).is_some());
+    let mut out: Vec<PathBuf> = match (portable, config_dir) {
+        (Some(exe_dir), _) => vec![exe_dir.join("hearken-seal.witness")],
+        (None, Some(config)) => vec![config.join(format!("{dir_name}.hearken-seal"))],
+        (None, None) => Vec::new(),
+    };
     out.retain(|w| !w.starts_with(data_dir));
     out
 }
@@ -135,13 +133,7 @@ mod tests {
         assert_eq!(installed, vec![config.path().join("Game.hearken-seal")]);
         std::fs::write(exe.path().join(PORTABLE_MARKER), "").unwrap();
         let portable = witnesses("Game", Some(exe.path()), Some(config.path()), &data);
-        assert_eq!(
-            portable,
-            vec![
-                config.path().join("Game.hearken-seal"),
-                exe.path().join("hearken-seal.witness"),
-            ]
-        );
+        assert_eq!(portable, vec![exe.path().join("hearken-seal.witness")]);
         // A data folder that holds the config folder keeps no witness there.
         let inside = witnesses("Game", None, Some(config.path()), config.path());
         assert!(inside.is_empty());

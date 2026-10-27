@@ -361,16 +361,17 @@ The limits are those of the sound pack, and a few more. The key is in the
 program, so someone who takes it apart can forge any file. Restoring a
 whole data folder, ledger and all, from one earlier moment looks like
 never having played since, and a complete folder copied from a friend
-works. `Legacy` is offered only in a folder that has never sealed, and
-only while no marker the vault left outside the folder (in the config
-folder, and beside a portable copy's executable) says the game has sealed
-before. A player who deletes those markers too, or plays as a new user,
-can still have a hand-written plain file imported; a game closes that by
-refusing `Legacy` once its players have moved to sealed releases. The
-markers have a cost too: once any copy of the game has sealed for a user,
-plain saves in a second copy are `Tampered`, not `Legacy`, so tell players
-to update by unpacking over their old copy, or to move their old saves in
-before the new one first runs. This raises cheating from "open a text
+works. A game that sets `IMPORTS_PLAIN_SAVES = true` on its `Game` gets
+`Legacy` for plain saves an older, unsealed version left, but only in a
+folder that has never sealed, and only while no marker the vault left
+outside the folder says the game has sealed before. That marker is one
+small file: in the config folder for an installed copy, or beside the
+executable for a portable one, so a portable copy leaves nothing in the
+player's user folders. A player who deletes the marker too, or plays as a
+new user, can still have a hand-written plain file imported; turn
+`IMPORTS_PLAIN_SAVES` off once players have moved to sealed releases, and
+no marker is written at all. Games that never import (the default) leave
+no marker. This raises cheating from "open a text
 editor" to "reverse engineer the program", which is as far as any offline
 game can go.
 

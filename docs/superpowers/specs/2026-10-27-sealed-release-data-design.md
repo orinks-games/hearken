@@ -230,19 +230,26 @@ fresh folder.
 `Vault::with_witnesses(paths)` names marker files outside the data folder.
 The first time a vault writes its ledger in a run, it writes any missing
 witness (a sealed empty blob; only its existence counts). Writing one is
-best effort: a failure is logged and saving goes on. `hearken-app` gives
-every game two: `<config dir>/<DATA_DIR>.hearken-seal`, and, for a portable
-copy, `hearken-seal.witness` beside the executable. Neither is ever inside
-the data folder. While a witness exists, no folder offers `Legacy`.
+best effort: a failure is logged and saving goes on. While a witness
+exists, no folder offers `Legacy`.
 
-The cost falls on a player with more than one copy of the game. The
-config-folder witness is shared by every copy for that user, so once any
-copy has sealed, a plain file in another copy's folder (a second portable
-copy, or old saves copied into a new copy that already ran) reads as
-`Tampered(Unsealed)`, not `Legacy`. The game sets it aside rather than
+Witnesses only guard the legacy import, so `hearken-app` hands them to the
+vault only for a game with `Game::IMPORTS_PLAIN_SAVES = true`; the default
+is false, and such a game never writes one. Paths name exactly one: for a
+portable copy, `hearken-seal.witness` beside the executable, so a portable
+copy leaves nothing in the player's user folders; otherwise
+`<config dir>/<DATA_DIR>.hearken-seal`. Neither is ever inside the data
+folder.
+
+The cost falls on a player with more than one installed copy. The
+config-folder witness is shared by every installed copy for that user, so
+once one has sealed, a plain file in another installed copy's folder reads
+as `Tampered(Unsealed)`, not `Legacy`. The game sets it aside rather than
 deleting it, so it can still be recovered by hand, but it is not imported.
-A game that imports should tell players to update by unpacking over their
-old copy, or by moving their old saves in before the new copy first runs.
+Portable copies each keep their own witness, so they do not affect each
+other. A game that imports should tell players to update by unpacking over
+their old copy, or by moving their old saves in before the new copy first
+runs, and should turn the import off once players have moved over.
 
 ## The key
 
@@ -398,6 +405,7 @@ impl Vault {
     /// Leaves markers at `paths` (outside the folder) once it seals, so a
     /// wiped or fresh folder offers no `Legacy` import. See Witnesses.
     pub fn with_witnesses(self, paths: Vec<std::path::PathBuf>) -> Vault;
+    pub fn witnesses(&self) -> &[std::path::PathBuf];
 }
 ```
 
@@ -561,7 +569,7 @@ cannot, since it does not know what the bytes mean.
   |---|---|
   | `Sealed`, `Plain` | parse as today |
   | `Missing` | start fresh |
-  | `Legacy` | import while `IMPORT_LEGACY` (a `pub const` in records.rs, `true` for now) is true; otherwise `set_aside` and start fresh |
+  | `Legacy` | import while `Parlor`'s `IMPORTS_PLAIN_SAVES` (`true` for now) is true; otherwise `set_aside` and start fresh |
   | `Locked` | start fresh in memory and don't save. The vault refuses anyway. Log it. |
   | `Tampered(_)` | `set_aside`, start fresh, and say once: "Your records were changed outside the game, so they start over." |
   | `Failed` | start fresh in memory, don't save over the file, log it |

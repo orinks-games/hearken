@@ -4,7 +4,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use common::{take_log, Probe, TestData, TestGame};
-use hearken_app::{App, Ctx, Headless, HeadlessShell, InputEvent, Key, Paths, Settings, State};
+use hearken_app::{
+    App, Ctx, Game, Headless, HeadlessShell, InputEvent, Key, Paths, Settings, State,
+};
 use hearken_speech::{CaptureSpeech, SharedCapture};
 
 fn headless(root: Probe) -> Headless<TestGame> {
@@ -454,6 +456,23 @@ fn run_releases_speech_while_pumping_the_shell() {
     app.run(&mut shell);
     assert!(*pumped.borrow());
     assert!(shell.queued.is_empty(), "the pump never polled the shell");
+}
+
+/// Witnesses only guard the import of old plain saves, so a game that does
+/// not import (the default) never leaves one outside its data folder.
+#[test]
+fn a_game_that_imports_no_plain_saves_leaves_no_witnesses() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut paths = Paths::at(dir.path().join("data"));
+    paths.witnesses = vec![dir.path().join("Game.hearken-seal")];
+    let ctx: Ctx<TestGame> = Ctx::new(
+        Box::new(SharedCapture(Rc::new(RefCell::new(CaptureSpeech::new())))),
+        Settings::default(),
+        paths,
+        TestData::default(),
+    );
+    assert!(!TestGame::IMPORTS_PLAIN_SAVES);
+    assert!(ctx.vault.witnesses().is_empty());
 }
 
 #[test]

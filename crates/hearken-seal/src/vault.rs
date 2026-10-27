@@ -145,6 +145,11 @@ impl Vault {
         self
     }
 
+    /// The marker files this vault may leave outside its folder.
+    pub fn witnesses(&self) -> &[PathBuf] {
+        &self.witnesses
+    }
+
     /// Whether files are sealed (a release built with `seal = true`).
     pub fn is_sealing(&self) -> bool {
         self.key.is_some()
