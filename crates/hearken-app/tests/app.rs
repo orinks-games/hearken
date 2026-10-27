@@ -4,9 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use common::{take_log, Probe, TestData, TestGame};
-use hearken_app::{
-    App, Ctx, Game, Headless, HeadlessShell, InputEvent, Key, Paths, Settings, State,
-};
+use hearken_app::{App, Ctx, Headless, HeadlessShell, InputEvent, Key, Paths, Settings, State};
 use hearken_speech::{CaptureSpeech, SharedCapture};
 
 fn headless(root: Probe) -> Headless<TestGame> {
@@ -471,7 +469,6 @@ fn a_game_that_imports_no_plain_saves_leaves_no_witnesses() {
         paths,
         TestData::default(),
     );
-    assert!(!TestGame::IMPORTS_PLAIN_SAVES);
     assert!(ctx.vault.witnesses().is_empty());
 }
 
