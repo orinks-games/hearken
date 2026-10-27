@@ -144,6 +144,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show && rustup target add wasm32-unknown-unknown
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
