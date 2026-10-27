@@ -1,4 +1,4 @@
-//! Where a game keeps its settings and its session log.
+//! Where a game keeps its settings, its data and its session log.
 
 use std::path::{Path, PathBuf};
 
@@ -11,12 +11,26 @@ impl Paths {
     /// `<env_prefix>_DATA_DIR` when it is set and non-empty; then, for a
     /// portable copy, `saves` beside the executable; otherwise `dir_name`
     /// under the platform's local data folder. Created if missing.
+    ///
+    /// A release that seals its data (`seal = true`) ignores
+    /// `<env_prefix>_DATA_DIR`: it is for development and tests, and would
+    /// otherwise let a player point the game at a folder of their own.
     pub fn discover(dir_name: &str, env_prefix: &str) -> Paths {
+        Paths::discover_with(dir_name, env_prefix, hearken_seal::build_key().is_some())
+    }
+
+    /// [`Paths::discover`], told whether this build seals.
+    pub fn discover_with(dir_name: &str, env_prefix: &str, sealing: bool) -> Paths {
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf));
-        let dir = std::env::var_os(format!("{env_prefix}_DATA_DIR"))
-            .filter(|v| !v.is_empty())
+        let var = format!("{env_prefix}_DATA_DIR");
+        let wanted = std::env::var_os(&var).filter(|v| !v.is_empty());
+        if sealing && wanted.is_some() {
+            log::warn!("{var} is ignored: this release seals its data");
+        }
+        let dir = wanted
+            .filter(|_| !sealing)
             .map(PathBuf::from)
             .or_else(|| exe_dir.as_deref().and_then(portable_dir))
             .or_else(|| dirs::data_local_dir().map(|d| d.join(dir_name)))
@@ -65,5 +79,20 @@ mod tests {
         assert_eq!(portable_dir(dir.path()), None);
         std::fs::write(dir.path().join(PORTABLE_MARKER), "").unwrap();
         assert_eq!(portable_dir(dir.path()), Some(dir.path().join("saves")));
+    }
+
+    #[test]
+    fn a_sealing_build_ignores_the_data_dir_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let wanted = dir.path().join("crafted");
+        std::env::set_var("HEARKEN_TEST_SEALED_PATHS_DATA_DIR", &wanted);
+        let open =
+            Paths::discover_with("HearkenSealedPathsTest", "HEARKEN_TEST_SEALED_PATHS", false);
+        let sealed =
+            Paths::discover_with("HearkenSealedPathsTest", "HEARKEN_TEST_SEALED_PATHS", true);
+        std::env::remove_var("HEARKEN_TEST_SEALED_PATHS_DATA_DIR");
+        assert_eq!(open.data_dir, wanted);
+        assert_ne!(sealed.data_dir, wanted);
+        let _ = std::fs::remove_dir(&sealed.data_dir);
     }
 }

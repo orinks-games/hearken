@@ -44,6 +44,8 @@ pub use hearken_audio::{
     LiveSound, LoopRegion, LooseClips, MadeClips, MemoryClips, Mix, Recorder, RecordingBackend,
     SilentBackend, Sound, Source, SpatialConfig, Vec3,
 };
+pub use hearken_seal as seal;
+pub use hearken_seal::{Opened, Tamper, Vault};
 pub use hearken_speech::{
     Category, EventPriority, Level, NoCategory, PacerConfig, Rule, Verbosity,
 };

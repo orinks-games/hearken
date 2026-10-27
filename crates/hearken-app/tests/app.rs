@@ -455,3 +455,26 @@ fn run_releases_speech_while_pumping_the_shell() {
     assert!(*pumped.borrow());
     assert!(shell.queued.is_empty(), "the pump never polled the shell");
 }
+
+#[test]
+fn the_vault_is_the_data_folder_and_plain_outside_a_sealed_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx: Ctx<TestGame> = Ctx::new(
+        Box::new(SharedCapture(Rc::new(RefCell::new(CaptureSpeech::new())))),
+        Settings::default(),
+        Paths::at(dir.path()),
+        TestData::default(),
+    );
+    assert_eq!(ctx.vault.dir(), dir.path());
+    assert!(!ctx.vault.is_sealing());
+    assert!(matches!(
+        ctx.vault.read("progress.json"),
+        hearken_app::Opened::Missing
+    ));
+    ctx.vault.write("progress.json", b"{}").unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("progress.json")).unwrap(),
+        b"{}"
+    );
+    assert_eq!(ctx.vault.read("progress.json").trusted().unwrap(), b"{}");
+}
