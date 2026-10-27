@@ -1,0 +1,35 @@
+[package]
+name = "hearken-voice"
+description = "AI voices for audio games: offline Kokoro speech through local-tts, no accounts or keys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# The Kokoro model through local-tts and ONNX Runtime. Off by default: it
+# adds ONNX Runtime to the build, so only games that speak commentary pay.
+# Without it `Voice` sends every line to the screen reader and `FakeVoice`
+# still works, so a game's tests need no model.
+voice = ["dep:local-tts-core"]
+# local-tts's pinned installer (HTTPS through ureq): `install` and the
+# in-game `InstallScreen`.
+download = ["voice", "local-tts-core/download"]
+
+[dependencies]
+hearken-app.workspace = true
+log.workspace = true
+serde.workspace = true
+local-tts-core = { git = "https://github.com/GarAlex/local-tts", rev = "61efef0c129dff71c4ff93e0639ce290aeb674ca", optional = true }
+
+[dev-dependencies]
+hearken-app = { workspace = true, features = ["testing"] }
+hearken-audio = { workspace = true, features = ["kira"] }
+serde_json.workspace = true
+tempfile.workspace = true
+
+[[example]]
+name = "install"
+required-features = ["download"]
