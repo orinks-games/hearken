@@ -97,3 +97,96 @@ fn a_sound_pack_gives_the_same_sounds_as_the_folder_it_was_made_from() {
     );
     assert!(PackedClips::open(&pak, &hearken_pack::new_key().unwrap()).is_err());
 }
+
+/// A game folder with a loose `sounds` folder, an override folder named by
+/// `<prefix>_SOUNDS`, and a `sounds.pak` made from other sounds.
+fn packed_game(prefix: &str) -> (tempfile::TempDir, [u8; 32]) {
+    let dir = tempfile::tempdir().unwrap();
+    let put = |rel: &str, bytes: &[u8]| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    };
+    put("sounds/door.ogg", b"loose door");
+    put("override/door.ogg", b"override door");
+    put("source/door.ogg", b"packed door");
+    let key = hearken_pack::new_key().unwrap();
+    hearken_pack::write(
+        &dir.path().join("source"),
+        &dir.path().join(hearken_pack::FILE_NAME),
+        &key,
+    )
+    .unwrap();
+    std::env::set_var(format!("{prefix}_SOUNDS"), dir.path().join("override"));
+    (dir, key)
+}
+
+#[test]
+fn a_packed_build_reads_its_pack_and_nothing_else() {
+    let prefix = "HEARKEN_TEST_PACKED_ONLY";
+    let (dir, key) = packed_game(prefix);
+    let mut found = hearken_audio::discover_clips_from(prefix, Some(key), Some(dir.path()));
+    assert!(found.notice.is_none());
+    assert_eq!(
+        found.clips.load("door").as_deref(),
+        Some(&b"packed door"[..])
+    );
+    std::env::remove_var(format!("{prefix}_SOUNDS"));
+}
+
+#[test]
+fn a_packed_build_with_a_missing_or_damaged_pack_plays_nothing_loose() {
+    let prefix = "HEARKEN_TEST_PACK_DAMAGED";
+    let (dir, key) = packed_game(prefix);
+    let pak = dir.path().join(hearken_pack::FILE_NAME);
+    let mut bytes = std::fs::read(&pak).unwrap();
+    bytes[14] ^= 1;
+    std::fs::write(&pak, &bytes).unwrap();
+    let mut found = hearken_audio::discover_clips_from(prefix, Some(key), Some(dir.path()));
+    assert_eq!(
+        found.notice.as_deref(),
+        Some(hearken_audio::DAMAGED_PACK_NOTICE)
+    );
+    assert_eq!(found.clips.load("door"), None);
+
+    std::fs::remove_file(&pak).unwrap();
+    let mut found = hearken_audio::discover_clips_from(prefix, Some(key), Some(dir.path()));
+    assert!(found.notice.is_some());
+    assert_eq!(found.clips.load("door"), None);
+    std::env::remove_var(format!("{prefix}_SOUNDS"));
+}
+
+#[test]
+fn a_changed_sound_in_the_pack_plays_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("s")).unwrap();
+    std::fs::write(dir.path().join("s/door.ogg"), b"OggS door").unwrap();
+    let pak = dir.path().join(hearken_pack::FILE_NAME);
+    let key = hearken_pack::new_key().unwrap();
+    hearken_pack::write(&dir.path().join("s"), &pak, &key).unwrap();
+    let mut bytes = std::fs::read(&pak).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    std::fs::write(&pak, &bytes).unwrap();
+    let mut packed = hearken_audio::PackedClips::open(&pak, &key).unwrap();
+    assert_eq!(packed.load("door"), None);
+    assert_eq!(packed.load("door"), None);
+}
+
+#[test]
+fn a_build_without_a_pack_key_reads_loose_sounds_as_before() {
+    let prefix = "HEARKEN_TEST_UNPACKED";
+    let (dir, _key) = packed_game(prefix);
+    let mut found = hearken_audio::discover_clips_from(prefix, None, Some(dir.path()));
+    assert!(found.notice.is_none());
+    assert_eq!(
+        found.clips.load("door").as_deref(),
+        Some(&b"override door"[..])
+    );
+    std::env::remove_var(format!("{prefix}_SOUNDS"));
+    let mut found = hearken_audio::discover_clips_from(prefix, None, Some(dir.path()));
+    assert_eq!(
+        found.clips.load("door").as_deref(),
+        Some(&b"loose door"[..])
+    );
+}

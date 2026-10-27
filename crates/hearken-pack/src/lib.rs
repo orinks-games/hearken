@@ -1,10 +1,12 @@
 //! A game's sounds in one encrypted file.
 //!
 //! `hearken release` can ship a game's `sounds` folder as `sounds.pak`
-//! instead: every sound, and the list of their names, encrypted with
-//! ChaCha20 under a key made fresh for that release and built into its
-//! program. A player who opens the zip sees one file they cannot play or
-//! list, so a game's secrets are not spoiled by browsing its folder.
+//! instead: every sound, and the list of their names, encrypted and
+//! authenticated with ChaCha20-Poly1305 under a key made fresh for that
+//! release and built into its program. A player who opens the zip sees one
+//! file they cannot play or list, so a game's secrets are not spoiled by
+//! browsing its folder, and any byte they change is caught: a changed index
+//! fails to open, and a changed sound fails to play.
 //!
 //! This stops casual looking, not a determined person: the key is inside
 //! the program they were given, and anyone willing to dig it out of the
@@ -14,12 +16,17 @@
 //! The file:
 //!
 //! ```text
-//! "HKPK"  version (1 byte)  3 reserved bytes  index length (u32 LE)
-//! index, encrypted with nonce 0:
+//! "HKPK"  version = 2 (1 byte)  3 reserved bytes  index length (u32 LE)
+//! index, sealed with nonce 0 and the 12-byte header as associated data:
 //!     "HKIX"  count (u32 LE)
 //!     per sound: key length (u16 LE), key (UTF-8), offset (u64 LE), length (u64 LE)
-//! sounds, each encrypted with nonce n + 1 for the n-th sound in the index
+//! sounds, each sealed with nonce n + 1 for the n-th sound in the index and
+//! its key (UTF-8) as associated data; a length counts the 16-byte tag
 //! ```
+//!
+//! Binding the nonce and the key into each sound means moving one sound's
+//! bytes into another's place fails too. Version 1 (ChaCha20 alone) is not
+//! read: a pack only ever has to match the program it ships with.
 //!
 //! A key is a sound's path under the folder without its extension, with `/`
 //! between folders: the same key the engine asks the loose folder for.
@@ -29,8 +36,8 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use chacha20::cipher::{KeyIvInit, StreamCipher};
-use chacha20::ChaCha20;
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::ChaCha20Poly1305;
 
 /// The pack's file name, beside the game's program.
 pub const FILE_NAME: &str = "sounds.pak";
@@ -41,7 +48,8 @@ pub const EXTENSIONS: [&str; 5] = ["ogg", "opus", "wav", "flac", "mp3"];
 
 const MAGIC: &[u8; 4] = b"HKPK";
 const INDEX_MAGIC: &[u8; 4] = b"HKIX";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
+const TAG_LEN: u64 = 16;
 const HEADER_LEN: u64 = 12;
 
 /// The key this build reads packs with: set by `hearken release` through
@@ -72,9 +80,16 @@ fn nonce(n: u64) -> [u8; 12] {
     nonce
 }
 
-fn crypt(key: &[u8; 32], n: u64, data: &mut [u8]) {
-    let mut cipher = ChaCha20::new(key.into(), &nonce(n).into());
-    cipher.apply_keystream(data);
+fn seal(key: &[u8; 32], n: u64, aad: &[u8], data: &[u8]) -> io::Result<Vec<u8>> {
+    ChaCha20Poly1305::new(&(*key).into())
+        .encrypt(&nonce(n).into(), Payload { msg: data, aad })
+        .map_err(|_| io::Error::other("too large to pack"))
+}
+
+fn open(key: &[u8; 32], n: u64, aad: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    ChaCha20Poly1305::new(&(*key).into())
+        .decrypt(&nonce(n).into(), Payload { msg: data, aad })
+        .ok()
 }
 
 /// What [`write`] did.
@@ -137,39 +152,46 @@ pub fn write(dir: &Path, out: &Path, key: &[u8; 32]) -> io::Result<Written> {
         index.extend_from_slice(&name_len.to_le_bytes());
         index.extend_from_slice(name.as_bytes());
         index.extend_from_slice(&offset.to_le_bytes());
-        index.extend_from_slice(&len.to_le_bytes());
-        offset += len;
+        index.extend_from_slice(&(len + TAG_LEN).to_le_bytes());
+        offset += len + TAG_LEN;
     }
-    crypt(key, 0, &mut index);
-    let index_len = u32::try_from(index.len()).map_err(|_| io::Error::other("index too large"))?;
+    let index_len = u32::try_from(index.len() as u64 + TAG_LEN)
+        .map_err(|_| io::Error::other("index too large"))?;
+    let mut header = Vec::with_capacity(HEADER_LEN as usize);
+    header.extend_from_slice(MAGIC);
+    header.extend_from_slice(&[VERSION, 0, 0, 0]);
+    header.extend_from_slice(&index_len.to_le_bytes());
+    let index = seal(key, 0, &header, &index)?;
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut file = io::BufWriter::new(File::create(out)?);
-    file.write_all(MAGIC)?;
-    file.write_all(&[VERSION, 0, 0, 0])?;
-    file.write_all(&index_len.to_le_bytes())?;
+    file.write_all(&header)?;
     file.write_all(&index)?;
-    for (n, (_, path, len)) in sounds.iter().enumerate() {
-        let mut data = std::fs::read(path)?;
+    for (n, (name, path, len)) in sounds.iter().enumerate() {
+        let data = std::fs::read(path)?;
         if data.len() as u64 != *len {
             return Err(io::Error::other(format!(
                 "{} changed while it was packed",
                 path.display()
             )));
         }
-        crypt(key, n as u64 + 1, &mut data);
-        file.write_all(&data)?;
+        file.write_all(&seal(key, n as u64 + 1, name.as_bytes(), &data)?)?;
     }
     file.flush()?;
     written.sounds = sounds.len();
     Ok(written)
 }
 
-/// Every file under `dir`, in no particular order.
+/// Every file under `dir`, in no particular order. A missing `dir` has
+/// none, so a release with nothing to pack still ships an empty pack.
 fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
+    let entries = match std::fs::read_dir(dir) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        entries => entries?,
+    };
+    for entry in entries {
         let entry = entry?;
         let path = entry.path();
         if entry.file_type()?.is_dir() {
@@ -196,8 +218,9 @@ pub struct Pack {
 }
 
 impl Pack {
-    /// Opens the pack at `path`. Fails when it is not a pack, or `key` is
-    /// not the one it was written with.
+    /// Opens the pack at `path`. Fails when it is not a pack, `key` is not
+    /// the one it was written with, or any byte of its header or index was
+    /// changed, or it was cut short or added to.
     pub fn open(path: &Path, key: &[u8; 32]) -> io::Result<Pack> {
         let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
         let mut file = File::open(path)?;
@@ -214,12 +237,14 @@ impl Pack {
         let mut index = vec![0u8; index_len];
         file.read_exact(&mut index)
             .map_err(|_| bad("a cut-short sound pack"))?;
-        crypt(key, 0, &mut index);
-        if index.len() < 8 || &index[..4] != INDEX_MAGIC {
-            return Err(bad("a sound pack made for another build of the game"));
-        }
+        let index = open(key, 0, &header, &index)
+            .filter(|index| index.len() >= 8 && &index[..4] == INDEX_MAGIC)
+            .ok_or_else(|| {
+                bad("a damaged sound pack, or one made for another build of the game")
+            })?;
         let count = u32::from_le_bytes(index[4..8].try_into().unwrap()) as usize;
-        let mut entries = HashMap::with_capacity(count);
+        let mut entries = HashMap::with_capacity(count.min(1 << 16));
+        let mut end = 0u64;
         let mut at = 8usize;
         let mut take = |n: usize| -> io::Result<&[u8]> {
             let slice = index
@@ -234,6 +259,7 @@ impl Pack {
                 .map_err(|_| bad("a damaged sound pack"))?;
             let offset = u64::from_le_bytes(take(8)?.try_into().unwrap());
             let len = u64::from_le_bytes(take(8)?.try_into().unwrap());
+            end = end.max(offset.saturating_add(len));
             entries.insert(
                 name,
                 Entry {
@@ -243,10 +269,14 @@ impl Pack {
                 },
             );
         }
+        let data_start = HEADER_LEN + index_len as u64;
+        if file.metadata()?.len() != data_start.saturating_add(end) {
+            return Err(bad("a sound pack cut short or added to"));
+        }
         Ok(Pack {
             file,
             key: *key,
-            data_start: HEADER_LEN + index_len as u64,
+            data_start,
             entries,
         })
     }
@@ -265,9 +295,12 @@ impl Pack {
         self.entries.contains_key(key)
     }
 
-    /// The sound file for `key`, or `None` when the pack has none.
+    /// The sound file for `key`, or `None` when the pack has none. Fails
+    /// with `InvalidData` when the sound was changed.
     pub fn read(&mut self, key: &str) -> io::Result<Option<Vec<u8>>> {
-        Ok(self.read_sealed(key)?.map(|sealed| self.unseal(&sealed)))
+        self.read_sealed(key)?
+            .map(|sealed| self.unseal(&sealed))
+            .transpose()
     }
 
     /// `key`'s sound as it is in the pack, still encrypted: what a caller
@@ -282,15 +315,26 @@ impl Pack {
         self.file.read_exact(&mut data)?;
         Ok(Some(Sealed {
             nonce: entry.nonce,
+            key: key.into(),
             bytes: data.into(),
         }))
     }
 
-    /// A sealed sound's file, decrypted.
-    pub fn unseal(&self, sealed: &Sealed) -> Vec<u8> {
-        let mut data = sealed.bytes.to_vec();
-        crypt(&self.key, sealed.nonce, &mut data);
-        data
+    /// A sealed sound's file, decrypted. Fails with `InvalidData` when the
+    /// sound's bytes were changed or moved.
+    pub fn unseal(&self, sealed: &Sealed) -> io::Result<Vec<u8>> {
+        open(
+            &self.key,
+            sealed.nonce,
+            sealed.key.as_bytes(),
+            &sealed.bytes,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the sound {} in the pack was changed", sealed.key),
+            )
+        })
     }
 }
 
@@ -298,6 +342,7 @@ impl Pack {
 #[derive(Clone)]
 pub struct Sealed {
     nonce: u64,
+    key: std::sync::Arc<str>,
     bytes: std::sync::Arc<[u8]>,
 }
 
@@ -347,7 +392,7 @@ mod tests {
 
         let sealed = pack.read_sealed("ui/click").unwrap().unwrap();
         assert_ne!(&*sealed.bytes, b"OggS click");
-        assert_eq!(pack.unseal(&sealed), b"OggS click");
+        assert_eq!(pack.unseal(&sealed).unwrap(), b"OggS click");
     }
 
     #[test]
@@ -381,5 +426,96 @@ mod tests {
         write(dir.path(), &out, &new_key().unwrap()).unwrap();
         let err = Pack::open(&out, &new_key().unwrap()).err().unwrap();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// Every sound in the pack, read: `Err` when the open or any read fails.
+    fn read_all(path: &Path, key: &[u8; 32]) -> io::Result<Vec<Vec<u8>>> {
+        let mut pack = Pack::open(path, key)?;
+        let mut keys: Vec<String> = pack.entries.keys().cloned().collect();
+        keys.sort();
+        keys.iter()
+            .map(|k| pack.read(k).map(Option::unwrap_or_default))
+            .collect()
+    }
+
+    #[test]
+    fn no_changed_byte_is_ever_accepted() {
+        let dir = tree();
+        let out = dir.path().join("out").join(FILE_NAME);
+        let key = new_key().unwrap();
+        write(dir.path(), &out, &key).unwrap();
+        let good = std::fs::read(&out).unwrap();
+        assert!(read_all(&out, &key).is_ok());
+        for at in 0..good.len() {
+            let mut bad = good.clone();
+            bad[at] ^= 0x01;
+            std::fs::write(&out, &bad).unwrap();
+            let err = read_all(&out, &key).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "byte {at}");
+        }
+        std::fs::write(&out, &good[..good.len() - 1]).unwrap();
+        assert!(Pack::open(&out, &key).is_err());
+        let mut longer = good.clone();
+        longer.push(0);
+        std::fs::write(&out, &longer).unwrap();
+        assert!(Pack::open(&out, &key).is_err());
+    }
+
+    #[test]
+    fn swapping_two_sounds_of_one_length_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ogg"), b"OggS aaaa").unwrap();
+        std::fs::write(dir.path().join("b.ogg"), b"OggS bbbb").unwrap();
+        let out = dir.path().join("out").join(FILE_NAME);
+        let key = new_key().unwrap();
+        write(dir.path(), &out, &key).unwrap();
+        let mut pack = Pack::open(&out, &key).unwrap();
+        let (a, b) = (&pack.entries["a"], &pack.entries["b"]);
+        let start = pack.data_start as usize;
+        let (a_at, b_at, len) = (
+            start + a.offset as usize,
+            start + b.offset as usize,
+            a.len as usize,
+        );
+        assert_eq!(a.len, b.len);
+        drop(pack);
+        let mut bytes = std::fs::read(&out).unwrap();
+        let a_bytes = bytes[a_at..a_at + len].to_vec();
+        let b_bytes = bytes[b_at..b_at + len].to_vec();
+        bytes[a_at..a_at + len].copy_from_slice(&b_bytes);
+        bytes[b_at..b_at + len].copy_from_slice(&a_bytes);
+        std::fs::write(&out, &bytes).unwrap();
+        pack = Pack::open(&out, &key).unwrap();
+        assert_eq!(
+            pack.read("a").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            pack.read("b").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn a_version_1_pack_is_refused() {
+        let dir = tree();
+        let out = dir.path().join(FILE_NAME);
+        let key = new_key().unwrap();
+        write(dir.path(), &out, &key).unwrap();
+        let mut bytes = std::fs::read(&out).unwrap();
+        bytes[4] = 1;
+        std::fs::write(&out, &bytes).unwrap();
+        let err = Pack::open(&out, &key).err().unwrap();
+        assert!(err.to_string().contains("a version this build cannot read"));
+    }
+
+    #[test]
+    fn a_missing_folder_packs_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join(FILE_NAME);
+        let key = new_key().unwrap();
+        let written = write(&dir.path().join("none"), &out, &key).unwrap();
+        assert_eq!(written.sounds, 0);
+        assert!(Pack::open(&out, &key).unwrap().is_empty());
     }
 }

@@ -75,11 +75,13 @@ impl LooseClips {
 
     /// The executable's `sounds` folder, else the current directory's.
     fn beside_game() -> LooseClips {
+        LooseClips::beside(exe_dir().as_deref())
+    }
+
+    /// `exe_dir`'s `sounds` folder, else the current directory's.
+    fn beside(exe_dir: Option<&Path>) -> LooseClips {
         let mut candidates: Vec<(String, PathBuf)> = Vec::new();
-        if let Some(dir) = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|p| p.join("sounds")))
-        {
+        if let Some(dir) = exe_dir.map(|d| d.join("sounds")) {
             candidates.push(("the executable's folder".to_string(), dir));
         }
         if let Ok(cwd) = std::env::current_dir() {
@@ -122,12 +124,21 @@ impl ClipSource for LooseClips {
     }
 }
 
+/// The folder the running program is in.
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+}
+
 /// A release's sounds, from the encrypted `sounds.pak` that `hearken
 /// release` writes beside the game (see the `hearken-pack` crate).
 ///
 /// Loads are cached for the run, misses included, as [`LooseClips`] does,
-/// but the cache holds each sound still encrypted: a sound is decrypted
-/// for each play and sits in memory readable only while it is in use.
+/// but the cache holds each sound still encrypted: a sound is decrypted,
+/// and checked, for each play and sits in memory readable only while it is
+/// in use. A sound whose bytes were changed plays nothing, and is logged
+/// once.
 pub struct PackedClips {
     pack: hearken_pack::Pack,
     cache: HashMap<String, Option<hearken_pack::Sealed>>,
@@ -146,25 +157,24 @@ impl PackedClips {
     /// `hearken release` with the key it was packed with.
     pub fn beside_game() -> Option<PackedClips> {
         let key = hearken_pack::build_key()?;
-        let path = std::env::current_exe()
-            .ok()?
-            .parent()?
-            .join(hearken_pack::FILE_NAME);
-        if !path.is_file() {
-            return None;
-        }
-        match PackedClips::open(&path, &key) {
+        PackedClips::in_dir(&exe_dir()?, &key).ok()
+    }
+
+    /// The `sounds.pak` in `dir`, logged either way.
+    fn in_dir(dir: &Path, key: &[u8; 32]) -> std::io::Result<PackedClips> {
+        let path = dir.join(hearken_pack::FILE_NAME);
+        match PackedClips::open(&path, key) {
             Ok(clips) => {
                 log::info!(
                     "sounds: using the sound pack ({}, {} sounds)",
                     path.display(),
                     clips.pack.len()
                 );
-                Some(clips)
+                Ok(clips)
             }
             Err(e) => {
                 log::error!("sounds: could not open {}: {e}", path.display());
-                None
+                Err(e)
             }
         }
     }
@@ -183,21 +193,65 @@ impl ClipSource for PackedClips {
             self.cache.insert(key.to_string(), sealed);
         }
         let sealed = self.cache.get(key)?.as_ref()?;
-        Some(Arc::from(self.pack.unseal(sealed)))
+        match self.pack.unseal(sealed) {
+            Ok(bytes) => Some(Arc::from(bytes)),
+            Err(e) => {
+                log::error!("sounds: {e}; it will not play");
+                self.cache.insert(key.to_string(), None);
+                None
+            }
+        }
     }
 }
 
-/// Where a game's sounds come from: the folder `<env_prefix>_SOUNDS` names,
-/// else a release's `sounds.pak` beside the executable, else the loose
-/// `sounds` folder [`LooseClips::discover`] finds.
-pub fn discover_clips(env_prefix: &str) -> Box<dyn ClipSource> {
-    if let Some(loose) = LooseClips::from_env(env_prefix) {
-        return Box::new(loose);
+/// What a packed build says when its `sounds.pak` is missing or damaged.
+pub const DAMAGED_PACK_NOTICE: &str = "This copy of the game's sounds is missing or damaged, \
+so only its built-in sounds will play. Reinstall the game to fix it.";
+
+/// Where a game's sounds come from, and what the player should hear if
+/// they are broken.
+pub struct Discovered {
+    pub clips: Box<dyn ClipSource>,
+    /// Set when a packed build's `sounds.pak` is missing or damaged.
+    pub notice: Option<String>,
+}
+
+/// Where a game's sounds come from. A build made by `hearken release` with
+/// a sound pack reads its `sounds.pak` beside the executable and nothing
+/// else: no `<env_prefix>_SOUNDS`, no loose `sounds` folder, so a player
+/// cannot swap the game's sounds. Every other build reads the folder
+/// `<env_prefix>_SOUNDS` names, else the loose `sounds` folder
+/// [`LooseClips::discover`] finds.
+pub fn discover_clips(env_prefix: &str) -> Discovered {
+    discover_clips_from(env_prefix, hearken_pack::build_key(), exe_dir().as_deref())
+}
+
+/// [`discover_clips`] with every input explicit, for tests.
+pub fn discover_clips_from(
+    env_prefix: &str,
+    pack_key: Option<[u8; 32]>,
+    exe_dir: Option<&Path>,
+) -> Discovered {
+    let Some(key) = pack_key else {
+        let clips: Box<dyn ClipSource> = match LooseClips::from_env(env_prefix) {
+            Some(loose) => Box::new(loose),
+            None => Box::new(LooseClips::beside(exe_dir)),
+        };
+        return Discovered {
+            clips,
+            notice: None,
+        };
+    };
+    match exe_dir.map(|dir| PackedClips::in_dir(dir, &key)) {
+        Some(Ok(packed)) => Discovered {
+            clips: Box::new(packed),
+            notice: None,
+        },
+        _ => Discovered {
+            clips: Box::new(LooseClips::none()),
+            notice: Some(DAMAGED_PACK_NOTICE.to_string()),
+        },
     }
-    if let Some(packed) = PackedClips::beside_game() {
-        return Box::new(packed);
-    }
-    Box::new(LooseClips::beside_game())
 }
 
 impl ClipSource for Box<dyn ClipSource> {

@@ -68,8 +68,10 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
             println!("Skipping {item}: it is not in the workspace.");
         }
     }
-    if project.pack && !packed {
+    if let (Some(key), false) = (&key, packed) {
+        // A packed build reads only its pack, so it still gets one.
         println!("Nothing to pack: the release includes no {SOUNDS} folder.");
+        pack(&stage.join(".nothing-to-pack"), &stage, key)?;
     }
     if cfg!(windows) {
         windows_runtime(&project.dir.join("target").join("release"), &stage)?;
