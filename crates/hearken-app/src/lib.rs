@@ -55,7 +55,7 @@ pub use hearken_synth as synth;
 pub use held_keys::HeldKeys;
 pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent, Key, Mods};
 #[cfg(feature = "online")]
-pub use online::{Connect, Online, OnlineConfig, OnlineError, Ticket};
+pub use online::{Connect, Online, OnlineConfig, OnlineError, Plan, Ticket};
 pub use paths::Paths;
 pub use run::{already_running_line, run};
 pub use screens::SettingsRow;

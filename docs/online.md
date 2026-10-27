@@ -243,6 +243,16 @@ site's business. User codes should use letters a voice does not blur (the
 library's alphabet leaves out O, 0, I, 1, L, S, 5, Z and 2), and the page
 should rate limit attempts.
 
+### Asking what to play
+
+`POST start?kind=<kind>`, with the bearer token and `{}`, for a kind whose
+handler hands out seeds. It answers
+`200 {"ok":true,"seed":"<decimal>","context":{...}}` plus any fields of the
+handler's own, `404 {"error":"unknown-kind"}` when the handler has no
+`start`, and `401` for an unknown token. `ctx.online.start(kind)` sends it;
+`Plan::from_answer` reads the answer. See "Choosing seeds" for why a game
+would ask instead of working the seed out itself.
+
 ### Sending a run
 
 `POST runs?kind=<kind>`, with `Authorization: Bearer <token>`,
@@ -298,10 +308,38 @@ const service = createService({
 export default { fetch: (request) => service.fetch(request) };
 ```
 
-A handler can also set `copies: "allow"` to accept a run another player
-already sent. The default refuses copies: one player cannot submit another's
-ghost as their own. A turn-based game where two players can honestly make
-the same moves from the same seed may want to allow them.
+A handler can also have `start({ kind, player })`, which answers
+`POST start` with the seed and context to play (see "Choosing seeds").
+
+By default a handler refuses a run file another player already sent for the
+same kind (`409 already-submitted`). That stops only a byte-for-byte copy:
+adding an input that changes nothing (a key let go that was never pressed)
+makes a different file with the same outcome. Binding runs to players is
+done with seeds, below. A handler that refuses nothing can set
+`copies: "allow"`, as a turn-based game where two players can honestly make
+the same moves from the same seed may want.
+
+### Choosing seeds
+
+The handler decides what a run must have started from, and how it does
+decides what a cheat can do:
+
+- **A seed anyone can compute** (a hash of the date, as Wicket's offline
+  challenges use): simple, and the game works offline. But anyone can work
+  out any day's course ahead of time and have a program find the perfect
+  run, and a run one player made can be resubmitted by another with a
+  harmless input added.
+- **A secret shared seed, revealed when its period begins**: the handler's
+  `start` returns HMAC(secret, "daily:<day>") and `expect` checks it. Every
+  player still plays the same course, and nobody can prepare for a day
+  before it starts. Copying a run within the day is still possible.
+- **A seed of the player's own**: `start` returns HMAC(secret,
+  "<kind>:<player id>:<period>"). A run made by anyone else started
+  somewhere else, so it can never pass as this player's. Players no longer
+  share a course, which suits personal bests and unlocks more than a
+  ranked board.
+
+`server/examples/handlers.js` has one kind of each.
 
 `accounts`, `runs` and `limiter` are small interfaces, so any storage
 works. `server/src/memory.js` implements all three in memory and says what
@@ -327,6 +365,18 @@ each method must guarantee; a real store mirrors it:
   the service on Node's own HTTP server; `rulesFromDir()` loads every
   module in a folder.
 
+The activation rate limit is per client address. By default that is the
+last `X-Forwarded-For` entry, the one the nearest proxy added; any earlier
+entry is whatever the client sent. Vercel and Netlify set the header
+themselves. On Cloudflare pass `clientKey: (r) =>
+r.headers.get("cf-connecting-ip")`, and behind a chain of proxies pass a
+`clientKey` that picks the hop you trust.
+
+A published module keeps accepting runs until it is taken out of the
+published list. To retire a build whose rules had a bug, unpublish its
+module; its players' runs are then refused as `unknown-build` until they
+update.
+
 A replay is usually milliseconds, but a long run costs more. `MAX_TICKS`
 bounds it; on Node, `workerReplay({ timeoutMs })` stops one that runs over.
 Hosts without worker threads (Cloudflare Workers) rely on the platform's own
@@ -338,10 +388,11 @@ CPU limit.
 |-------|--------|
 | Edit a result in a save or the request | Ignored: the server never reads a result from the game. |
 | Hand-craft a run file | Its outcome is whatever the inputs really produce: that is playing the game. |
-| Use a modified build | Its runs name a module the server never published and are refused; and the server replays with its own copy anyway. |
+| Use a modified build | The server replays with its own published copy of the rules, so the build's changes do nothing. A run naming an unpublished module is refused; a modified build can still name a published one, which is harmless for the same reason. |
 | Replay an old day's seed for today | The handler supplies the seed, not the run. |
+| Prepare a day's perfect run in advance | Stopped when the handler's seed comes from a secret and `start` reveals it only when the day begins. |
 | Send the same run twice, or flood | Run IDs make repeats harmless; tokens are rate limited. |
-| Submit another player's run (a downloaded ghost) | Refused as `already-submitted` unless the handler allows copies. |
+| Submit another player's run | Stopped when each player is given a seed of their own. With a shared seed, a byte-for-byte copy is refused, but a copy with a harmless input added is not. |
 | A run that takes forever to replay | Refused above `MAX_TICKS`; stopped by the time limit on Node. |
 
 Accepted limits, which no replay can close:
@@ -350,6 +401,11 @@ Accepted limits, which no replay can close:
   result, not that a person typed them. Input timing checks in a handler,
   reports and moderation are the answer for a small community.
 - **Shared accounts.** An account policy matter.
-- **A run made by someone else and sent first.** The first to send a run
-  owns it; a handler that needs more can bind a run to a player before it is
-  played, by mixing a server-issued value into the seed.
+- **Copied runs on a shared seed.** Nothing in a run proves who played it.
+  When every player gets the same seed, a player can send another's run
+  (with a harmless input added) and tie their score. Seeds of each player's
+  own close this, at the cost of a shared course.
+- **Phished codes.** An attacker could talk a player into entering the
+  attacker's connect code, which connects the player's account to the
+  attacker's computer. This is the nature of code sign-in, as on a TV; the
+  site's connect page should say which game is asking.

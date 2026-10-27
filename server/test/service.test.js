@@ -235,3 +235,58 @@ test("a slow verification is stopped", { skip }, async () => {
   });
   assert.deepEqual(roomy.outcome, fixtures[0].outcome);
 });
+
+test("start hands out the handler's seed, and the run must use it", { skip }, async () => {
+  const f = fixtures[0];
+  const { service, accounts, build } = await setup({
+    mine: {
+      start: ({ player }) => ({ seed: player.id === "p1" ? f.seed : "7", context: f.context }),
+      expect: ({ player }) => ({ rules: "coin-dash", seed: player.id === "p1" ? f.seed : "7", context: f.context }),
+      accept: ({ verified }) => verified.outcome,
+    },
+  });
+  const ada = await accounts.tokenFor("Ada");
+  const bo = await accounts.tokenFor("Bo");
+  const start = (token) =>
+    service.fetch(
+      new Request(`${base}/start?kind=mine`, { method: "POST", headers: { authorization: `Bearer ${token}` } }),
+    );
+  assert.deepEqual(await (await start(ada)).json(), { ok: true, seed: f.seed, context: f.context });
+  assert.equal((await (await start(bo)).json()).seed, "7");
+  // A run on Ada's seed is no use to Bo, even sent first: it is not his.
+  const copied = await submit(service, "mine", bo, runFile(f, build));
+  assert.equal((await copied.json()).error, "wrong-seed");
+  assert.equal((await submit(service, "mine", ada, runFile(f, build))).status, 200);
+  assert.equal((await start("x".repeat(40))).status, 401);
+  const none = await service.fetch(
+    new Request(`${base}/start?kind=practice`, { method: "POST", headers: { authorization: `Bearer ${ada}` } }),
+  );
+  assert.equal(none.status, 404);
+});
+
+test("routes answer only under the base path", { skip }, async () => {
+  const { service, accounts, build } = await setup({ practice });
+  const token = await accounts.tokenFor("Ada");
+  const file = runFile(fixtures[0], build);
+  for (const url of ["https://example.test/runs?kind=practice", "https://example.test/api/games/coinruns?kind=practice"]) {
+    const res = await service.fetch(
+      new Request(url, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: file }),
+    );
+    assert.equal(res.status, 404, url);
+  }
+});
+
+test("the activation limit counts the address the nearest proxy saw", { skip }, async () => {
+  const { service } = await setup({ practice }, { service: { limits: { activationsPerMinute: 2 } } });
+  const statuses = [];
+  for (let i = 0; i < 3; i++) {
+    const res = await service.fetch(
+      new Request(`${base}/activate/start`, {
+        method: "POST",
+        headers: { "x-forwarded-for": `10.0.0.${i}, 203.0.113.9` },
+      }),
+    );
+    statuses.push(res.status);
+  }
+  assert.deepEqual(statuses, [200, 200, 429]);
+});

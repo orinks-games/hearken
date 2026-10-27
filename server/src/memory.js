@@ -93,6 +93,7 @@ export function memoryAccounts({
   verifyUrl = "http://localhost:8787/activate",
   ttlMs = 10 * 60_000,
   autoApprove = null,
+  maxPending = 10_000,
   now = () => Date.now(),
 } = {}) {
   const tokens = new Map(); // token hash -> player
@@ -111,11 +112,15 @@ export function memoryAccounts({
       return tokens.get(await sha256Hex(new TextEncoder().encode(token))) ?? null;
     },
     async startActivation() {
-      for (const [hash, row] of activations) {
-        if (now() > row.expires) {
-          activations.delete(hash);
-          byCode.delete(row.userCode);
+      if (activations.size >= maxPending) {
+        for (const [hash, row] of activations) {
+          if (now() > row.expires || row.collected) {
+            activations.delete(hash);
+            byCode.delete(row.userCode);
+          }
         }
+        // Still full: far more codes waiting than players connecting.
+        if (activations.size >= maxPending) throw new Error("too many codes waiting");
       }
       const deviceCode = randomHex(32);
       const hash = await sha256Hex(new TextEncoder().encode(deviceCode));

@@ -4,6 +4,7 @@
 // Netlify, a Cloudflare Worker, Deno, Bun, or Node through `./node.js`.
 //
 // Routes, relative to the base URL:
+//   POST start?kind=<kind>    what to play: the handler's seed and context
 //   POST runs?kind=<kind>     a run file; replies with the handler's result
 //   POST activate/start       begins connecting an account
 //   POST activate/poll        { device_code }: whether the player approved it
@@ -110,8 +111,11 @@ export function createService(options) {
     handlers,
     basePath = "",
     replay = async (module, run, expected) => module.verify(run, expected),
+    // The last X-Forwarded-For address is the one the nearest proxy saw;
+    // earlier ones are whatever the client sent. Hosts that name the client
+    // another way (Cloudflare's CF-Connecting-IP) should pass their own.
     clientKey = (request) =>
-      (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown",
+      (request.headers.get("x-forwarded-for") ?? "").split(",").pop().trim() || "unknown",
     log = (event) => console.warn("hearken-online", event),
   } = options;
   const limits = {
@@ -185,6 +189,32 @@ export function createService(options) {
     }
   }
 
+  // What a player should play for a kind, when its handler hands out seeds:
+  // a seed made from a secret and revealed only when its day begins, or one
+  // of the player's own, so a run another player made cannot be passed off.
+  async function begin(request, url) {
+    const kind = url.searchParams.get("kind") ?? "";
+    if (!KIND_PATTERN.test(kind) || !Object.hasOwn(handlers, kind) || typeof handlers[kind].start !== "function") {
+      return error(404, "unknown-kind");
+    }
+    const token = bearer(request);
+    const player = token ? await accounts.player(token) : null;
+    if (!player) return error(401, "signed-out");
+    if (!(await limiter.allow(`start:${player.id}`, limits.runsPerMinute, 60_000))) {
+      return error(429, "rate-limited", undefined, { "retry-after": "60" });
+    }
+    try {
+      const plan = await handlers[kind].start({ kind, player });
+      if (!plan || !/^(0|[1-9][0-9]{0,19})$/.test(String(plan.seed))) {
+        throw new Error(`the handler for "${kind}" started no seed`);
+      }
+      return json({ ok: true, ...plan, seed: String(plan.seed), context: plan.context ?? null });
+    } catch (e) {
+      if (e instanceof Refusal) return error(422, e.code, e.message);
+      throw e;
+    }
+  }
+
   async function start(request) {
     if (!(await limiter.allow(`activate:${clientKey(request)}`, limits.activationsPerMinute, 60_000))) {
       return error(429, "rate-limited", undefined, { "retry-after": "60" });
@@ -228,10 +258,14 @@ export function createService(options) {
   async function route(request) {
     const url = new URL(request.url);
     let path = url.pathname;
-    if (base && path.startsWith(base)) path = path.slice(base.length);
+    if (base) {
+      if (path !== base && !path.startsWith(`${base}/`)) return error(404, "not-found");
+      path = path.slice(base.length);
+    }
     const parts = path.split("/").filter(Boolean);
     const method = request.method.toUpperCase();
     if (method === "POST" && parts.length === 1 && parts[0] === "runs") return submit(request, url);
+    if (method === "POST" && parts.length === 1 && parts[0] === "start") return begin(request, url);
     if (method === "POST" && parts.length === 2 && parts[0] === "activate") {
       if (parts[1] === "start") return start(request);
       if (parts[1] === "poll") return poll(request);

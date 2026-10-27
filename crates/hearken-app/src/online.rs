@@ -140,6 +140,46 @@ impl Transport for HttpTransport {
     }
 }
 
+/// Which part of a successful answer a request hands back.
+enum Answer {
+    /// `result`: what the handler returned for a run.
+    Result,
+    /// The whole body: a start's seed and context.
+    Whole,
+}
+
+/// What the server says to play: the seed and context a run must start
+/// from, and anything else the handler added.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    pub seed: u64,
+    pub context: Value,
+    /// The whole answer, for fields of the game's own.
+    pub answer: Value,
+}
+
+impl Plan {
+    /// Reads a start's answer; `None` when it holds no seed.
+    pub fn from_answer(answer: &Value) -> Option<Plan> {
+        let seed = match &answer["seed"] {
+            Value::String(s) if s.len() <= 20 && s.bytes().all(|b| b.is_ascii_digit()) => {
+                s.parse().ok()?
+            }
+            _ => return None,
+        };
+        Some(Plan {
+            seed,
+            context: answer.get("context").cloned().unwrap_or(Value::Null),
+            answer: answer.clone(),
+        })
+    }
+
+    /// The context as the rules' own type.
+    pub fn context<C: serde::de::DeserializeOwned>(&self) -> Option<C> {
+        serde_json::from_value(self.context.clone()).ok()
+    }
+}
+
 /// A submitted run, for asking after its answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Ticket(u64);
@@ -392,28 +432,50 @@ impl Online {
             return Err(OnlineError::Busy);
         }
         let file = run.encode().map_err(|_| OnlineError::BadRun)?;
+        let url = config.endpoint(&format!("runs?kind={kind}"));
+        Ok(self.send(url, token, Body::Run(file), Answer::Result))
+    }
+
+    /// Asks the server what to play for `kind`, for a handler that hands
+    /// out seeds (a day's seed kept secret until the day begins, or one of
+    /// the player's own). The answer, through [`Online::result`], reads with
+    /// [`Plan::from_answer`].
+    pub fn start(&mut self, kind: &str) -> Result<Ticket, OnlineError> {
+        let config = self.config.clone().ok_or(OnlineError::NotOffered)?;
+        if !valid_kind(kind) {
+            return Err(OnlineError::BadKind);
+        }
+        let token = self.token.clone().ok_or(OnlineError::NotConnected)?;
+        if self.in_flight.len() >= MAX_IN_FLIGHT {
+            return Err(OnlineError::Busy);
+        }
+        let url = config.endpoint(&format!("start?kind={kind}"));
+        Ok(self.send(url, token, Body::Json(json!({})), Answer::Whole))
+    }
+
+    fn send(&mut self, url: String, token: Secret, body: Body, answer: Answer) -> Ticket {
         let ticket = Ticket(self.next);
         self.next += 1;
         self.in_flight.insert(ticket);
-        let url = config.endpoint(&format!("runs?kind={kind}"));
         let transport = self.transport.clone();
         let tx = self.tx.clone();
         let generation = self.token_gen;
         std::thread::spawn(move || {
-            let answer = match transport.post(&url, Some(&token.0), Body::Run(file)) {
+            let answer = match transport.post(&url, Some(&token.0), body) {
                 Err(e) => {
-                    log::info!("online: could not send a run: {e}");
+                    log::info!("online: no answer from the server: {e}");
                     Err(OnlineError::Offline)
                 }
-                Ok(reply) if reply.status == 200 && reply.body["ok"] == true => {
-                    Ok(reply.body.get("result").cloned().unwrap_or(Value::Null))
-                }
+                Ok(reply) if reply.status == 200 && reply.body["ok"] == true => Ok(match answer {
+                    Answer::Result => reply.body.get("result").cloned().unwrap_or(Value::Null),
+                    Answer::Whole => reply.body,
+                }),
                 Ok(reply) if reply.status == 200 => Err(OnlineError::Unavailable),
                 Ok(reply) => Err(OnlineError::from_reply(&reply)),
             };
             let _ = tx.send(Msg::Done(ticket, generation, answer));
         });
-        Ok(ticket)
+        ticket
     }
 
     /// Whether `ticket`'s run is still on its way.
@@ -880,6 +942,29 @@ pub(crate) mod tests {
         );
         assert_eq!(online.saved().token, Some(Secret("n".repeat(40))));
         assert!(!format!("{:?}", online.saved()).contains(&"n".repeat(40)));
+    }
+
+    #[test]
+    fn a_start_hands_back_the_seed_to_play() {
+        let transport = Scripted::answering(vec![reply(
+            200,
+            json!({ "ok": true, "seed": "18446744073709551615", "context": { "seconds": 60 } }),
+        )]);
+        let mut online = Online::new(config(), &connected());
+        online.set_transport(transport.clone());
+        let ticket = online.start("daily").unwrap();
+        let plan = Plan::from_answer(&wait(&mut online, ticket).unwrap()).unwrap();
+        assert_eq!(plan.seed, u64::MAX);
+        assert_eq!(plan.context, json!({ "seconds": 60 }));
+        assert_eq!(
+            transport.sent.lock().unwrap()[0].0,
+            "https://example.test/api/games/g/start?kind=daily"
+        );
+        assert_eq!(Plan::from_answer(&json!({ "seed": 5 })), None);
+        assert_eq!(
+            Plan::from_answer(&json!({ "seed": "99999999999999999999" })),
+            None
+        );
     }
 
     #[test]
