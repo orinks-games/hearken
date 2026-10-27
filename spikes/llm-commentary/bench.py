@@ -172,7 +172,7 @@ def chat(url, model_name, facts, seed, no_think):
         url + "/v1/chat/completions", data=data, headers={"Content-Type": "application/json"}
     )
     t0 = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=300) as r:
+    with urllib.request.urlopen(req, timeout=90) as r:
         out = json.loads(r.read().decode())
     wall = time.perf_counter() - t0
     text = out["choices"][0]["message"].get("content") or ""
@@ -227,9 +227,19 @@ def bench_model(server, model_path, threads, port):
         log(f"loaded in {results['load_s']} s ({size_mb} MB)")
         # One warm-up so the first measured line is not paying one-off costs.
         chat(url, name, SCENARIOS[0]["facts"], 1, no_think)
+        slow = 0
         for sc in SCENARIOS:
             for v in range(VARIANTS):
-                r = chat(url, name, sc["facts"], 100 + v, no_think)
+                try:
+                    r = chat(url, name, sc["facts"], 100 + v, no_think)
+                except (urllib.error.URLError, TimeoutError, OSError) as e:
+                    # A model that cannot answer in 90 s is not a candidate;
+                    # after two such lines, move on and say so.
+                    slow += 1
+                    log(f"[{sc['key']}#{v}] no answer in 90 s ({e})")
+                    if slow >= 2:
+                        raise RuntimeError("two lines timed out, model skipped") from e
+                    continue
                 r["scenario"] = sc["key"]
                 r["variant"] = v
                 r["reject"] = judge(r["text"], sc["facts"])

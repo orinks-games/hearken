@@ -65,7 +65,14 @@ fn main() -> Result<()> {
 
     let backend = LlamaBackend::init()?;
     let t = Instant::now();
-    let model = LlamaModel::load_from_file(&backend, &path, &LlamaModelParams::default())
+    // On Apple silicon ggml's Metal backend is built in, and a model left
+    // on the CPU with Metal present splits every graph in two; the whole
+    // model goes to the GPU there, as llama.cpp's own tools do. Elsewhere
+    // this is a CPU measurement.
+    let model_params = LlamaModelParams::default();
+    #[cfg(target_os = "macos")]
+    let model_params = model_params.with_n_gpu_layers(1000);
+    let model = LlamaModel::load_from_file(&backend, &path, &model_params)
         .with_context(|| format!("loading {path}"))?;
     println!("loaded {path} in {:.2} s, {threads} threads", t.elapsed().as_secs_f64());
 
@@ -106,6 +113,8 @@ fn main() -> Result<()> {
                 break;
             }
             let bytes = model.vocab().token_to_piece(token, true, None);
+            // encoding_rs writes only into spare capacity; reserve it first.
+            text.reserve(decoder.max_utf8_buffer_length(bytes.len()).unwrap_or(bytes.len() * 3 + 4));
             let _ = decoder.decode_to_string(&bytes, &mut text, false);
             batch.clear();
             batch.add(token, n_cur, &[0], true)?;

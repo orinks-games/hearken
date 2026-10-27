@@ -15,7 +15,38 @@ model fits comfortably inside the game.
 
 ## Short answer
 
-RESULT_SUMMARY
+**A model fits comfortably; a model this small does not write well enough
+to replace the pools, and it is not worth putting in the game before the
+port ships.** Measured on GitHub's 4-vCPU Windows and Linux runners:
+
+- **Cost is not the problem.** Qwen3-0.6B (Apache-2.0, a 397 MB file)
+  writes a line in 0.3 to 0.6 s with four threads and under 1 s with two;
+  Qwen3-1.7B (1.1 GB) in 0.5 to 1 s once its prompt prefix is cached, 1.5
+  to 2.3 s when it is not. Loading takes about a second. Resident memory is
+  roughly the file size plus 300 MB. The Rust binding (`llama-cpp-2`)
+  builds llama.cpp from source on Windows, Linux and macOS in 3 to 6
+  minutes and speaks on all three.
+- **Writing is the problem.** With a bare prompt every model under 1B read
+  the score back or echoed Dana. With the angle stated and four example
+  remarks in Big M's voice, the 0.6B model mostly repeated an example
+  verbatim, the 0.8B model wrote fluent nonsense ("You are the Skyliners,
+  the Skyliners are the Skyliners"), and only the 1.2B to 1.7B models wrote
+  lines a listener would accept: "They went from trailing by nine to
+  leading back", "Shake it off. The Skyliners missed 6 of their last 8
+  shots and were stripped twice." Those are correct and specific, and
+  still plainer than the written pools; and one in six copies an example
+  or slips a fact.
+- **Where it would earn its place:** the halftime and postgame recaps and
+  the shows, where a line about *this* game's story matters and a second
+  of latency is hidden. Not play-by-play, and not in-possession colour,
+  where the pools are instant, better written and already varied.
+
+Recommendation: ship Fastbreak with the pooled commentary (PR #9) and add a
+model-written layer afterwards as an optional download, breaks and shows
+only, on Qwen3-1.7B Q4_K_M through `llama-cpp-2`, with the pools as the
+fallback. Tasks at the end. If Orinks wants fresh lines during play as
+well, that is a 4B model and a 2.5 GB download, which is no longer
+"comfortable" and is the point at which to stop.
 
 ## What the game needs from a model
 
@@ -91,7 +122,107 @@ Windows and Linux, Apple silicon on macOS). Two jobs:
   release mode on each OS, speaking the same lines through Qwen3-0.6B
   Q4_K_M, so the build time and the per-line cost from Rust are known.
 
-RESULTS
+### Results
+
+Runs: round 1 (bare facts prompt, two lines per situation)
+[40422318332](https://github.com/orinks-games/hearken/actions/runs/40422318332);
+round 2 (angle plus four examples, three lines per situation, the filter)
+[40423289770](https://github.com/orinks-games/hearken/actions/runs/40423289770).
+Runners: `windows-2025` and `ubuntu-24.04` (4 vCPUs; the Linux runner
+reported an AMD EPYC 9V45), `macos-15` (Apple silicon, 3 cores). A wall
+time is one line end to end through `llama-server`, prompt and
+generation, with the previous request's prompt prefix cached when the
+server could reuse it. Round 2's Linux runner was noticeably slower than
+round 1's (prompt processing a third of the speed on every model), so
+compare within a table, not across.
+
+**Speed, round 2, 4 threads.** Mean, median and worst wall time per line;
+"keeps" is how many of 18 lines the game's filter would have accepted.
+
+| Model | File | Windows mean / median / max | Windows keeps | Linux mean / median / max | Linux keeps |
+|---|---|---|---|---|---|
+| Qwen3-0.6B Q4_K_M | 397 MB | 0.44 / 0.38 / 0.86 s | 14 | 0.52 / 0.48 / 1.18 s | 14 |
+| Qwen3-0.6B Q8_0 | 639 MB | 0.63 / 0.60 / 1.29 s | 12 | 0.55 / 0.48 / 1.07 s | 12 |
+| Qwen3.5-0.8B Q4_0 | 563 MB | 0.49 / 0.39 / 1.01 s | 18 | 0.67 / 0.55 / 1.48 s | 18 |
+| Qwen3.5-0.8B Q8_0 | 834 MB | 0.66 / 0.56 / 1.21 s | 16 | 0.68 / 0.52 / 1.43 s | 16 |
+| **Qwen3-1.7B Q4_K_M** | 1107 MB | 0.90 / 0.73 / 1.52 s | 15 | 1.02 / 0.73 / 2.28 s | 18 |
+| LFM2.5-1.2B Q4_K_M | 731 MB | 0.90 / 0.38 / 2.39 s | 18 | 1.46 / 0.43 / 4.36 s | 18 |
+| LFM2.5-350M Q8_0 | 379 MB | 0.41 / 0.09 / 1.29 s | 2 | 0.51 / 0.09 / 1.61 s | 2 |
+| LFM2-700M Q4_K_M | 469 MB | 0.82 / 0.76 / 1.14 s | 1 | 0.97 / 0.78 / 1.56 s | 0 |
+| LFM2-350M Q8_0 | 379 MB | 0.65 / 0.60 / 1.00 s | 0 | 0.67 / 0.59 / 1.05 s | 1 |
+| Qwen2.5-0.5B Q8_0 | 676 MB | 0.77 / 0.81 / 1.34 s | 3 | 0.78 / 0.82 / 1.32 s | 5 |
+| SmolLM2-360M Q8_0 | 386 MB | 0.54 / 0.49 / 1.12 s | 4 | 0.54 / 0.51 / 1.26 s | 4 |
+| Gemma 3 270M Q8_0 (reference) | 292 MB | 0.43 / 0.38 / 0.81 s | 10 | 0.44 / 0.45 / 0.91 s | 10 |
+
+Generation speed with four threads, round 1 on Linux (the faster runner):
+Qwen3-0.6B Q4 79 tokens/s, Qwen3.5-0.8B Q4 57, Qwen3-1.7B Q4 34,
+LFM2.5-1.2B Q4 51; prompt processing 95 to 260 tokens/s. On Windows
+about two thirds of that. A line is 12 to 25 tokens.
+
+**Two threads, Linux, round 2** (a weak laptop): Qwen3-0.6B Q4 0.53 s mean
+and 0.90 s worst; Qwen3.5-0.8B Q4 0.76 s and 1.52 s. The small models
+barely notice losing half the cores.
+
+**The prefix cache matters.** Within one situation the second and third
+lines cost a third of the first (Qwen3-1.7B on Windows: 1.52 s, then
+0.70 s and 0.64 s), because `llama-server` kept the processed system
+prompt and only the new facts ran. A model whose prompt the game keeps
+resident pays the full prompt (300 tokens, 1.5 to 2.3 s on 1.7B) only when
+the prefix changes. LFM2's first lines are 2 to 4 s and the rest 0.3 s:
+its hybrid convolution layers cannot resume a partial prefix, so a
+changed prompt is a full reprocess. Qwen's attention layers resume.
+
+**The Rust binding (round 2).** `llama-cpp-2` 0.1.160 with no default
+features built from source in about 3.5 min on Linux and macOS and 5.5 min
+on Windows (cold; seconds with the cache), with CMake and the platform
+compiler only. It ran Qwen3-0.6B Q4 at 39 generation tokens/s on Linux
+and 45 on Windows, each line recomputing the full prompt from a fresh
+context (1.3 s and 1.65 s mean per line). On macOS the first run split the
+graph between Metal and CPU 397 ways and crawled at 5 tokens/s: ggml's
+Metal backend is compiled in on Apple and a model left on the CPU still
+hands it pieces. Round 3 puts the whole model on Metal there, which is
+what llama.cpp's own tools do. The binding's `token_to_piece` and
+`encoding_rs` need the output string's capacity reserved first; round 2
+printed empty text for that reason, round 3 fixes it.
+
+**macOS:** the `macos-15` bench job did not finish in rounds 1 and 2 (the Windows and Linux jobs took 3 minutes; the macOS one was still on its first pass after 13 and was cancelled by the next push). Round 3 times the four models that matter there with a per-line timeout; its numbers go here when it lands. Apple silicon runs the prebuilt `llama-server` on Metal, so it is the fast case rather than the one that decides anything.
+
+### What the lines read like
+
+Round 2, the angle-led prompt. Full output is in each run's job log and
+`report-*.md` artifact.
+
+- **Qwen3-0.6B Q4** passed the filter 14 of 18 times and still failed:
+  twelve of its lines were "I love the effort, Dana. That one's in the
+  books", the last example with one word changed. The filter catches only
+  verbatim copies. Too small to be given examples.
+- **Qwen3.5-0.8B Q4** passed every time and was fluent and empty: "It is
+  late for the Skyliners", "You are the Skyliners, the Skyliners are the
+  Skyliners", "It's the first time the Skyliners have stolen the ball"
+  (not in the facts). The best 0.8B lines were restatements.
+- **Qwen3-1.7B Q4** was correct and specific: "They went from trailing by
+  nine to leading back", "Shake it off. The Skyliners missed 6 of their
+  last 8 shots and were stripped twice", "You've got to be kidding. The
+  Skyliners are down 19 points." It leans on the examples' openers
+  ("Shake it off" nine times across the two runners, three verbatim copies
+  of the last example at the final buzzer) and produced one nonsense
+  variant ("Shave it off"). Repetition penalties, more and rotating
+  examples, and a list of the last lines said would fix most of it.
+- **LFM2.5-1.2B Q4** had the best voice ("That's a big swing for the
+  Skyliners, Dana", "You got back in the game with a comeback push!") and
+  the worst grip on who is who: it told the Cascades to "keep it up" at
+  halftime, had the Skyliners "closing the gap" after they won, and called
+  a blowout "the game's turning". Its licence and prefix-cache behaviour
+  count against it as well.
+- **Everything under 0.6B** (SmolLM2, LFM2 350M and 700M, Qwen2.5-0.5B,
+  Gemma 270M) echoed, hallucinated players and steals, or answered as a
+  chatbot ("Okay, I'm ready to be your commentator!"). Out.
+
+Against the pools: "Somebody call a timeout, the Skyliners have hit five
+straight!" or "They were down 8, Dana. Not anymore!" are better lines
+than anything the 1.7B model wrote, and they cost nothing. What the model
+adds is a sentence the pools cannot have written in advance: the two
+numbers that explain the half, the run that decided the game.
 
 ## How it would fit the game
 
@@ -170,8 +301,94 @@ match event ──► Booth::hear ──► Dana's pooled line ──► Voice (
 
 ## Recommendation
 
-RECOMMENDATION
+1. **Ship T9 as it is.** The pooled commentary with Kokoro is the
+   better product today and it is done. Fresh lines are a layer on top, not
+   a replacement.
+2. **After T10, add a model-written layer for breaks and shows only**, as
+   the optional "Fresh commentary" download: Qwen3-1.7B Q4_K_M (1.1 GB,
+   Apache-2.0) through `llama-cpp-2` in a new optional `hearken-writer`
+   crate, with the pooled line as the fallback for every written line and
+   the pools' phrasings as the prompt's examples. Where it speaks: Big M's
+   quarter-break, halftime and final-buzzer remarks, the Halftime Report's
+   observation and the Postgame Wrap. Where it does not: play-by-play and
+   in-possession colour.
+3. **Do not pick a sub-1B model to save the download.** 0.6B and 0.8B were
+   fast and not worth hearing. If 1.1 GB is too much, the right answer is
+   to not do this, not to go smaller.
+4. **Keep the door open for in-game colour.** The service design below
+   supports it (pre-write the likely next cue at possession start, as the
+   voice is primed), and a player with a strong machine could turn it on.
+   It should wait until the breaks-only layer has been heard in play.
+
+Model and runtime facts to pin: `unsloth/Qwen3-1.7B-GGUF`
+`Qwen3-1.7B-Q4_K_M.gguf` (Apache-2.0, 1.11 GB, SHA-256 to be recorded at
+install time as the voices are), `llama-cpp-2 = "0.1.160"`,
+`default-features = false`, `n_gpu_layers` all on macOS, CPU elsewhere,
+two to four threads, a 1024-token context, thinking off through the ChatML
+prefill, sampling `temp 0.7, top_p 0.9, repeat penalty 1.1` plus the filter.
 
 ## Proposed execution tasks (Opus 5.5, medium)
 
-TASKS
+Three tasks, after T10. Each is a PR with headless tests; the model
+runs only in a CI job, as the voices do. Estimated at Opus 5.5 medium.
+
+### W1. Hearken: `hearken-writer` crate (spike to service)
+
+- New optional crate behind a `writer` feature on the facade, modelled on
+  `hearken-voice`: `Writer<G>` with a worker thread that owns the model
+  and a resident system-prompt prefix (one context, `memory_seq_rm` after
+  the prefix between lines), `Brief` (persona id, examples, facts, angle,
+  the last few lines said), `write(brief) -> Ticket`, `poll` from the game
+  loop, a deadline per ticket, `FakeWriter` for `Headless`, the output
+  filter (one or two sentences, 4 to 25 words, no quotes, label, markup
+  or emoji, no digit outside the facts, no echo of the play-by-play line,
+  no verbatim example), and a `reject` log target like the voice's
+  transcript.
+- Install path reusing the voice installer: a pinned SHA-256 download of
+  one GGUF into the data folder (`writer/` beside `voices/`), a Settings
+  row with the size, the Confirm screen; `find_writer` like `find_voices`.
+- Build: `llama-cpp-2` with no default features, Metal on macOS, the
+  `cmake` crate; document `LLAMA_BUILD_SHARED_LIBS` off and the Windows
+  CRT choice. Record the cold build time per platform in the note.
+- CI: a `writer` job (Linux on PRs, three OSs on dispatch) that builds the
+  feature, installs the pinned model, writes six briefs and asserts every
+  line passes the filter or falls back, with the lines in the job summary.
+- Accept: `cargo test -p hearken-writer` with `FakeWriter`; the CI job
+  green on three platforms; the note updated with real-binding timings
+  (prompt prefix resident, lines of 15 to 25 tokens) on each.
+
+### W2. Fastbreak: Big M writes the breaks and the shows
+
+- `fastbreak-core::commentary`: a `Brief` for each cue the writer may
+  take (`color.break_*`, `color.final_*`, `halftime_observation`, the
+  Halftime Report and Postgame Wrap segments) rendered from `Scene` plus
+  what the booth already tracks (run, deepest deficit, lead changes,
+  largest lead) and a per-game story log (half scores, the longest run,
+  who led when), so the recap has something to say. The pooled line stays
+  the `Call`; the brief rides beside it.
+- The court, break screen and shows: when the writer is installed and the
+  setting allows, send the brief at the moment the cue lands (breaks) or
+  on entering the screen (shows), `prime` the pooled line regardless, and
+  speak whichever is ready when Dana's line finishes; drop the written
+  line if the pooled one has already started.
+- Settings: "Fresh commentary: off / breaks and shows / also during play",
+  default "breaks and shows" once installed, with the download row and the
+  status sentence. Help and credits (model licence, Apache-2.0 notice).
+- Accept: headless tests with `FakeWriter` showing each break and show cue
+  produces one brief, the pooled line plays when the writer is slow or
+  rejects, and "off" leaves the game byte-identical to T9; a CI `writer`
+  job speaking three written recaps through Kokoro; an agent-server
+  playtest of one full game with the layer on, the lines pasted into the
+  PR for Orinks to read.
+
+### W3. Fastbreak: in-game colour on a strong machine (optional, after W2 is heard)
+
+- The "also during play" setting: at possession start, `Booth::upcoming`
+  names the one or two colour cues that could land next (run continues,
+  lead changes, double digits) and the writer pre-writes them with the
+  voice primed behind; if the cue lands, the written line plays, else it
+  is discarded. A rolling deadline miss counter drops the setting back to
+  breaks only and says so once.
+- Accept: headless tests for the speculation and the fallback; a playtest
+  with CPU time per possession recorded; the note updated with the
+  measured share of colour lines that were written rather than pooled.

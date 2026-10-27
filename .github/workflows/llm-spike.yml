@@ -72,17 +72,25 @@ jobs:
       - name: Fetch the models
         shell: bash
         run: python spikes/llm-commentary/fetch.py --out models --only "${{ github.event.inputs.models }}"
+      # macOS runners are few and slow to schedule, and round 2's job did
+      # not finish in 13 minutes; it times only the four models that matter.
       - name: Time every model (all cores)
         shell: bash
+        timeout-minutes: 30
         run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            set -- models/qwen3-0.6b-q4.gguf models/qwen3.5-0.8b-q4.gguf models/qwen3-1.7b-q4.gguf models/lfm2.5-1.2b-q4.gguf
+          else
+            set -- models/*.gguf
+          fi
           python spikes/llm-commentary/bench.py --server llama --out results \
-            --host-label "${{ matrix.os }}" --threads "$(python -c 'import os;print(os.cpu_count())')" \
-            models/*.gguf
+            --host-label "${{ matrix.os }}" --threads "$(python -c 'import os;print(os.cpu_count())')" "$@"
       # A weaker PC: half the runner's cores, the two smallest and the
       # likeliest pick.
       - name: Time the small ones on two threads
         if: runner.os == 'Linux'
         shell: bash
+        timeout-minutes: 20
         run: |
           python spikes/llm-commentary/bench.py --server llama --out results \
             --host-label "${{ matrix.os }}-2threads" --threads 2 \
