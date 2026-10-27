@@ -345,6 +345,12 @@ const service = createService({
 export default { fetch: (request) => service.fetch(request) };
 ```
 
+Make `accept` safe to run twice for one run: if storing its reply fails
+(the database is briefly down), the claim is kept, but it frees after a
+couple of minutes like any claim with no reply, and the run could be sent
+again. Keeping a player's best result, or keying what it stores by
+`verified.run_id`, makes a second count harmless.
+
 A handler can also have `start({ kind, player })`, which answers
 `POST start` with the seed and context to play (see "Choosing seeds").
 

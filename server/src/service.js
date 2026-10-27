@@ -131,7 +131,9 @@ export function createService(options) {
   const limits = {
     runsPerMinute: 20,
     activationsPerMinute: 10,
-    pollsPerMinute: 30,
+    // A game polls every 5 seconds; this leaves room for several players
+    // connecting behind one address.
+    pollsPerMinute: 120,
     ...options.limits,
   };
   for (const kind of Object.keys(handlers)) {
@@ -196,7 +198,13 @@ export function createService(options) {
         return error(422, verified.error);
       }
       const reply = await handler.accept({ kind, player, verified, run: info, expected });
-      await runs.complete(key, claim, reply ?? null);
+      try {
+        await runs.complete(key, claim, reply ?? null);
+      } catch (e) {
+        // The handler has counted the run, so the claim is kept rather than
+        // released: releasing it would let the same run count again.
+        log({ error: String(e?.stack ?? e), note: "the run counted but its reply was not stored" });
+      }
       return json({ ok: true, run_id: runId, result: reply ?? null });
     } catch (e) {
       await runs.release(key, claim);
@@ -249,7 +257,9 @@ export function createService(options) {
     if (typeof code !== "string" || !/^[0-9a-f]{64}$/.test(code)) {
       return error(400, "bad-request");
     }
-    if (!(await limiter.allow(`poll:${code}`, limits.pollsPerMinute, 60_000))) {
+    // Counted by address, not by device code: a caller picks the code, and
+    // a count per code is a stored row per made-up code.
+    if (!(await limiter.allow(`poll:${clientKey(request)}`, limits.pollsPerMinute, 60_000))) {
       return error(429, "rate-limited", undefined, { "retry-after": "10" });
     }
     const result = await accounts.pollActivation(code);

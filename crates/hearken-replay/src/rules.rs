@@ -270,6 +270,14 @@ pub fn replay<R: Replayable>(run: &Run) -> Result<R, VerifyError> {
     }
     let context: R::Context =
         serde_json::from_str(&run.context).map_err(|_| VerifyError::BadContext)?;
+    // The context must be exactly what these rules write for it, as a
+    // Recording does: a field the rules do not read would otherwise make a
+    // second file that plays the same run, and get past a server's copy
+    // check.
+    let written = serde_json::to_value(&context).map_err(|_| VerifyError::BadContext)?;
+    if canonical_json(&written) != run.context {
+        return Err(VerifyError::BadContext);
+    }
     // Every input is checked before the first step, so a bad one late in a
     // long run costs nothing to refuse.
     let mut decoded = Vec::with_capacity(run.inputs.len());
@@ -460,6 +468,11 @@ mod tests {
             verify::<Once>(&run, &expect(extra)),
             Err(VerifyError::WrongContext)
         );
+        // A field the rules do not read makes another file of the same run.
+        assert!(replay::<Once>(&run).is_ok());
+        let mut padded = run.clone();
+        padded.context = r#"{"extra":1,"mode":null,"slow":0.10000000149011612,"speed":1.0}"#.into();
+        assert_eq!(replay::<Once>(&padded).err(), Some(VerifyError::BadContext));
         let junk = serde_json::json!({ "speed": "fast" });
         assert_eq!(
             verify::<Once>(&run, &expect(junk)),
