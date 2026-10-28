@@ -1,6 +1,17 @@
 # Sealed release data
 
-Date: 2026-10-27. Status: proposed; this file is for review.
+Date: 2026-10-27. Status: shipped in #23, then changed on 2026-10-28.
+
+**Update, 2026-10-28:** the ledger is gone. Players asked what the
+`hearken-seal.ledger` file in their saves folder was, so the data folder
+now holds only the game's own files. Sealed files are format version 2:
+no folder id and no generation, just the file's name bound in. That drops
+the ledger's protections: an older copy of a file, a deleted file, or a
+file copied from another install now reads as good, the same way a whole
+restored or copied folder already did. Editing, swapping one file for
+another, other keys, and (with witnesses) plain files over sealed ones are
+still caught. Trusted results belong to the server replay planned for
+online play. The ledger sections below are kept as history.
 
 ## Goal
 

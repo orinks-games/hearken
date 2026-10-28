@@ -4,11 +4,10 @@
 //! their computer, where anyone with a text editor could otherwise change
 //! them. A [`Vault`] reads and writes those files through a seal: in a
 //! release built with the game's secret, every file is encrypted and
-//! authenticated (XChaCha20-Poly1305) with its own name bound in, and a
-//! sealed ledger in the same folder remembers how many times each one has
-//! been written. A file that was edited, swapped for another, restored
-//! from an older copy, deleted, or replaced by a hand-written plain one
-//! reads as [`Opened::Tampered`], never as good data.
+//! authenticated (XChaCha20-Poly1305) with its own name bound in. A file
+//! that was edited, swapped for another of the game's files, or forged
+//! reads as [`Opened::Tampered`], never as good data. The folder holds the
+//! game's own files and nothing else.
 //!
 //! The engine only reports what it found. Each game decides what to do
 //! with a tampered file, and with a plain file from an older version
@@ -19,49 +18,41 @@
 //! developer can look at and change them. Such a build reports a sealed
 //! file as [`Opened::Locked`] and will not overwrite it.
 //!
-//! Every file is also sealed with its folder's random id, kept in the
-//! ledger, so a file from another install never authenticates here, even
-//! when its generation lines up. A file the game removes or sets aside stays
-//! in the ledger as gone, so a plain file or an old copy in its place is
-//! still caught. And a vault given witnesses ([`Vault::with_witnesses`])
-//! leaves a marker outside the folder, so a wiped or fresh folder does not
-//! accept a hand-written plain file as a legacy one.
+//! A vault given witnesses ([`Vault::with_witnesses`]) leaves a marker
+//! outside the folder once it seals, so a hand-written plain file is no
+//! longer accepted as a legacy one.
 //!
 //! What this cannot do: the key is inside the program the player runs.
 //! Someone willing to take that program apart can recover it and forge any
-//! file. Restoring a whole data folder, ledger included, from one earlier
-//! moment also cannot be told apart from never having played since, and a
-//! whole folder copied from another player's install works, since every
-//! copy of a game shares its key. While a game imports legacy files, a
-//! player who also clears the witnesses (or runs the game as a new user,
-//! on a new computer, or with the platform folders moved) can get a plain
-//! file imported, and can then copy that sealed folder over a real one.
-//! A ledger kept at one generation also accepts any file written one
-//! generation later (the crash repair), which lets a player choose among
-//! results they really played, as a full-folder snapshot already would.
-//! This raises cheating from "open a text editor" to
-//! "reverse engineer the program"; no offline scheme can do more.
+//! file. Each file stands alone, so putting back an older copy of a file
+//! (or of the whole folder), deleting one, or copying one from another
+//! player's install cannot be told apart from real play, since every copy
+//! of a game shares its key. While a game imports legacy files, a player
+//! who also clears the witnesses (or runs the game as a new user, on a new
+//! computer, or with the platform folders moved) can get a plain file
+//! imported. This raises cheating from "open a text editor" to "reverse
+//! engineer the program"; no offline scheme can do more. Results that must
+//! be trusted belong on a server that checks them.
 //!
 //! The file format:
 //!
 //! ```text
 //! offset size
 //! 0      4    "HKSL"
-//! 4      1    version = 1
+//! 4      1    version = 2
 //! 5      3    reserved, zero
-//! 8      8    generation (u64 LE), 1 for the first write of a name in this folder
-//! 16     24   nonce (random)
-//! 40     ..   ciphertext of the file's bytes, then the 16-byte Poly1305 tag
+//! 8      24   nonce (random)
+//! 32     ..   ciphertext of the file's bytes, then the 16-byte Poly1305 tag
 //! ```
 //!
 //! The key is `HKDF-SHA256(salt = "hearken-seal", ikm = secret, info =
-//! "files v1")`, and the associated data is the 40-byte header, then
-//! `"hearken-seal/v1\0"`, then the folder's 16-byte id (zeros for the
-//! ledger itself and for witnesses), then the file's name.
+//! "files v1")`, and the associated data is the 32-byte header, then
+//! `"hearken-seal/v2\0"`, then the file's name. Version 1 files (with a
+//! folder id and a generation, kept by a separate ledger file) never shipped
+//! in a release and read as forged.
 
 mod format;
 mod key;
-mod ledger;
 mod name;
 mod vault;
 
@@ -70,9 +61,6 @@ pub use vault::{Opened, Tamper, Vault};
 
 /// The build variable `hearken release` passes the game's secret in.
 pub const KEY_VAR: &str = "HEARKEN_SEAL_KEY";
-
-/// The ledger's file name, reserved in every data folder.
-pub const LEDGER: &str = "hearken-seal.ledger";
 
 /// The key this build seals with: set by `hearken release` through
 /// `HEARKEN_SEAL_KEY`, and `None` in every other build. Setting the

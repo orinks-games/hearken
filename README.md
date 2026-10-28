@@ -339,10 +339,8 @@ ctx.vault.write("progress.json", &bytes)?;
 ```
 
 In a release, each file is encrypted and authenticated with its name bound
-in, and a sealed ledger in the same folder remembers how often each was
-written. Each file is also bound to its folder, so a file from another
-player's install does not load. A file edited in any editor, copied over
-another, restored from an older copy, deleted, or replaced by a plain one
+in, and the data folder holds the game's files and nothing else. A file
+edited in any editor, copied over another of the game's files, or forged
 reads as `Tampered`;
 what the game does then is its own choice. Developer builds, tests and
 `hearken play` read and write plain files, so you can look at them, and
@@ -359,12 +357,12 @@ no key, or another key, is refused. On CI, store the key
 `HEARKEN_SEAL_SECRET`; keys are never made on CI. Never commit the key.
 
 The limits are those of the sound pack, and a few more. The key is in the
-program, so someone who takes it apart can forge any file. Restoring a
-whole data folder, ledger and all, from one earlier moment looks like
-never having played since, and a complete folder copied from a friend
-works. A game that sets `IMPORTS_PLAIN_SAVES = true` on its `Game` gets
-`Legacy` for plain saves an older, unsealed version left, but only in a
-folder that has never sealed, and only while no marker the vault left
+program, so someone who takes it apart can forge any file. Each file
+stands alone, so putting back an older copy of a file, deleting one, or
+copying one from a friend's install looks like real play. Results that
+must be trusted belong on a server that replays them. A game that sets
+`IMPORTS_PLAIN_SAVES = true` on its `Game` gets `Legacy` for plain saves
+an older, unsealed version left, but only while no marker the vault left
 outside the folder says the game has sealed before. That marker is one
 small file: in the config folder for an installed copy, or beside the
 executable for a portable one, so a portable copy leaves nothing in the
