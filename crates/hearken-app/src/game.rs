@@ -25,8 +25,9 @@ pub trait Game: Sized + 'static {
     const ENV_PREFIX: &'static str;
     /// Whether a release made with `seal = true` still imports plain save
     /// files an older, unsealed version left (`Opened::Legacy`). While this
-    /// is true, the vault leaves one small marker outside the data folder so
-    /// a wiped folder cannot pass a hand-written plain file off as old saves.
+    /// is true, the vault leaves one small marker outside the data folder,
+    /// listing the old saves still to import, so a wiped folder cannot pass
+    /// a hand-written plain file off as old saves.
     /// Leave it false (the default) and no marker is ever written; turn it
     /// off once players have had a sealing release.
     const IMPORTS_PLAIN_SAVES: bool = false;

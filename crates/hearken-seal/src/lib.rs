@@ -19,8 +19,9 @@
 //! file as [`Opened::Locked`] and will not overwrite it.
 //!
 //! A vault given witnesses ([`Vault::with_witnesses`]) leaves a marker
-//! outside the folder once it seals, so a hand-written plain file is no
-//! longer accepted as a legacy one.
+//! outside the folder once it seals, listing the old plain files still to
+//! import, so a hand-written plain file under any other name, or over one
+//! already sealed, is no longer accepted as a legacy one.
 //!
 //! What this cannot do: the key is inside the program the player runs.
 //! Someone willing to take that program apart can recover it and forge any

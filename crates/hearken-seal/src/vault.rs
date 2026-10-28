@@ -1,5 +1,6 @@
 //! A game's data folder, read and written through the seal.
 
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -16,9 +17,11 @@ pub enum Opened {
     Sealed(Vec<u8>),
     /// A plain file, in a build that does not seal (a developer build).
     Plain(Vec<u8>),
-    /// A plain file in a sealing build that no witness says this game has
-    /// sealed for this player before: written by an older version of the
-    /// game, or by hand. The game decides whether to import it.
+    /// A plain file in a sealing build that the witnesses still allow to be
+    /// imported: there is none yet, or one lists this name as a plain file
+    /// that was in the folder when this game first sealed for this player.
+    /// Written by an older version of the game (or edited by hand before the
+    /// first sealing run). The game decides whether to import it.
     Legacy(Vec<u8>),
     /// A sealed file in a build that cannot open it (a developer build
     /// running against a release's saves). The vault will not overwrite it.
@@ -47,7 +50,9 @@ pub enum Tamper {
     /// Does not authenticate: edited, cut short, another file's, another
     /// game's or another key's.
     Forged,
-    /// A plain file where a witness says this game has sealed before.
+    /// A plain file that the witnesses do not allow to be imported: this
+    /// game has sealed for this player, and the name was not one of the
+    /// plain files left from before, or has been sealed since.
     Unsealed,
 }
 
@@ -72,7 +77,7 @@ pub struct Vault {
     dir: PathBuf,
     key: Option<Key>,
     witnesses: Vec<PathBuf>,
-    witnessed: bool,
+    checked: Vec<PathBuf>,
 }
 
 impl Vault {
@@ -87,21 +92,34 @@ impl Vault {
             dir: dir.into(),
             key,
             witnesses: Vec::new(),
-            witnessed: false,
+            checked: Vec::new(),
         }
     }
 
     /// The same vault, leaving a small sealed marker at each of `paths` (full
     /// file paths, outside the data folder) once it seals anything.
     ///
-    /// A marker says "this game has sealed data for this player before".
-    /// While one is there, a plain file reads as `Tampered(Unsealed)`, not
-    /// as `Legacy`: so swapping a sealed file for a hand-written plain one,
-    /// or pointing the game at a fresh folder holding one, no longer gets it
-    /// imported. Writing a marker is best effort; a failure is logged. Only
-    /// whether a marker exists counts, never what it holds.
+    /// A marker says "this game has sealed data for this player before",
+    /// and holds, sealed, the names still importable: the plain files that
+    /// were in the folder when the first one was written, less each name
+    /// sealed since. While a marker is there, a plain file under any other
+    /// name reads as `Tampered(Unsealed)`, not as `Legacy`: so swapping a
+    /// sealed file for a hand-written plain one, or pointing the game at a
+    /// fresh folder holding one, no longer gets it imported, while every
+    /// genuine old save can still be imported one at a time. A marker that
+    /// does not authenticate allows nothing. Writing a marker is best
+    /// effort; a failure is logged.
     pub fn with_witnesses(mut self, paths: Vec<PathBuf>) -> Vault {
         self.witnesses = paths;
+        self
+    }
+
+    /// The same vault, also heeding markers at `paths` that it never writes:
+    /// where another way of running the same game (a portable copy rather
+    /// than an installed one, or the reverse) leaves its own. So switching
+    /// between them does not forget that this game has sealed.
+    pub fn checking_witnesses(mut self, paths: Vec<PathBuf>) -> Vault {
+        self.checked = paths;
         self
     }
 
@@ -126,8 +144,9 @@ impl Vault {
     /// a game should not use two that differ only in case. Any other name
     /// reads as `Failed` with `InvalidInput`.
     ///
-    /// A plain file reads as `Legacy` only while no witness says this game
-    /// has sealed for this player. After that it is `Tampered(Unsealed)`.
+    /// A plain file reads as `Legacy` only while the witnesses allow its
+    /// name to be imported (see [`Vault::with_witnesses`]). Otherwise it is
+    /// `Tampered(Unsealed)`.
     pub fn read(&mut self, name: &str) -> Opened {
         if let Err(e) = name::check(name) {
             return Opened::Failed(e);
@@ -147,10 +166,14 @@ impl Vault {
             };
         };
         if !format::is_sealed(&bytes) {
-            return if self.witnessed_before() {
-                Opened::Tampered(Tamper::Unsealed)
-            } else {
+            let importable = match self.importable(key) {
+                None => true,
+                Some(names) => names.contains(name),
+            };
+            return if importable {
                 Opened::Legacy(bytes)
+            } else {
+                Opened::Tampered(Tamper::Unsealed)
             };
         }
         match format::open(&key.file_key(), name, &bytes) {
@@ -161,7 +184,9 @@ impl Vault {
 
     /// Writes `name` atomically: sealed when sealing, plain otherwise. A
     /// build that does not seal refuses (`PermissionDenied`) to overwrite a
-    /// sealed file. A sealing build overwriting a plain file first keeps it
+    /// sealed file, or to add a new file to a folder that holds one (a
+    /// release's folder, which would take the plain file for tampering). A
+    /// sealing build overwriting a plain file first keeps it
     /// as `<name>.plain-backup`, unless one is there already.
     pub fn write(&mut self, name: &str, bytes: &[u8]) -> io::Result<()> {
         name::check(name)?;
@@ -171,6 +196,15 @@ impl Vault {
         let Some(key) = self.key.clone() else {
             if existing.as_deref().is_some_and(format::is_sealed) {
                 return Err(locked(name));
+            }
+            if existing.is_none() && holds_sealed(&self.dir) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "{} holds a release's sealed files; this build will not add {name} to it",
+                        self.dir.display()
+                    ),
+                ));
             }
             return atomic_write(&self.dir, name, bytes);
         };
@@ -182,7 +216,7 @@ impl Vault {
         }
         let sealed = format::seal(&key.file_key(), name, bytes)?;
         atomic_write(&self.dir, name, &sealed)?;
-        self.leave_witnesses(&key);
+        self.leave_witnesses(&key, name);
         Ok(())
     }
 
@@ -219,39 +253,131 @@ impl Vault {
         Ok(Some(to))
     }
 
-    /// Writes any witness that is not there yet, once per run.
-    fn leave_witnesses(&mut self, key: &Key) {
-        if self.witnessed {
+    /// Brings every witness up to date after `sealed` was written: one that
+    /// is missing is written, and `sealed` is no longer importable.
+    fn leave_witnesses(&self, key: &Key, sealed: &str) {
+        if self.witnesses.is_empty() {
             return;
         }
-        self.witnessed = true;
+        let mut names = match self.importable(key) {
+            Some(names) => names,
+            // The first witness: every plain file still in the folder may be
+            // imported later.
+            None => plain_names(&self.dir),
+        };
+        names.remove(sealed);
         for path in &self.witnesses {
-            if std::fs::symlink_metadata(path).is_ok() {
+            if read_witness(key, path).as_ref() == Some(&Some(names.clone())) {
                 continue;
             }
-            let written = (|| {
-                let sealed = format::seal(&key.file_key(), WITNESS, b"")?;
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(path, sealed)
-            })();
-            if let Err(e) = written {
+            if let Err(e) = write_witness(key, path, &names) {
                 log::warn!("seal: could not leave a witness at {}: {e}", path.display());
             }
         }
     }
 
-    /// Whether any witness says this game has sealed for this player.
-    fn witnessed_before(&self) -> bool {
-        self.witnesses
-            .iter()
-            .any(|path| std::fs::symlink_metadata(path).is_ok())
+    /// The names a plain file may be imported under: `None` while no
+    /// witness exists (anything may), else those every witness allows.
+    fn importable(&self, key: &Key) -> Option<BTreeSet<String>> {
+        let mut out: Option<BTreeSet<String>> = None;
+        for path in self.witnesses.iter().chain(&self.checked) {
+            let Some(found) = read_witness(key, path) else {
+                continue;
+            };
+            let names = found.unwrap_or_default();
+            out = Some(match out {
+                None => names,
+                Some(prev) => prev.intersection(&names).cloned().collect(),
+            });
+        }
+        out
     }
 }
 
-/// The name a witness is sealed under.
-const WITNESS: &str = "hearken-seal.witness";
+/// The witness at `path`: `None` when there is none, `Some(None)` when one
+/// is there but does not authenticate (it allows nothing), else the names
+/// it allows.
+#[allow(clippy::option_option)]
+fn read_witness(key: &Key, path: &Path) -> Option<Option<BTreeSet<String>>> {
+    std::fs::symlink_metadata(path).ok()?;
+    let names = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| format::open(&key.file_key(), WITNESS, &bytes))
+        .and_then(|plain| String::from_utf8(plain).ok())
+        .map(|text| {
+            text.lines()
+                .filter(|n| name::check(n).is_ok())
+                .map(str::to_owned)
+                .collect()
+        });
+    Some(names)
+}
+
+/// Seals `names` into the witness at `path`, through a temporary file
+/// beside it so a crash never leaves half a witness.
+fn write_witness(key: &Key, path: &Path, names: &BTreeSet<String>) -> io::Result<()> {
+    let text = names
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let sealed = format::seal(&key.file_key(), WITNESS, text.as_bytes())?;
+    let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a witness needs a file name",
+        ));
+    };
+    std::fs::create_dir_all(dir)?;
+    let mut tmp = std::ffi::OsString::from(".");
+    tmp.push(file);
+    tmp.push(".tmp");
+    write_through(&dir.join(tmp), path, &sealed)
+}
+
+/// The valid names in `dir` that hold plain (unsealed) files.
+fn plain_names(dir: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            name::check(&name).ok()?;
+            let bytes = std::fs::read(entry.path()).ok()?;
+            (!format::is_sealed(&bytes)).then_some(name)
+        })
+        .collect()
+}
+
+/// Whether any file in `dir` under a valid name is sealed.
+fn holds_sealed(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let named = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| name::check(n).is_ok());
+            named && starts_sealed(&entry.path())
+        })
+}
+
+/// Whether the file at `path` begins like a sealed file.
+fn starts_sealed(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_ok()
+        && format::is_sealed(&head)
+}
+
+/// The name a witness is sealed under: one [`name::check`] refuses, so no
+/// data file can ever authenticate as a witness, or a witness as one.
+const WITNESS: &str = ".hearken-seal.witness";
 
 fn locked(name: &str) -> io::Error {
     io::Error::new(
@@ -276,18 +402,43 @@ fn read_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
 /// Writes `bytes` to `dir/name` through a hidden temporary file, flushed
 /// before it is renamed over the old one.
 fn atomic_write(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
-    let tmp = dir.join(name::temp(name));
+    write_through(&dir.join(name::temp(name)), &dir.join(name), bytes)
+}
+
+/// Writes `bytes` to `tmp`, flushes it and renames it over `to`. Whatever
+/// was at `tmp` (a leftover file, a folder, a link to some other file) is
+/// cleared first, and the file is made new, so a write never follows a
+/// link to touch anything but `tmp` itself.
+fn write_through(tmp: &Path, to: &Path, bytes: &[u8]) -> io::Result<()> {
+    clear(tmp)?;
     let written = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&tmp, dir.join(name))
+        std::fs::rename(tmp, to)
     })();
     if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
     }
     written
+}
+
+/// Removes whatever is at `path` (never what a link there points to).
+fn clear(path: &Path) -> io::Result<()> {
+    let removed = match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+    };
+    match removed {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// `dir/<name>.tampered`, or the first of `.tampered-2`, `-3`... not taken.

@@ -351,3 +351,177 @@ fn a_witness_that_cannot_be_written_does_not_stop_saving() {
     vault.write(NAME, b"x").unwrap();
     assert_eq!(sealed(reopen(&dir, &key).read(NAME)), b"x");
 }
+
+#[test]
+fn a_witness_never_reads_as_a_data_file() {
+    // The attack: copy the witness into the data folder, under the name it
+    // used to be sealed under or under a game's own.
+    let key = Key::generate().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (dir, mut vault) = witnessed(&key, &elsewhere);
+    vault.write(NAME, b"x").unwrap();
+    let witness = std::fs::read(&vault_witness(&elsewhere)[0]).unwrap();
+    for name in ["hearken-seal.witness", "records.json", "witness"] {
+        std::fs::write(dir.path().join(name), &witness).unwrap();
+        assert_eq!(tampered(vault.read(name)), Tamper::Forged, "{name}");
+    }
+    assert!(name::check(WITNESS).is_err());
+}
+
+#[test]
+fn every_old_plain_save_can_be_imported_after_the_first() {
+    // An older, unsealed version left two genuine saves. Sealing the first
+    // must not turn the second into tampering, in this run or the next.
+    let key = Key::generate().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (dir, mut vault) = witnessed(&key, &elsewhere);
+    for slot in ["slot1.json", "slot2.json", "slot3.json"] {
+        std::fs::write(dir.path().join(slot), format!("old {slot}")).unwrap();
+    }
+    assert!(matches!(vault.read("slot1.json"), Opened::Legacy(_)));
+    vault.write("slot1.json", b"old slot1.json").unwrap();
+    assert!(vault_witness(&elsewhere)[0].is_file());
+    match vault.read("slot2.json") {
+        Opened::Legacy(bytes) => assert_eq!(bytes, b"old slot2.json"),
+        other => panic!("expected Legacy, got {other:?}"),
+    }
+    let mut next =
+        Vault::with_key(dir.path(), Some(key.clone())).with_witnesses(vault_witness(&elsewhere));
+    assert!(matches!(next.read("slot2.json"), Opened::Legacy(_)));
+    next.write("slot2.json", b"old slot2.json").unwrap();
+    assert!(matches!(next.read("slot3.json"), Opened::Legacy(_)));
+    // A sealed name, or one that was never an old save, is not importable.
+    std::fs::write(dir.path().join("slot1.json"), b"hand").unwrap();
+    std::fs::write(dir.path().join("slot2.json"), b"hand").unwrap();
+    std::fs::write(dir.path().join("slot4.json"), b"hand").unwrap();
+    for slot in ["slot1.json", "slot2.json", "slot4.json"] {
+        assert_eq!(tampered(next.read(slot)), Tamper::Unsealed, "{slot}");
+    }
+    // The folder holds only the game's files and their backups.
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "slot1.json",
+            "slot1.json.plain-backup",
+            "slot2.json",
+            "slot2.json.plain-backup",
+            "slot3.json",
+            "slot4.json"
+        ]
+    );
+}
+
+#[test]
+fn a_witness_that_does_not_authenticate_allows_no_import() {
+    let key = Key::generate().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (dir, mut vault) = witnessed(&key, &elsewhere);
+    let witness = &vault_witness(&elsewhere)[0];
+    std::fs::create_dir_all(witness.parent().unwrap()).unwrap();
+    std::fs::write(witness, b"records.json").unwrap();
+    std::fs::write(dir.path().join(NAME), b"{}").unwrap();
+    assert_eq!(tampered(vault.read(NAME)), Tamper::Unsealed);
+}
+
+#[test]
+fn a_checked_witness_follows_the_game_to_another_folder() {
+    // The attack: the installed copy has sealed; add portable.txt (or
+    // delete it), which moves both the data folder and the witness written,
+    // and drop a hand-written plain file in the new folder.
+    let key = Key::generate().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let exe = tempfile::tempdir().unwrap();
+    let installed_witness = config.path().join("Game.hearken-seal");
+    let portable_witness = exe.path().join("hearken-seal.witness");
+    let installed = tempfile::tempdir().unwrap();
+    std::fs::write(installed.path().join("old.json"), b"old").unwrap();
+    Vault::with_key(installed.path(), Some(key.clone()))
+        .with_witnesses(vec![installed_witness.clone()])
+        .checking_witnesses(vec![portable_witness.clone()])
+        .write(NAME, b"{\"best\":20}")
+        .unwrap();
+    assert!(!portable_witness.exists());
+    let portable = tempfile::tempdir().unwrap();
+    let mut moved = Vault::with_key(portable.path(), Some(key.clone()))
+        .with_witnesses(vec![portable_witness.clone()])
+        .checking_witnesses(vec![installed_witness.clone()]);
+    std::fs::write(portable.path().join(NAME), b"{\"best\":999}").unwrap();
+    assert_eq!(tampered(moved.read(NAME)), Tamper::Unsealed);
+    // Its own first write carries the record on, never widening it.
+    moved.write("other.json", b"x").unwrap();
+    assert!(portable_witness.is_file());
+    let mut only_portable = Vault::with_key(portable.path(), Some(key.clone()))
+        .with_witnesses(vec![portable_witness.clone()]);
+    assert_eq!(tampered(only_portable.read(NAME)), Tamper::Unsealed);
+    std::fs::write(portable.path().join("old.json"), b"old").unwrap();
+    assert!(matches!(only_portable.read("old.json"), Opened::Legacy(_)));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_planted_temporary_link_is_never_written_through() {
+    let (dir, mut vault, key) = sealing();
+    let outside = tempfile::tempdir().unwrap();
+    let precious = outside.path().join("precious");
+    std::fs::write(&precious, b"precious outside file").unwrap();
+    std::os::unix::fs::symlink(&precious, dir.path().join(name::temp(NAME))).unwrap();
+    vault.write("progress.json", b"progress").unwrap();
+    std::os::unix::fs::symlink(
+        dir.path().join("progress.json"),
+        dir.path().join(name::temp("settings2.json")),
+    )
+    .unwrap();
+    vault.write(NAME, b"good").unwrap();
+    vault.write("settings2.json", b"settings").unwrap();
+    assert_eq!(std::fs::read(&precious).unwrap(), b"precious outside file");
+    let meta = std::fs::symlink_metadata(dir.path().join(NAME)).unwrap();
+    assert!(meta.file_type().is_file());
+    let mut again = reopen(&dir, &key);
+    assert_eq!(sealed(again.read(NAME)), b"good");
+    assert_eq!(sealed(again.read("progress.json")), b"progress");
+    assert_eq!(sealed(again.read("settings2.json")), b"settings");
+    // A build without a key does not write through one either.
+    let plain = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(&precious, plain.path().join(name::temp(NAME))).unwrap();
+    Vault::with_key(plain.path(), None)
+        .write(NAME, b"dev")
+        .unwrap();
+    assert_eq!(std::fs::read(&precious).unwrap(), b"precious outside file");
+}
+
+#[test]
+fn a_leftover_temporary_folder_does_not_stop_saving() {
+    let (dir, mut vault, key) = sealing();
+    vault.write(NAME, b"old").unwrap();
+    let tmp = dir.path().join(name::temp(NAME));
+    std::fs::create_dir_all(tmp.join("inside")).unwrap();
+    vault.write(NAME, b"new").unwrap();
+    assert_eq!(sealed(reopen(&dir, &key).read(NAME)), b"new");
+    assert!(!tmp.exists());
+}
+
+#[test]
+fn a_build_without_a_key_adds_nothing_to_a_release_s_folder() {
+    let (dir, mut vault, key) = sealing();
+    vault.write(NAME, b"release save").unwrap();
+    let mut dev = Vault::with_key(dir.path(), None);
+    assert_eq!(
+        dev.write("progress.json", b"dev").unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    assert!(matches!(
+        reopen(&dir, &key).read("progress.json"),
+        Opened::Missing
+    ));
+    // A folder of plain files is a developer's own.
+    let plain = tempfile::tempdir().unwrap();
+    let mut dev = Vault::with_key(plain.path(), None);
+    dev.write(NAME, b"a").unwrap();
+    dev.write("progress.json", b"b").unwrap();
+    dev.write(NAME, b"c").unwrap();
+}
