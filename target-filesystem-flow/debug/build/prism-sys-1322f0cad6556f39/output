@@ -1,0 +1,106 @@
+cargo:rerun-if-env-changed=PRISM_LIB_DIR
+cargo:rerun-if-changed=prism/CMakeLists.txt
+cargo:rerun-if-changed=prism/cmake
+cargo:rerun-if-changed=prism/source
+cargo:rerun-if-changed=prism/include
+CMAKE_TOOLCHAIN_FILE_x86_64-unknown-linux-gnu = None
+CMAKE_TOOLCHAIN_FILE_x86_64_unknown_linux_gnu = None
+HOST_CMAKE_TOOLCHAIN_FILE = None
+CMAKE_TOOLCHAIN_FILE = None
+CMAKE_GENERATOR_x86_64-unknown-linux-gnu = None
+CMAKE_GENERATOR_x86_64_unknown_linux_gnu = None
+HOST_CMAKE_GENERATOR = None
+CMAKE_GENERATOR = None
+CMAKE_PREFIX_PATH_x86_64-unknown-linux-gnu = None
+CMAKE_PREFIX_PATH_x86_64_unknown_linux_gnu = None
+HOST_CMAKE_PREFIX_PATH = None
+CMAKE_PREFIX_PATH = None
+CMAKE_x86_64-unknown-linux-gnu = None
+CMAKE_x86_64_unknown_linux_gnu = None
+HOST_CMAKE = None
+CMAKE = None
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/gcc-13 - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/g++-13 - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test PRISM_HAS_JTHREAD_NATIVE
+-- Performing Test PRISM_HAS_JTHREAD_NATIVE - Success
+-- Performing Test PRISM_HAS_FAT_LTO_OBJECTS_C
+-- Performing Test PRISM_HAS_FAT_LTO_OBJECTS_C - Success
+-- Performing Test PRISM_HAS_FAT_LTO_OBJECTS_CXX
+-- Performing Test PRISM_HAS_FAT_LTO_OBJECTS_CXX - Success
+-- Performing Test PRISM_HAS_NO_UNDEFINED_LINK_FLAG
+-- Performing Test PRISM_HAS_NO_UNDEFINED_LINK_FLAG - Success
+-- Prism dep fmt: bundled third_party/fmt
+-- Prism dep highway: bundled third_party/highway
+-- Prism dep simdutf: bundled third_party/simdutf
+-- Prism dep concurrentqueue: bundled third_party/concurrentqueue
+-- Prism dep dr_wav: bundled third_party/dr_wav
+-- Prism dep moderncom: bundled third_party/moderncom
+-- Found PkgConfig: /usr/bin/pkg-config (found version "1.8.1") 
+-- Prism backend orca: skipped (missing glibmm-2.68>=2.68.0, giomm-2.68>=2.68.0)
+-- Prism backend speech_dispatcher: enabled
+-- Prism backend spiel: skipped (missing spiel-1.0)
+-- Prism backends: orca=skipped speech_dispatcher=on spiel=skipped
+-- Prism: giomm not found; power-aware availability polling disabled
+-- Performing Test PRISM_HAS_WALL
+-- Performing Test PRISM_HAS_WALL - Success
+-- Performing Test PRISM_HAS_WEXTRA
+-- Performing Test PRISM_HAS_WEXTRA - Success
+-- Performing Test PRISM_HAS_WTHREAD_SAFETY
+-- Performing Test PRISM_HAS_WTHREAD_SAFETY - Failed
+-- Configuring done (3.7s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build
+[  4%] Building CXX object CMakeFiles/prism_dep_fmt.dir/third_party/fmt/src/format.cc.o
+[  8%] Building CXX object CMakeFiles/prism_dep_fmt.dir/third_party/fmt/src/os.cc.o
+[  8%] Built target prism_dep_fmt
+[ 13%] Building CXX object CMakeFiles/prism_dep_highway.dir/third_party/highway/hwy/abort.cc.o
+[ 17%] Building CXX object CMakeFiles/prism_dep_highway.dir/third_party/highway/hwy/per_target.cc.o
+[ 21%] Building CXX object CMakeFiles/prism_dep_highway.dir/third_party/highway/hwy/print.cc.o
+[ 26%] Building CXX object CMakeFiles/prism_dep_highway.dir/third_party/highway/hwy/targets.cc.o
+[ 30%] Building CXX object CMakeFiles/prism_dep_highway.dir/third_party/highway/hwy/timer.cc.o
+[ 30%] Built target prism_dep_highway
+[ 34%] Building CXX object CMakeFiles/prism_dep_simdutf.dir/third_party/simdutf/simdutf.cpp.o
+[ 34%] Built target prism_dep_simdutf
+[ 39%] Building C object CMakeFiles/prism_dep_dr_wav.dir/third_party/dr_wav/wav.c.o
+[ 39%] Built target prism_dep_dr_wav
+[ 43%] Building CXX object CMakeFiles/prism_backend_speech_dispatcher.dir/source/backends/speech_dispatcher.cpp.o
+[ 43%] Built target prism_backend_speech_dispatcher
+[ 47%] Building CXX object CMakeFiles/prism.dir/source/backend_catalog.cpp.o
+[ 52%] Building CXX object CMakeFiles/prism.dir/source/backend_check.cpp.o
+[ 56%] Building CXX object CMakeFiles/prism.dir/source/backend_enumerator.cpp.o
+[ 60%] Building CXX object CMakeFiles/prism.dir/source/simd_kernels.cpp.o
+[ 65%] Building CXX object CMakeFiles/prism.dir/source/frozen_registry.cpp.o
+[ 69%] Building CXX object CMakeFiles/prism.dir/source/logging.cpp.o
+[ 73%] Building CXX object CMakeFiles/prism.dir/source/plugin_loader.cpp.o
+[ 78%] Building CXX object CMakeFiles/prism.dir/source/poll_waiter.cpp.o
+[ 82%] Building CXX object CMakeFiles/prism.dir/source/power_notifier.cpp.o
+[ 86%] Building CXX object CMakeFiles/prism.dir/source/prism.cpp.o
+[ 91%] Building CXX object CMakeFiles/prism.dir/source/utils.cpp.o
+[ 95%] Building CXX object CMakeFiles/prism.dir/source/backends/custom_backend.cpp.o
+[100%] Linking CXX static library libprism.a
+[100%] Built target prism
+Install the project...
+-- Install configuration: "Release"
+-- Installing: /home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/lib/libprism.a
+-- Installing: /home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/share/prism/prism-targets.cmake
+-- Installing: /home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/share/prism/prism-targets-release.cmake
+-- Installing: /home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/include
+-- Installing: /home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/include/prism.h
+-- Installing: /home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/include/prism_version.h
+-- Installing: /home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/share/prism/prism-config.cmake
+-- Installing: /home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/share/prism/prism-config-version.cmake
+cargo:root=/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out
+cargo:rustc-link-search=native=/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/lib
+cargo:rustc-link-search=native=/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/bin
+cargo:rustc-link-lib=static=prism
+cargo:rustc-link-lib=stdc++

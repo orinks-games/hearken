@@ -1,0 +1,2 @@
+cargo:rerun-if-env-changed=DEP_HEARKEN_SPEECH_LINK_ARGS
+cargo:rerun-if-changed=/tmp/claude-0/-home-claude/54fddc2f-b317-5e0f-837d-9d7b6e9596ea/scratchpad/filesystem-flow/vendor/sdl2/linux-x86_64

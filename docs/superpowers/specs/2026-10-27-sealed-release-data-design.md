@@ -257,7 +257,7 @@ goes on.
 Witnesses only guard the legacy import, so `hearken-app` hands them to the
 vault only for a game with `Game::IMPORTS_PLAIN_SAVES = true`; the default
 is false, and such a game never writes one. A portable copy writes
-`hearken-seal.witness` beside the executable, so it leaves nothing in the
+`<Game>.hearken-seal` beside the executable, so it leaves nothing in the
 player's user folders; an installed one writes
 `<config dir>/<DATA_DIR>.hearken-seal`. Each checks the other's, so adding
 or deleting `portable.txt` (which moves the data folder) does not make the

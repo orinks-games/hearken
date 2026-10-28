@@ -60,7 +60,7 @@ impl std::fmt::Display for Tamper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Tamper::Forged => "it does not match its seal",
-            Tamper::Unsealed => "a plain file replaced a sealed one",
+            Tamper::Unsealed => "a plain file is where only sealed files belong",
         })
     }
 }

@@ -362,9 +362,11 @@ stands alone, so putting back an older copy of a file, deleting one, or
 copying one from a friend's install looks like real play. Results that
 must be trusted belong on a server that replays them. A game that sets
 `IMPORTS_PLAIN_SAVES = true` on its `Game` gets `Legacy` for plain saves
-an older, unsealed version left, but only while no marker the vault left
-outside the folder says the game has sealed before. That marker is one
-small file: in the config folder for an installed copy, or beside the
+an older, unsealed version left. The first time it seals, the vault
+leaves a marker outside the folder listing the plain saves that were
+there; from then on only those names can still be imported, and any
+other plain file reads as `Tampered`. That marker is one small file,
+named for the game: in the config folder for an installed copy, or beside the
 executable for a portable one, so a portable copy leaves nothing in the
 player's user folders. A player who deletes the marker too, or plays as a
 new user, can still have a hand-written plain file imported; turn

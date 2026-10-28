@@ -1,0 +1,9 @@
+running: cd "/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build" && CMAKE_PREFIX_PATH="" LC_ALL="C" "cmake" "/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/prism-sys-0.1.4/prism" "-B" "/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build" "-DBUILD_SHARED_LIBS=OFF" "-DCMAKE_INSTALL_PREFIX=/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out" "-DCMAKE_C_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_C_COMPILER=/usr/bin/gcc-13" "-DCMAKE_CXX_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_CXX_COMPILER=/usr/bin/g++-13" "-DCMAKE_ASM_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_ASM_COMPILER=/usr/bin/gcc-13" "-DCMAKE_BUILD_TYPE=Release"
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_ASM_COMPILER
+    CMAKE_ASM_FLAGS
+
+
+running: cd "/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build" && LC_ALL="C" MAKEFLAGS="-j --jobserver-fds=3,5 --jobserver-auth=3,5" "cmake" "--build" "/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build" "--target" "install" "--config" "Release"

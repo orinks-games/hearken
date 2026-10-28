@@ -57,12 +57,10 @@ impl Paths {
     }
 
     /// A folder for a separate session (a sandbox) inside this one's data
-    /// folder, keeping this one's witnesses.
+    /// folder. It has no witnesses: a witness lists names for one folder, and
+    /// sharing it would let the sandbox's saves decide the real folder's.
     pub fn nested(&self, name: &str) -> Paths {
-        let mut paths = Paths::at(self.data_dir.join(name));
-        paths.witnesses = self.witnesses.clone();
-        paths.checked_witnesses = self.checked_witnesses.clone();
-        paths
+        Paths::at(self.data_dir.join(name))
     }
 
     /// A data folder at `dir`, created if missing. A folder that cannot be
@@ -113,7 +111,7 @@ fn witnesses(
     data_dir: &Path,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let beside_exe: Vec<PathBuf> = exe_dir
-        .map(|dir| dir.join("hearken-seal.witness"))
+        .map(|dir| dir.join(format!("{dir_name}.hearken-seal")))
         .into_iter()
         .collect();
     let in_config: Vec<PathBuf> = config_dir
@@ -149,7 +147,7 @@ mod tests {
         let config = tempfile::tempdir().unwrap();
         let data = exe.path().join("saves");
         let config_witness = config.path().join("Game.hearken-seal");
-        let exe_witness = exe.path().join("hearken-seal.witness");
+        let exe_witness = exe.path().join("Game.hearken-seal");
         let installed = witnesses("Game", Some(exe.path()), Some(config.path()), &data);
         assert_eq!(
             installed,

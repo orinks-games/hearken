@@ -1,0 +1,12 @@
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/prism_dep_fmt.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/prism_dep_highway.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/prism_dep_simdutf.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/prism_dep_dr_wav.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/prism.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/prism_backend_speech_dispatcher.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/edit_cache.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/rebuild_cache.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/list_install_components.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/install.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/install/local.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/install/strip.dir

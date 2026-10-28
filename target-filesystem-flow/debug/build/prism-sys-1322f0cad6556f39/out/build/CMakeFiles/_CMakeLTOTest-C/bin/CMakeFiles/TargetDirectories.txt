@@ -1,0 +1,4 @@
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/foo.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/boo.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/edit_cache.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/build/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/rebuild_cache.dir

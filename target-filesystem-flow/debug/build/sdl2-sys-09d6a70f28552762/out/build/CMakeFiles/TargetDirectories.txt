@@ -1,0 +1,11 @@
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/sdl_headers_copy.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/SDL2main.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/SDL2-static.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/SDL2_test.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/uninstall.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/edit_cache.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/rebuild_cache.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/list_install_components.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/install.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/install/local.dir
+/home/claude/hearken/target-filesystem-flow/debug/build/sdl2-sys-09d6a70f28552762/out/build/CMakeFiles/install/strip.dir
