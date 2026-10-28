@@ -1,0 +1,7 @@
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/lib/libprism.a
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/share/prism/prism-targets.cmake
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/share/prism/prism-targets-release.cmake
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/include/prism.h
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/include/prism_version.h
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/share/prism/prism-config.cmake
+/home/claude/hearken/target-filesystem-flow/debug/build/prism-sys-1322f0cad6556f39/out/share/prism/prism-config-version.cmake

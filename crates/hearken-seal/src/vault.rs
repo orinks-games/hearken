@@ -1,31 +1,32 @@
 //! A game's data folder, read and written through the seal.
 
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::format::{self, FolderId, NO_FOLDER};
+use crate::format;
 use crate::key::Key;
-use crate::ledger::{self, Entries, Entry};
 use crate::name;
-use crate::LEDGER;
 
 /// What reading a data file found.
 #[derive(Debug)]
 pub enum Opened {
-    /// No file, and none was ever sealed here.
+    /// No file.
     Missing,
     /// An authentic sealed file: its bytes.
     Sealed(Vec<u8>),
     /// A plain file, in a build that does not seal (a developer build).
     Plain(Vec<u8>),
-    /// A plain file in a sealing build, with no sealed history: written by
-    /// an older version of the game, or by hand. The game decides whether
-    /// to import it.
+    /// A plain file in a sealing build that the witnesses still allow to be
+    /// imported: there is none yet, or one lists this name as a plain file
+    /// that was in the folder when this game first sealed for this player.
+    /// Written by an older version of the game (or edited by hand before the
+    /// first sealing run). The game decides whether to import it.
     Legacy(Vec<u8>),
     /// A sealed file in a build that cannot open it (a developer build
     /// running against a release's saves). The vault will not overwrite it.
     Locked,
-    /// The file was changed, swapped, restored, removed or forged.
+    /// The file was changed, swapped or forged.
     Tampered(Tamper),
     /// The disk would not give the file up (permissions, I/O, a folder
     /// where the file should be).
@@ -49,53 +50,19 @@ pub enum Tamper {
     /// Does not authenticate: edited, cut short, another file's, another
     /// game's or another key's.
     Forged,
-    /// A plain file where a sealed one was written.
+    /// A plain file that the witnesses do not allow to be imported: this
+    /// game has sealed for this player, and the name was not one of the
+    /// plain files left from before, or has been sealed since.
     Unsealed,
-    /// An older sealed copy than the one last written.
-    RolledBack,
-    /// A sealed copy this folder's history does not account for.
-    Unexpected,
-    /// Deleted after it was sealed.
-    Removed,
-    /// The folder's ledger itself does not authenticate.
-    LedgerForged,
 }
 
 impl std::fmt::Display for Tamper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Tamper::Forged => "it does not match its seal",
-            Tamper::Unsealed => "a plain file replaced a sealed one",
-            Tamper::RolledBack => "an older copy was put back",
-            Tamper::Unexpected => "a copy from elsewhere was put in",
-            Tamper::Removed => "it was deleted",
-            Tamper::LedgerForged => "the folder's ledger does not match its seal",
+            Tamper::Unsealed => "a plain file is where only sealed files belong",
         })
     }
-}
-
-/// The ledger as the vault last saw it.
-enum Ledger {
-    /// Not read yet.
-    Unread,
-    /// Read and authentic, or absent. `generation` is the ledger's own write
-    /// count: 0 while it has never been written, and then `folder` is a
-    /// new id that no file has been sealed with yet.
-    Good {
-        generation: u64,
-        folder: FolderId,
-        entries: Entries,
-    },
-    /// There, but it does not authenticate.
-    Forged,
-}
-
-/// What the ledger says about one name.
-struct History {
-    folder: FolderId,
-    entry: Option<Entry>,
-    /// The ledger has been written, so the folder has sealed before.
-    kept: bool,
 }
 
 /// A game's data folder, read and written through the seal.
@@ -103,14 +70,14 @@ struct History {
 /// Every file goes in and out whole. A write lands atomically (a hidden
 /// temporary file, flushed, then renamed over the old one), so a crash
 /// never leaves half a file. Names are single file names (see
-/// [`Vault::read`]); the vault never touches anything outside its folder,
-/// except for its witnesses (see [`Vault::with_witnesses`]).
+/// [`Vault::read`]); the vault keeps nothing in the folder but the game's
+/// own files, and never touches anything outside it except its witnesses
+/// (see [`Vault::with_witnesses`]).
 pub struct Vault {
     dir: PathBuf,
     key: Option<Key>,
-    ledger: Ledger,
     witnesses: Vec<PathBuf>,
-    witnessed: bool,
+    checked: Vec<PathBuf>,
 }
 
 impl Vault {
@@ -124,24 +91,35 @@ impl Vault {
         Vault {
             dir: dir.into(),
             key,
-            ledger: Ledger::Unread,
             witnesses: Vec::new(),
-            witnessed: false,
+            checked: Vec::new(),
         }
     }
 
     /// The same vault, leaving a small sealed marker at each of `paths` (full
     /// file paths, outside the data folder) once it seals anything.
     ///
-    /// A marker says "this game has sealed data for this player before".
-    /// While one is there, a plain file in a folder with no ledger reads as
-    /// `Tampered(Unsealed)`, not as `Legacy`: so deleting the folder's
-    /// ledger and files, or pointing the game at a fresh folder, and then
-    /// dropping in a hand-written plain file no longer gets it imported.
-    /// Writing a marker is best effort; a failure is logged. Only whether a
-    /// marker exists counts, never what it holds.
+    /// A marker says "this game has sealed data for this player before",
+    /// and holds, sealed, the names still importable: the plain files that
+    /// were in the folder when the first one was written, less each name
+    /// sealed since. While a marker is there, a plain file under any other
+    /// name reads as `Tampered(Unsealed)`, not as `Legacy`: so swapping a
+    /// sealed file for a hand-written plain one, or pointing the game at a
+    /// fresh folder holding one, no longer gets it imported, while every
+    /// genuine old save can still be imported one at a time. A marker that
+    /// does not authenticate allows nothing. Writing a marker is best
+    /// effort; a failure is logged.
     pub fn with_witnesses(mut self, paths: Vec<PathBuf>) -> Vault {
         self.witnesses = paths;
+        self
+    }
+
+    /// The same vault, also heeding markers at `paths` that it never writes:
+    /// where another way of running the same game (a portable copy rather
+    /// than an installed one, or the reverse) leaves its own. So switching
+    /// between them does not forget that this game has sealed.
+    pub fn checking_witnesses(mut self, paths: Vec<PathBuf>) -> Vault {
+        self.checked = paths;
         self
     }
 
@@ -166,9 +144,8 @@ impl Vault {
     /// a game should not use two that differ only in case. Any other name
     /// reads as `Failed` with `InvalidInput`.
     ///
-    /// A plain file reads as `Legacy` only in a folder that has never
-    /// sealed anything (no ledger) and when no witness says this game has
-    /// sealed elsewhere for this player. Everywhere else it is
+    /// A plain file reads as `Legacy` only while the witnesses allow its
+    /// name to be imported (see [`Vault::with_witnesses`]). Otherwise it is
     /// `Tampered(Unsealed)`.
     pub fn read(&mut self, name: &str) -> Opened {
         if let Err(e) = name::check(name) {
@@ -178,71 +155,39 @@ impl Vault {
             Ok(found) => found,
             Err(e) => return Opened::Failed(e),
         };
-        let Some(key) = self.key.clone() else {
-            return match found {
-                None => Opened::Missing,
-                Some(bytes) if format::is_sealed(&bytes) => Opened::Locked,
-                Some(bytes) => Opened::Plain(bytes),
+        let Some(bytes) = found else {
+            return Opened::Missing;
+        };
+        let Some(key) = &self.key else {
+            return if format::is_sealed(&bytes) {
+                Opened::Locked
+            } else {
+                Opened::Plain(bytes)
             };
-        };
-        let History {
-            folder,
-            entry,
-            kept,
-        } = match self.history(name) {
-            Ok(Some(history)) => history,
-            Ok(None) => return Opened::Tampered(Tamper::LedgerForged),
-            Err(e) => return Opened::Failed(e),
-        };
-        let last = entry.map_or(0, |e| e.generation);
-        let expected = entry.is_some_and(|e| !e.gone);
-        let bytes = match found {
-            None if expected => return Opened::Tampered(Tamper::Removed),
-            None => return Opened::Missing,
-            Some(bytes) => bytes,
         };
         if !format::is_sealed(&bytes) {
-            return if expected || kept || self.witnessed_before() {
-                Opened::Tampered(Tamper::Unsealed)
-            } else {
+            let importable = match self.importable(key) {
+                None => true,
+                Some(names) => names.contains(name),
+            };
+            return if importable {
                 Opened::Legacy(bytes)
+            } else {
+                Opened::Tampered(Tamper::Unsealed)
             };
         }
-        if !kept {
-            // The ledger is gone: no sealed file can be accounted for.
-            return Opened::Tampered(Tamper::Unexpected);
-        }
-        let Some((generation, plain)) = format::open(&key.file_key(), &folder, name, &bytes) else {
-            return Opened::Tampered(Tamper::Forged);
-        };
-        if generation == last && expected {
-            Opened::Sealed(plain)
-        } else if Some(generation) == last.checked_add(1) {
-            // The game wrote the file, then stopped before the ledger: catch
-            // the ledger up. Only a file sealed for this folder gets here.
-            // A ledger copy kept at the old generation therefore takes any
-            // file written next; that is a partial form of restoring the
-            // whole folder, which is accepted (see the crate docs).
-            let entry = Entry {
-                generation,
-                gone: false,
-            };
-            if let Err(e) = self.record(name, Some(entry)) {
-                log::warn!("seal: could not bring the ledger up to date for {name}: {e}");
-            }
-            Opened::Sealed(plain)
-        } else if generation <= last {
-            Opened::Tampered(Tamper::RolledBack)
-        } else {
-            Opened::Tampered(Tamper::Unexpected)
+        match format::open(&key.file_key(), name, &bytes) {
+            Some(plain) => Opened::Sealed(plain),
+            None => Opened::Tampered(Tamper::Forged),
         }
     }
 
     /// Writes `name` atomically: sealed when sealing, plain otherwise. A
     /// build that does not seal refuses (`PermissionDenied`) to overwrite a
-    /// sealed file. A sealing build overwriting a plain file first keeps it
-    /// as `<name>.plain-backup`. A sealing build whose ledger was forged
-    /// refuses (`InvalidData`) until the game has set the file aside.
+    /// sealed file, or to add a new file to a folder that holds one (a
+    /// release's folder, which would take the plain file for tampering). A
+    /// sealing build overwriting a plain file first keeps it
+    /// as `<name>.plain-backup`, unless one is there already.
     pub fn write(&mut self, name: &str, bytes: &[u8]) -> io::Result<()> {
         name::check(name)?;
         std::fs::create_dir_all(&self.dir)?;
@@ -252,50 +197,31 @@ impl Vault {
             if existing.as_deref().is_some_and(format::is_sealed) {
                 return Err(locked(name));
             }
+            if existing.is_none() && holds_sealed(&self.dir) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "{} holds a release's sealed files; this build will not add {name} to it",
+                        self.dir.display()
+                    ),
+                ));
+            }
             return atomic_write(&self.dir, name, bytes);
         };
-        let Some(History {
-            folder,
-            entry,
-            kept,
-        }) = self.history(name)?
-        else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the data folder's ledger was tampered with; set the file aside first",
-            ));
-        };
-        if !kept {
-            // Keep the folder's id before sealing anything with it, so a
-            // crash after this write still leaves a file the ledger can
-            // account for.
-            self.save_ledger()?;
-        }
-        let last = entry.map_or(0, |e| e.generation);
         if let Some(old) = existing.filter(|old| !format::is_sealed(old)) {
             let backup = self.dir.join(format!("{name}{}", name::BACKUP));
-            if last == 0 && !backup.exists() {
+            if std::fs::symlink_metadata(&backup).is_err() {
                 std::fs::write(&backup, old)?;
             }
         }
-        let generation = last
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("the file has been written too many times"))?;
-        let sealed = format::seal(&key.file_key(), &folder, name, generation, bytes)?;
+        let sealed = format::seal(&key.file_key(), name, bytes)?;
         atomic_write(&self.dir, name, &sealed)?;
-        self.record(
-            name,
-            Some(Entry {
-                generation,
-                gone: false,
-            }),
-        )
+        self.leave_witnesses(&key, name);
+        Ok(())
     }
 
-    /// Deletes `name` on purpose (a reset the player chose). The ledger
-    /// remembers that it is gone, so an old copy put back later reads as
-    /// rolled back. A build that does not seal will not delete a sealed
-    /// file.
+    /// Deletes `name` on purpose (a reset the player chose). A build that
+    /// does not seal will not delete a sealed file.
     pub fn remove(&mut self, name: &str) -> io::Result<()> {
         name::check(name)?;
         let path = self.dir.join(name);
@@ -303,26 +229,19 @@ impl Vault {
             return Err(locked(name));
         }
         match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
         }
-        self.forget(name)
     }
 
     /// Moves a file the game will not use to `<name>.tampered` (or
-    /// `.tampered-2`, `-3`...), so it can still be looked at, and marks it
-    /// gone in the ledger, so the next read is `Missing` and the next write
-    /// starts a new generation. A plain file put in its place later still
-    /// reads as `Tampered(Unsealed)`, and an old sealed copy as
-    /// `RolledBack`. Returns where it went (`None` when there was no file).
-    /// When the ledger itself was forged, it is set aside too and the folder
-    /// starts a new one, under a new folder id. A build that does not seal
-    /// will not move a sealed file.
+    /// `.tampered-2`, `-3`...), so it can still be looked at, and the next
+    /// read is `Missing`. Returns where it went (`None` when there was no
+    /// file). A build that does not seal will not move a sealed file.
     pub fn set_aside(&mut self, name: &str) -> io::Result<Option<PathBuf>> {
         name::check(name)?;
         let path = self.dir.join(name);
         if std::fs::symlink_metadata(&path).is_err() {
-            self.forget(name)?;
             return Ok(None);
         }
         if !self.is_sealing() && read_file(&path)?.as_deref().is_some_and(format::is_sealed) {
@@ -331,170 +250,134 @@ impl Vault {
         let to = free_name(&self.dir, name);
         std::fs::rename(&path, &to)?;
         log::warn!("seal: set {name} aside as {}", to.display());
-        self.forget(name)?;
         Ok(Some(to))
     }
 
-    /// Marks `name` gone in the ledger, keeping its generation. A forged
-    /// ledger is set aside and started again.
-    fn forget(&mut self, name: &str) -> io::Result<()> {
-        if !self.is_sealing() {
-            return Ok(());
-        }
-        if self.history(name)?.is_none() {
-            let ledger = self.dir.join(LEDGER);
-            if std::fs::symlink_metadata(&ledger).is_ok() {
-                let to = free_name(&self.dir, LEDGER);
-                std::fs::rename(&ledger, &to)?;
-                log::warn!("seal: set the forged ledger aside as {}", to.display());
-            }
-            self.ledger = fresh_ledger()?;
-        }
-        let tombstone = self
-            .history(name)?
-            .and_then(|h| h.entry)
-            .map(|e| Entry { gone: true, ..e });
-        self.record(name, tombstone)
-    }
-
-    /// What the ledger says about `name`, read on first use: `None` when the
-    /// ledger is forged.
-    fn history(&mut self, name: &str) -> io::Result<Option<History>> {
-        if let Ledger::Unread = self.ledger {
-            self.ledger = self.load_ledger()?;
-        }
-        Ok(match &self.ledger {
-            Ledger::Good {
-                generation,
-                folder,
-                entries,
-            } => Some(History {
-                folder: *folder,
-                entry: entries.get(name).copied(),
-                kept: *generation > 0,
-            }),
-            _ => None,
-        })
-    }
-
-    fn load_ledger(&self) -> io::Result<Ledger> {
-        let key = self
-            .key
-            .as_ref()
-            .expect("only a sealing vault keeps a ledger");
-        let path = self.dir.join(LEDGER);
-        let bytes = match read_file(&path) {
-            Ok(None) => return fresh_ledger(),
-            Ok(Some(bytes)) => bytes,
-            // A folder or the like where the ledger should be.
-            Err(_) if path.exists() && !path.is_file() => return Ok(Ledger::Forged),
-            Err(e) => return Err(e),
-        };
-        Ok(format::open(&key.file_key(), &NO_FOLDER, LEDGER, &bytes)
-            .and_then(|(generation, text)| {
-                ledger::from_text(&text).map(|(folder, entries)| Ledger::Good {
-                    generation,
-                    folder,
-                    entries,
-                })
-            })
-            .unwrap_or(Ledger::Forged))
-    }
-
-    /// Sets `name`'s entry in the ledger (`None` removes it) and saves the
-    /// ledger. Needs a good ledger.
-    fn record(&mut self, name: &str, entry: Option<Entry>) -> io::Result<()> {
-        self.history(name)?;
-        let Ledger::Good { entries, .. } = &mut self.ledger else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the data folder's ledger was tampered with",
-            ));
-        };
-        match entry {
-            Some(entry) => entries.insert(name.to_string(), entry),
-            None => entries.remove(name),
-        };
-        self.save_ledger()
-    }
-
-    /// Writes the ledger as it is in memory, one generation on, then leaves
-    /// the witnesses. Needs a good ledger.
-    fn save_ledger(&mut self) -> io::Result<()> {
-        let key = self
-            .key
-            .clone()
-            .expect("only a sealing vault keeps a ledger");
-        let Ledger::Good {
-            generation,
-            folder,
-            entries,
-        } = &mut self.ledger
-        else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the data folder's ledger was tampered with",
-            ));
-        };
-        *generation = generation.saturating_add(1);
-        let text = ledger::to_text(folder, entries);
-        let sealed = format::seal(
-            &key.file_key(),
-            &NO_FOLDER,
-            LEDGER,
-            *generation,
-            text.as_bytes(),
-        )?;
-        std::fs::create_dir_all(&self.dir)?;
-        atomic_write(&self.dir, LEDGER, &sealed)?;
-        self.leave_witnesses(&key);
-        Ok(())
-    }
-
-    /// Writes any witness that is not there yet, once per run.
-    fn leave_witnesses(&mut self, key: &Key) {
-        if self.witnessed {
+    /// Brings every witness up to date after `sealed` was written: one that
+    /// is missing is written, and `sealed` is no longer importable.
+    fn leave_witnesses(&self, key: &Key, sealed: &str) {
+        if self.witnesses.is_empty() {
             return;
         }
-        self.witnessed = true;
+        let mut names = match self.importable(key) {
+            Some(names) => names,
+            // The first witness: every plain file still in the folder may be
+            // imported later.
+            None => plain_names(&self.dir),
+        };
+        names.remove(sealed);
         for path in &self.witnesses {
-            if std::fs::symlink_metadata(path).is_ok() {
+            if read_witness(key, path).as_ref() == Some(&Some(names.clone())) {
                 continue;
             }
-            let written = (|| {
-                let sealed = format::seal(&key.file_key(), &NO_FOLDER, WITNESS, 0, b"")?;
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(path, sealed)
-            })();
-            if let Err(e) = written {
+            if let Err(e) = write_witness(key, path, &names) {
                 log::warn!("seal: could not leave a witness at {}: {e}", path.display());
             }
         }
     }
 
-    /// Whether any witness says this game has sealed for this player.
-    fn witnessed_before(&self) -> bool {
-        self.witnesses
-            .iter()
-            .any(|path| std::fs::symlink_metadata(path).is_ok())
+    /// The names a plain file may be imported under: `None` while no
+    /// witness exists (anything may), else those every witness allows.
+    fn importable(&self, key: &Key) -> Option<BTreeSet<String>> {
+        let mut out: Option<BTreeSet<String>> = None;
+        for path in self.witnesses.iter().chain(&self.checked) {
+            let Some(found) = read_witness(key, path) else {
+                continue;
+            };
+            let names = found.unwrap_or_default();
+            out = Some(match out {
+                None => names,
+                Some(prev) => prev.intersection(&names).cloned().collect(),
+            });
+        }
+        out
     }
 }
 
-/// The name a witness is sealed under.
-const WITNESS: &str = "hearken-seal.witness";
-
-/// An empty ledger that has never been written, under a new folder id.
-fn fresh_ledger() -> io::Result<Ledger> {
-    let mut folder = NO_FOLDER;
-    getrandom::fill(&mut folder).map_err(|e| io::Error::other(e.to_string()))?;
-    Ok(Ledger::Good {
-        generation: 0,
-        folder,
-        entries: Entries::new(),
-    })
+/// The witness at `path`: `None` when there is none, `Some(None)` when one
+/// is there but does not authenticate (it allows nothing), else the names
+/// it allows.
+#[allow(clippy::option_option)]
+fn read_witness(key: &Key, path: &Path) -> Option<Option<BTreeSet<String>>> {
+    std::fs::symlink_metadata(path).ok()?;
+    let names = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| format::open(&key.file_key(), WITNESS, &bytes))
+        .and_then(|plain| String::from_utf8(plain).ok())
+        .map(|text| {
+            text.lines()
+                .filter(|n| name::check(n).is_ok())
+                .map(str::to_owned)
+                .collect()
+        });
+    Some(names)
 }
+
+/// Seals `names` into the witness at `path`, through a temporary file
+/// beside it so a crash never leaves half a witness.
+fn write_witness(key: &Key, path: &Path, names: &BTreeSet<String>) -> io::Result<()> {
+    let text = names
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let sealed = format::seal(&key.file_key(), WITNESS, text.as_bytes())?;
+    let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a witness needs a file name",
+        ));
+    };
+    std::fs::create_dir_all(dir)?;
+    let mut tmp = std::ffi::OsString::from(".");
+    tmp.push(file);
+    tmp.push(".tmp");
+    write_through(&dir.join(tmp), path, &sealed)
+}
+
+/// The valid names in `dir` that hold plain (unsealed) files.
+fn plain_names(dir: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            name::check(&name).ok()?;
+            let bytes = std::fs::read(entry.path()).ok()?;
+            (!format::is_sealed(&bytes)).then_some(name)
+        })
+        .collect()
+}
+
+/// Whether any file in `dir` under a valid name is sealed.
+fn holds_sealed(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let named = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| name::check(n).is_ok());
+            named && starts_sealed(&entry.path())
+        })
+}
+
+/// Whether the file at `path` begins like a sealed file.
+fn starts_sealed(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_ok()
+        && format::is_sealed(&head)
+}
+
+/// The name a witness is sealed under: one [`name::check`] refuses, so no
+/// data file can ever authenticate as a witness, or a witness as one.
+const WITNESS: &str = ".hearken-seal.witness";
 
 fn locked(name: &str) -> io::Error {
     io::Error::new(
@@ -519,18 +402,43 @@ fn read_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
 /// Writes `bytes` to `dir/name` through a hidden temporary file, flushed
 /// before it is renamed over the old one.
 fn atomic_write(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
-    let tmp = dir.join(name::temp(name));
+    write_through(&dir.join(name::temp(name)), &dir.join(name), bytes)
+}
+
+/// Writes `bytes` to `tmp`, flushes it and renames it over `to`. Whatever
+/// was at `tmp` (a leftover file, a folder, a link to some other file) is
+/// cleared first, and the file is made new, so a write never follows a
+/// link to touch anything but `tmp` itself.
+fn write_through(tmp: &Path, to: &Path, bytes: &[u8]) -> io::Result<()> {
+    clear(tmp)?;
     let written = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&tmp, dir.join(name))
+        std::fs::rename(tmp, to)
     })();
     if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
     }
     written
+}
+
+/// Removes whatever is at `path` (never what a link there points to).
+fn clear(path: &Path) -> io::Result<()> {
+    let removed = match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+    };
+    match removed {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// `dir/<name>.tampered`, or the first of `.tampered-2`, `-3`... not taken.

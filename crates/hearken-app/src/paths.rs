@@ -10,6 +10,12 @@ pub struct Paths {
     /// emptying the data folder, or switching to a fresh one, does not make
     /// the game forget it has sealed before. Empty for [`Paths::at`].
     pub witnesses: Vec<PathBuf>,
+    /// Where this game would leave its witness if it ran the other way
+    /// (installed rather than portable, or the reverse): checked, never
+    /// written (see [`hearken_seal::Vault::checking_witnesses`]). So adding
+    /// or deleting `portable.txt`, which moves the data folder, does not
+    /// also make the game forget it has sealed. Empty for [`Paths::at`].
+    pub checked_witnesses: Vec<PathBuf>,
 }
 
 impl Paths {
@@ -41,7 +47,7 @@ impl Paths {
             .or_else(|| dirs::data_local_dir().map(|d| d.join(dir_name)))
             .unwrap_or_else(|| PathBuf::from(dir_name));
         let mut paths = Paths::at(dir);
-        paths.witnesses = witnesses(
+        (paths.witnesses, paths.checked_witnesses) = witnesses(
             dir_name,
             exe_dir.as_deref(),
             dirs::config_dir().as_deref(),
@@ -51,11 +57,10 @@ impl Paths {
     }
 
     /// A folder for a separate session (a sandbox) inside this one's data
-    /// folder, keeping this one's witnesses.
+    /// folder. It has no witnesses: a witness lists names for one folder, and
+    /// sharing it would let the sandbox's saves decide the real folder's.
     pub fn nested(&self, name: &str) -> Paths {
-        let mut paths = Paths::at(self.data_dir.join(name));
-        paths.witnesses = self.witnesses.clone();
-        paths
+        Paths::at(self.data_dir.join(name))
     }
 
     /// A data folder at `dir`, created if missing. A folder that cannot be
@@ -68,6 +73,7 @@ impl Paths {
         Paths {
             data_dir,
             witnesses: Vec::new(),
+            checked_witnesses: Vec::new(),
         }
     }
 
@@ -92,24 +98,35 @@ pub fn portable_dir(exe_dir: &Path) -> Option<PathBuf> {
         .then(|| exe_dir.join("saves"))
 }
 
-/// The witness file name: for a portable copy, one beside the executable,
-/// so the copy leaves nothing in the player's user folders; otherwise one
-/// in the platform's config folder, named for the game. One that would fall
-/// inside `data_dir` is left out: it would go with the folder.
+/// The witnesses to write, then those only to check. A portable copy writes
+/// one beside the executable, so it leaves nothing in the player's user
+/// folders; an installed one writes one in the platform's config folder,
+/// named for the game. Each checks the other's, so adding or removing
+/// `portable.txt` does not lose the record. One that would fall inside
+/// `data_dir` is left out: it would go with the folder.
 fn witnesses(
     dir_name: &str,
     exe_dir: Option<&Path>,
     config_dir: Option<&Path>,
     data_dir: &Path,
-) -> Vec<PathBuf> {
-    let portable = exe_dir.filter(|dir| portable_dir(dir).is_some());
-    let mut out: Vec<PathBuf> = match (portable, config_dir) {
-        (Some(exe_dir), _) => vec![exe_dir.join("hearken-seal.witness")],
-        (None, Some(config)) => vec![config.join(format!("{dir_name}.hearken-seal"))],
-        (None, None) => Vec::new(),
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let beside_exe: Vec<PathBuf> = exe_dir
+        .map(|dir| dir.join(format!("{dir_name}.hearken-seal")))
+        .into_iter()
+        .collect();
+    let in_config: Vec<PathBuf> = config_dir
+        .map(|dir| dir.join(format!("{dir_name}.hearken-seal")))
+        .into_iter()
+        .collect();
+    let portable = exe_dir.is_some_and(|dir| portable_dir(dir).is_some());
+    let (mut written, mut checked) = if portable {
+        (beside_exe, in_config)
+    } else {
+        (in_config, beside_exe)
     };
-    out.retain(|w| !w.starts_with(data_dir));
-    out
+    written.retain(|w| !w.starts_with(data_dir));
+    checked.retain(|w| !w.starts_with(data_dir));
+    (written, checked)
 }
 
 #[cfg(test)]
@@ -129,15 +146,21 @@ mod tests {
         let exe = tempfile::tempdir().unwrap();
         let config = tempfile::tempdir().unwrap();
         let data = exe.path().join("saves");
+        let config_witness = config.path().join("Game.hearken-seal");
+        let exe_witness = exe.path().join("Game.hearken-seal");
         let installed = witnesses("Game", Some(exe.path()), Some(config.path()), &data);
-        assert_eq!(installed, vec![config.path().join("Game.hearken-seal")]);
+        assert_eq!(
+            installed,
+            (vec![config_witness.clone()], vec![exe_witness.clone()])
+        );
         std::fs::write(exe.path().join(PORTABLE_MARKER), "").unwrap();
         let portable = witnesses("Game", Some(exe.path()), Some(config.path()), &data);
-        assert_eq!(portable, vec![exe.path().join("hearken-seal.witness")]);
+        assert_eq!(portable, (vec![exe_witness], vec![config_witness]));
         // A data folder that holds the config folder keeps no witness there.
         let inside = witnesses("Game", None, Some(config.path()), config.path());
-        assert!(inside.is_empty());
-        assert!(Paths::at(data).witnesses.is_empty());
+        assert_eq!(inside, (Vec::new(), Vec::new()));
+        let at = Paths::at(data);
+        assert!(at.witnesses.is_empty() && at.checked_witnesses.is_empty());
     }
 
     #[test]

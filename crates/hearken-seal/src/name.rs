@@ -6,7 +6,7 @@ use std::io;
 pub const MAX_LEN: usize = 64;
 
 /// Checks that `name` is a single, ordinary file name: `[A-Za-z0-9._-]`,
-/// not starting with `.`, at most 64 bytes, not the ledger and not one of
+/// not starting with `.`, at most 64 bytes, and not one of
 /// the names the vault uses beside a file (`.plain-backup`, `.tampered`).
 pub fn check(name: &str) -> io::Result<()> {
     let ok = !name.is_empty()
@@ -15,7 +15,6 @@ pub fn check(name: &str) -> io::Result<()> {
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        && !name.eq_ignore_ascii_case(crate::LEDGER)
         && !name.ends_with(BACKUP)
         && !name.contains(TAMPERED);
     if ok {
@@ -60,8 +59,6 @@ mod tests {
             "c:x",
             "a b",
             "é.json",
-            crate::LEDGER,
-            "HEARKEN-SEAL.LEDGER",
             "records.json.plain-backup",
             "records.json.tampered",
             "records.json.tampered-2",

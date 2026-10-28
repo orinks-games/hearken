@@ -1,6 +1,17 @@
 # Sealed release data
 
-Date: 2026-10-27. Status: proposed; this file is for review.
+Date: 2026-10-27. Status: shipped in #23, then changed on 2026-10-28.
+
+**Update, 2026-10-28:** the ledger is gone. Players asked what the
+`hearken-seal.ledger` file in their saves folder was, so the data folder
+now holds only the game's own files. Sealed files are format version 2:
+no folder id and no generation, just the file's name bound in. That drops
+the ledger's protections: an older copy of a file, a deleted file, or a
+file copied from another install now reads as good, the same way a whole
+restored or copied folder already did. Editing, swapping one file for
+another, other keys, and (with witnesses) plain files over sealed ones are
+still caught. Trusted results belong to the server replay planned for
+online play. The ledger sections below are kept as history.
 
 ## Goal
 
@@ -227,29 +238,44 @@ fresh folder.
 
 ### Witnesses
 
-`Vault::with_witnesses(paths)` names marker files outside the data folder.
-The first time a vault writes its ledger in a run, it writes any missing
-witness (a sealed empty blob; only its existence counts). Writing one is
-best effort: a failure is logged and saving goes on. While a witness
-exists, no folder offers `Legacy`.
+`Vault::with_witnesses(paths)` names marker files outside the data folder,
+and `Vault::checking_witnesses(paths)` names more that it reads but never
+writes. A witness is sealed under `.hearken-seal.witness`, a name no data
+file can have, so a witness never authenticates as a data file or the
+reverse. It holds the names still importable: when the first witness is
+written, every plain file under a valid name then in the folder, less each
+name sealed since (the vault brings every witness it writes up to date on
+each sealing write). A plain file reads as `Legacy` while no witness exists,
+or while every witness there lists its name; otherwise it is
+`Tampered(Unsealed)`. A witness that does not authenticate lists nothing.
+So a player upgrading with several old saves imports each of them, one at a
+time, while a hand-written file under a name that was not an old save, or
+over one already sealed, is refused. Writing a witness is best effort
+(through a temporary file, then a rename): a failure is logged and saving
+goes on.
 
 Witnesses only guard the legacy import, so `hearken-app` hands them to the
 vault only for a game with `Game::IMPORTS_PLAIN_SAVES = true`; the default
-is false, and such a game never writes one. Paths name exactly one: for a
-portable copy, `hearken-seal.witness` beside the executable, so a portable
-copy leaves nothing in the player's user folders; otherwise
-`<config dir>/<DATA_DIR>.hearken-seal`. Neither is ever inside the data
-folder.
+is false, and such a game never writes one. A portable copy writes
+`<Game>.hearken-seal` beside the executable, so it leaves nothing in the
+player's user folders; an installed one writes
+`<config dir>/<DATA_DIR>.hearken-seal`. Each checks the other's, so adding
+or deleting `portable.txt` (which moves the data folder) does not make the
+game forget it has sealed. Neither is ever inside the data folder.
 
-The cost falls on a player with more than one installed copy. The
-config-folder witness is shared by every installed copy for that user, so
-once one has sealed, a plain file in another installed copy's folder reads
-as `Tampered(Unsealed)`, not `Legacy`. The game sets it aside rather than
+The cost falls on a player with more than one copy. The config-folder
+witness is shared by every installed copy for that user (and checked by a
+portable one), so once one has sealed, a plain file in another copy's
+folder reads as `Tampered(Unsealed)` unless its name was among the old
+saves in the first copy's folder. The game sets it aside rather than
 deleting it, so it can still be recovered by hand, but it is not imported.
-Portable copies each keep their own witness, so they do not affect each
-other. A game that imports should tell players to update by unpacking over
-their old copy, or by moving their old saves in before the new copy first
-runs, and should turn the import off once players have moved over.
+A game that imports should tell players to update by unpacking over their
+old copy, or by moving their old saves in before the new copy first runs,
+and should turn the import off once players have moved over.
+
+A build without the key will not add a new plain file to a folder that
+holds a sealed one (a release's), since the release would take it for
+tampering.
 
 ## The key
 

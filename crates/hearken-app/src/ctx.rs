@@ -84,12 +84,14 @@ impl<G: Game> Ctx<G> {
         let delivery = Delivery::new(sound.pacer, G::verbosity());
         // Witnesses only guard the import of old plain files, so a game that
         // does not import leaves none.
-        let witnesses = if G::IMPORTS_PLAIN_SAVES {
-            paths.witnesses.clone()
+        let (witnesses, checked) = if G::IMPORTS_PLAIN_SAVES {
+            (paths.witnesses.clone(), paths.checked_witnesses.clone())
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
-        let vault = Vault::new(&paths.data_dir).with_witnesses(witnesses);
+        let vault = Vault::new(&paths.data_dir)
+            .with_witnesses(witnesses)
+            .checking_witnesses(checked);
         #[cfg(feature = "online")]
         let online = crate::online::Online::new(online_config::<G>(), &settings.online);
         let mut ctx = Ctx {
