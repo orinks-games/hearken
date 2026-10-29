@@ -244,6 +244,9 @@ mod tests {
             seal_id: seal_id.map(String::from),
             include: Vec::new(),
             rules: None,
+            app_name: "my-game".into(),
+            bundle_id: "io.hearken.my-game".into(),
+            icon: None,
         }
     }
 

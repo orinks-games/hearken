@@ -264,6 +264,21 @@ cargo install --git https://github.com/orinks-games/hearken hearken-cli
   same GitHub release. `hearken play --download` picks the one for the
   player's computer, and on an Arm Windows PC or Mac takes the x64 build
   when there is no Arm one.
+- On a Mac, the zip holds an app (`My Game.app`), so players open the
+  game from Finder with no Terminal window. The program goes in
+  `Contents/MacOS`, the game's files and `sounds.pak` in
+  `Contents/Resources`, where the engine looks first, and the README and
+  licence beside the app. The app keeps its saves in Application Support,
+  even when the game is `portable`.
+- On a Mac, `hearken release` signs the app with Developer ID when
+  `MACOS_SIGN_IDENTITY` names a codesigning identity (with
+  `MACOS_SIGN_KEYCHAIN` if it is not in the default keychains), using the
+  hardened runtime. With an App Store Connect API key in
+  `MACOS_NOTARY_KEY_PATH`, `MACOS_NOTARY_KEY_ID` and
+  `MACOS_NOTARY_ISSUER_ID` as well, it sends the zip to Apple's notary
+  service, fails unless Apple accepts it, and staples Apple's ticket into
+  the app. Without them the app is signed ad hoc, and players have to
+  allow it in Privacy & Security.
 - `hearken seal-key <game>` shows where a sealing game's key is kept and
   its ID; `--print` shows the key itself, for a CI secret.
 
@@ -292,6 +307,9 @@ pack = true                                   # sounds in an encrypted sounds.pa
 seal = true                                   # data written through ctx.vault is sealed
 seal-id = "k1:3f9a0c2e7b14d685"               # the seal key's ID, added after the first release
 include = ["sounds", "README.md", "LICENSE"]  # the default
+app-name = "My Game"                          # the Mac app's name; the package's by default
+bundle-id = "com.example.my-game"             # the Mac app's ID; io.hearken.<package> by default
+icon = "icon.png"                             # the Mac app's icon, a square PNG or an .icns
 ```
 
 A portable release carries `portable.txt`, so the game keeps its settings,
