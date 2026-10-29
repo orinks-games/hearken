@@ -10,6 +10,9 @@
 //! rules = "my-game-rules"                          # built for WebAssembly, for verified runs
 //! include = ["sounds", "README.md", "LICENSE"]     # shipped in a release
 //! bin = "my-game"                                  # when it has several
+//! app-name = "My Game"                             # the Mac app's name
+//! bundle-id = "com.example.my-game"                # the Mac app's ID
+//! icon = "icon.png"                                # the Mac app's icon (.png or .icns)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -43,6 +46,30 @@ pub struct Project {
     /// The game's rules crate, which a release also builds for WebAssembly
     /// so a server can replay its runs (see `rules_module`).
     pub rules: Option<Rules>,
+    /// The Mac app's name, as Finder shows it: `app-name`, else the package.
+    pub app_name: String,
+    /// The Mac app's bundle identifier: `bundle-id`, else one made from the
+    /// package name.
+    pub bundle_id: String,
+    /// The Mac app's icon, relative to `dir`: a `.png` (1024 pixels square
+    /// is best) or an `.icns`.
+    pub icon: Option<String>,
+}
+
+/// Whether `id` is a valid bundle identifier: dot-separated parts of
+/// letters, digits and hyphens.
+fn is_bundle_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .split('.')
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+}
+
+/// `name` made fit for a bundle identifier.
+fn bundle_part(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 /// A game's rules crate: a workspace package that is a `cdylib` and calls
@@ -134,6 +161,16 @@ impl Project {
             Some(Value::String(rules)) => Some(rules_crate(&packages, rules)?),
             Some(_) => return Err("`rules` names the game's rules crate, as a string.".into()),
         };
+        let bundle_id = match hearken["bundle-id"].as_str() {
+            Some(id) if is_bundle_id(id) => id.to_string(),
+            Some(id) => {
+                return Err(format!(
+                    "bundle-id {id:?} may hold only letters, digits, dots and hyphens, \
+                     like com.example.my-game."
+                ))
+            }
+            None => format!("io.hearken.{}", bundle_part(&name)),
+        };
         let dir = PathBuf::from(meta["workspace_root"].as_str().unwrap_or("."));
         let target_dir = meta["target_directory"]
             .as_str()
@@ -150,6 +187,11 @@ impl Project {
             seal_id: hearken["seal-id"].as_str().map(String::from),
             include,
             rules,
+            app_name: hearken["app-name"]
+                .as_str()
+                .map_or_else(|| name.clone(), String::from),
+            bundle_id,
+            icon: hearken["icon"].as_str().map(String::from),
             package: name,
         })
     }
@@ -288,6 +330,27 @@ mod tests {
         assert_eq!(p.include, ["sounds", "README.md", "LICENSE"]);
         assert_eq!(p.target_dir, Path::new("/games/parlor").join("target"));
         assert_eq!(p.rules, None);
+        assert_eq!(p.app_name, "parlor");
+        assert_eq!(p.bundle_id, "io.hearken.parlor");
+        assert_eq!(p.icon, None);
+    }
+
+    #[test]
+    fn reads_the_mac_app_settings() {
+        let meta = game(
+            serde_json::json!({}),
+            serde_json::json!({ "app-name": "The Parlor", "bundle-id": "net.example.parlor",
+                                "icon": "art/icon.png" }),
+        );
+        let p = Project::from_metadata(&meta, None).unwrap();
+        assert_eq!(p.app_name, "The Parlor");
+        assert_eq!(p.bundle_id, "net.example.parlor");
+        assert_eq!(p.icon.as_deref(), Some("art/icon.png"));
+        let bad = game(
+            serde_json::json!({}),
+            serde_json::json!({ "bundle-id": "net.example.parlor game" }),
+        );
+        assert!(Project::from_metadata(&bad, None).is_err());
     }
 
     #[test]

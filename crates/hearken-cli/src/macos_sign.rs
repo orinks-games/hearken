@@ -1,6 +1,6 @@
-//! Developer ID signing and notarization of a macOS release, when the
-//! signing variables are set. Without them a release is left as the linker
-//! signed it (ad hoc), and Gatekeeper asks players to allow it by hand.
+//! Developer ID signing and notarization of a macOS release's app, when the
+//! signing variables are set. Without them the app is signed ad hoc, and
+//! Gatekeeper asks players to allow it by hand.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -86,12 +86,18 @@ fn codesign(identity: &str, keychain: &str, target: &Path) -> Command {
     cmd
 }
 
-/// Signs the staged executable and its libraries with the Developer ID
-/// identity in `MACOS_SIGN_IDENTITY`. Returns whether it signed.
-pub fn sign(stage: &Path, exe: &Path) -> Result<bool, String> {
+/// Signs the staged app, and any library in the stage first, with the
+/// Developer ID identity in `MACOS_SIGN_IDENTITY`. Returns whether it did.
+/// Without one, the app is signed ad hoc, which any Mac requires of an
+/// Apple Silicon program and which seals the app's files.
+pub fn sign(stage: &Path, app: &Path) -> Result<bool, String> {
     let identity = env_trimmed(SIGN_IDENTITY_ENV);
     if identity.is_empty() {
-        println!("Not signing for macOS: {SIGN_IDENTITY_ENV} is not set.");
+        println!("Not signing with Developer ID: {SIGN_IDENTITY_ENV} is not set.");
+        run(Command::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(app))?;
+        verify(app)?;
         return Ok(false);
     }
     let keychain = env_trimmed(SIGN_KEYCHAIN_ENV);
@@ -100,21 +106,35 @@ pub fn sign(stage: &Path, exe: &Path) -> Result<bool, String> {
     for lib in &libs {
         run(&mut codesign(&identity, &keychain, lib))?;
     }
-    run(&mut codesign(&identity, &keychain, exe))?;
-    run(Command::new("codesign")
-        .args(["--verify", "--strict", "--verbose=2"])
-        .arg(exe))?;
+    // Signing the app signs its program and seals everything else in it.
+    run(&mut codesign(&identity, &keychain, app))?;
+    verify(app)?;
     println!("Signed as {identity}.");
     Ok(true)
 }
 
+fn verify(app: &Path) -> Result<(), String> {
+    run(Command::new("codesign")
+        .args(["--verify", "--deep", "--strict", "--verbose=2"])
+        .arg(app))
+}
+
+/// Staples Apple's notarization ticket into the app, and checks that
+/// Gatekeeper now accepts it.
+pub fn staple(app: &Path) -> Result<(), String> {
+    run(Command::new("xcrun").args(["stapler", "staple"]).arg(app))?;
+    run(Command::new("xcrun").args(["stapler", "validate"]).arg(app))?;
+    run(Command::new("spctl")
+        .args(["--assess", "--type", "execute", "--verbose=4"])
+        .arg(app))
+}
+
 /// Sends the archive to Apple's notary service and waits for its verdict.
-/// A bare executable cannot be stapled, so Gatekeeper looks the ticket up
-/// online the first time a player opens the game.
-pub fn notarize(archive: &Path) -> Result<(), String> {
+/// Returns whether it was sent: not when no App Store Connect key is set.
+pub fn notarize(archive: &Path) -> Result<bool, String> {
     let Some([key_path, key_id, issuer]) = notary_values(env_trimmed)? else {
         println!("Not notarizing: no App Store Connect key is set.");
-        return Ok(());
+        return Ok(false);
     };
     let auth = [
         "--key",
@@ -155,7 +175,7 @@ pub fn notarize(archive: &Path) -> Result<(), String> {
         ));
     }
     println!("Notarization accepted: {id}");
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
