@@ -52,6 +52,7 @@ A game depends on one crate, `hearken`, which brings in the rest:
 | `hearken-seal` | A game's records and saves, sealed in a release so a player cannot edit, swap or restore them (`ctx.vault`, `hearken::seal`). |
 | `hearken-replay` | Verified online runs: a run recorded as its seed and inputs, and the game's rules built for WebAssembly so a server can replay it and trust only the result it computes (`hearken::replay`, `ctx.online` with the `online` feature). The server side is `server/`; see `docs/online.md`. |
 | `hearken-bake` | Build scripts only: puts a release's keys into the program as scattered shares. |
+| `hearken-discord` | Discord Rich Presence: the "Playing ..." status friends see, from the game's own Discord application. Off the game loop, throttled, and silent when Discord is not running (`ctx.discord`, with the `discord` feature). |
 | `hearken-radio` | Internet radio, played as a sound: HTTP and ICY stations, playlists and live HLS, with now-playing titles. Optional. |
 
 Some of what that gives a game:
@@ -395,6 +396,59 @@ game can go.
   It adds ONNX Runtime to the build (downloaded prebuilt at build time).
 - `voice-download`: `voice`, plus the in-game installer for the voice
   package. It adds `ureq` and rustls.
+- `discord`: Discord Rich Presence. See Discord status.
+
+## Discord status
+
+A game can show its players' Discord friends what they are doing, as
+Freight Fate does. Make an application at
+<https://discord.com/developers/applications>, named after the game (Discord
+shows that name as the game being played), and give its application ID:
+
+```rust
+impl Game for MyGame {
+    // ...
+    fn discord() -> Option<hearken::DiscordConfig> {
+        Some(hearken::DiscordConfig::new("123456789012345678"))
+    }
+
+    // Shown when no screen reports one of its own.
+    fn presence(ctx: &Ctx<Self>) -> Option<hearken::Presence> {
+        Some(hearken::Presence::new("In the menus"))
+    }
+}
+```
+
+Turn on `hearken`'s `discord` feature in the game's `Cargo.toml`. Each screen
+can report its own status with `State::presence` (or `Menu::presence`):
+
+```rust
+fn presence(&self, ctx: &Ctx<MyGame>) -> Option<hearken::Presence> {
+    Some(hearken::Presence::new("Playing a round").detail(format!("Level {}", self.level)))
+}
+```
+
+The engine asks from the top screen down and takes the first answer, then
+falls back to `Game::presence`, so a help or Settings screen over play can
+return `None` and the status stays on the game. Keep it to public game
+content: never a save path, a typed name or debug text.
+
+What the engine does with it:
+
+- **Settings** gets a "Discord status" switch, on by default, saved in
+  `settings.json`. Discord's own activity setting still applies.
+- **Nothing on the game loop.** A worker thread owns Discord's pipe. A
+  presence equal to the last one is dropped, changes go at most once every
+  15 seconds (Discord's rate limit), and an elapsed-time counter runs from
+  the start of the session (`DiscordConfig::without_elapsed` turns it off).
+- **Silent when Discord is absent.** Not running, not installed, quitting
+  mid-session or refusing the ID: the game plays on and says nothing. It
+  tries to connect again every 30 seconds.
+- **Idle players drop off.** After 30 minutes with no change the status
+  comes down; the next change puts it back.
+- **Quitting stays quick.** The status is cleared at quit, waiting at most
+  two seconds, and only when Discord is connected.
+- Tests (`Headless`) and agent sessions never touch Discord.
 
 ## Commentary voices
 
