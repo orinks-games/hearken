@@ -86,9 +86,14 @@ pub fn find_voices_in(env_prefix: &str, data_dir: Option<&Path>) -> Option<PathB
         }
         log::warn!("voices: {var} is set to {path:?} but that is not a directory; ignoring");
     }
-    let beside_exe = std::env::current_exe()
+    // Beside the program, or in a Mac app's Resources.
+    let beside_exe: Vec<PathBuf> = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|p| p.join("voices")));
+        .and_then(|exe| exe.parent().map(game_dirs))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| d.join("voices"))
+        .collect();
     let in_data = data_dir.map(|d| d.join("voices"));
     let in_cwd = std::env::current_dir().ok().map(|d| d.join("voices"));
     beside_exe
@@ -96,6 +101,19 @@ pub fn find_voices_in(env_prefix: &str, data_dir: Option<&Path>) -> Option<PathB
         .chain(in_data)
         .chain(in_cwd)
         .find(|p| package_dir(p).is_some())
+}
+
+/// The program's folder and, in a Mac app (`Game.app/Contents/MacOS`), the
+/// app's `Contents/Resources` before it (as `hearken_audio::game_dirs`).
+fn game_dirs(exe_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if exe_dir.ends_with("Contents/MacOS") {
+        if let Some(contents) = exe_dir.parent() {
+            dirs.push(contents.join("Resources"));
+        }
+    }
+    dirs.push(exe_dir.to_path_buf());
+    dirs
 }
 
 /// The installed package's folder under `voices`, when it is there.

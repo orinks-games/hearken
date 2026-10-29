@@ -78,11 +78,12 @@ impl LooseClips {
         LooseClips::beside(exe_dir().as_deref())
     }
 
-    /// `exe_dir`'s `sounds` folder, else the current directory's.
+    /// `exe_dir`'s `sounds` folder (in a Mac app, the app's `Resources`
+    /// first), else the current directory's.
     fn beside(exe_dir: Option<&Path>) -> LooseClips {
         let mut candidates: Vec<(String, PathBuf)> = Vec::new();
-        if let Some(dir) = exe_dir.map(|d| d.join("sounds")) {
-            candidates.push(("the executable's folder".to_string(), dir));
+        for dir in exe_dir.map(game_dirs).into_iter().flatten() {
+            candidates.push(("the game's folder".to_string(), dir.join("sounds")));
         }
         if let Ok(cwd) = std::env::current_dir() {
             candidates.push(("the current directory".to_string(), cwd.join("sounds")));
@@ -131,6 +132,20 @@ fn exe_dir() -> Option<PathBuf> {
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
 }
 
+/// Where a release keeps the game's files, given the program's folder: in
+/// a Mac app (`Game.app/Contents/MacOS`), the app's `Contents/Resources`
+/// first; then the program's folder itself.
+pub fn game_dirs(exe_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if exe_dir.ends_with("Contents/MacOS") {
+        if let Some(contents) = exe_dir.parent() {
+            dirs.push(contents.join("Resources"));
+        }
+    }
+    dirs.push(exe_dir.to_path_buf());
+    dirs
+}
+
 /// A release's sounds, from the encrypted `sounds.pak` that `hearken
 /// release` writes beside the game (see the `hearken-pack` crate).
 ///
@@ -157,7 +172,13 @@ impl PackedClips {
     /// `hearken release` with the key it was packed with.
     pub fn beside_game() -> Option<PackedClips> {
         let key = hearken_pack::build_key()?;
-        PackedClips::in_dir(&exe_dir()?, &key).ok()
+        let dirs = game_dirs(&exe_dir()?);
+        // The first folder that has a pack; a missing one is logged there.
+        let dir = dirs
+            .iter()
+            .find(|d| d.join(hearken_pack::FILE_NAME).is_file())
+            .unwrap_or(&dirs[0]);
+        PackedClips::in_dir(dir, &key).ok()
     }
 
     /// The `sounds.pak` in `dir`, logged either way.
@@ -327,5 +348,26 @@ impl ClipSource for MadeClips {
         let made = (self.make)(key).map(Arc::from);
         self.cache.insert(key.to_string(), made.clone());
         made
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mac_app_looks_in_its_resources_first() {
+        let dirs = game_dirs(Path::new("/Applications/Game.app/Contents/MacOS"));
+        assert_eq!(
+            dirs,
+            [
+                PathBuf::from("/Applications/Game.app/Contents/Resources"),
+                PathBuf::from("/Applications/Game.app/Contents/MacOS"),
+            ]
+        );
+        assert_eq!(
+            game_dirs(Path::new("/games/game")),
+            [PathBuf::from("/games/game")]
+        );
     }
 }

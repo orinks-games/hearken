@@ -1,8 +1,10 @@
 //! `hearken release`: a player's zip of the game, without the agent server.
+//! On a Mac the zip holds an app (see `macos_app`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::macos_app::Layout;
 use crate::project::Project;
 
 /// The file that makes a copy portable: `hearken_app::paths::PORTABLE_MARKER`.
@@ -80,23 +82,28 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
         std::fs::remove_dir_all(&stage)
             .map_err(|e| format!("Could not clear {}: {e}", stage.display()))?;
     }
-    std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+    // On a Mac the release is an app, so a player opens it from Finder
+    // rather than a Terminal window.
+    let layout = Layout::new(&stage, project, cfg!(target_os = "macos"));
+    layout.create()?;
 
     let exe = project.exe();
-    let staged_exe = stage.join(exe.file_name().unwrap_or_default());
-    copy(&exe, &staged_exe)?;
+    copy(
+        &exe,
+        &layout.programs.join(exe.file_name().unwrap_or_default()),
+    )?;
     let mut packed = false;
     for item in &project.include {
         let from = project.dir.join(item);
         if let (Some(key), SOUNDS) = (&key, item.as_str()) {
             if from.is_dir() {
-                pack(&from, &stage, key)?;
+                pack(&from, &layout.resources, key)?;
                 packed = true;
                 continue;
             }
         }
         if from.exists() {
-            copy(&from, &stage.join(item))?;
+            copy(&from, &layout.place(item).join(item))?;
         } else {
             println!("Skipping {item}: it is not in the workspace.");
         }
@@ -104,43 +111,74 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
     if let (Some(key), false) = (&key, packed) {
         // A packed build reads only its pack, so it still gets one.
         println!("Nothing to pack: the release includes no {SOUNDS} folder.");
-        pack(&stage.join(".nothing-to-pack"), &stage, key)?;
+        pack(&stage.join(".nothing-to-pack"), &layout.resources, key)?;
     }
     if cfg!(windows) {
         windows_runtime(&project.release_dir(), &stage)?;
     }
     if project.portable {
-        std::fs::write(stage.join(PORTABLE_MARKER), PORTABLE_NOTE).map_err(|e| e.to_string())?;
+        if layout.app.is_some() {
+            // An app is replaced whole on update, and macOS may run it from
+            // a read-only copy, so its saves go in Application Support.
+            println!("The Mac app keeps its saves in Application Support: `portable` is for the other platforms.");
+        } else {
+            std::fs::write(stage.join(PORTABLE_MARKER), PORTABLE_NOTE)
+                .map_err(|e| e.to_string())?;
+        }
     }
-    let signed = cfg!(target_os = "macos") && crate::macos_sign::sign(&stage, &staged_exe)?;
+    if let Some(app) = &layout.app {
+        crate::macos_app::finish(project, app)?;
+    }
+    let signed = match &layout.app {
+        Some(app) => crate::macos_sign::sign(&stage, app)?,
+        None => false,
+    };
 
+    let archive = make_archive(&dist, &stem)?;
+    if let (true, Some(app)) = (signed, &layout.app) {
+        if crate::macos_sign::notarize(&archive)? {
+            // Apple's ticket goes into the app, so it opens offline too;
+            // the zip is made again to carry it.
+            crate::macos_sign::staple(app)?;
+            make_archive(&dist, &stem)?;
+        }
+    }
+    Ok(archive)
+}
+
+/// Archives `dist/stem` as `dist/stem.zip`, or `.tar.gz` on Linux.
+fn make_archive(dist: &Path, stem: &str) -> Result<PathBuf, String> {
     let archive = if cfg!(target_os = "linux") {
         format!("{stem}.tar.gz")
     } else {
         format!("{stem}.zip")
     };
     let _ = std::fs::remove_file(dist.join(&archive));
-    // bsdtar, on Windows and macOS, writes a zip when the name ends .zip.
-    let mut tar = Command::new("tar");
-    if cfg!(target_os = "linux") {
-        tar.arg("-czf");
+    let mut cmd = if cfg!(target_os = "macos") {
+        // ditto keeps an app whole: its symlinks, permissions and
+        // signature.
+        let mut ditto = Command::new("ditto");
+        ditto
+            .args(["-c", "-k", "--keepParent"])
+            .arg(stem)
+            .arg(&archive);
+        ditto
     } else {
-        tar.args(["-a", "-cf"]);
-    }
-    let packed = tar
-        .arg(&archive)
-        .arg(&stem)
-        .current_dir(&dist)
-        .status()
-        .is_ok_and(|s| s.success());
+        let mut tar = Command::new("tar");
+        if cfg!(target_os = "linux") {
+            tar.arg("-czf");
+        } else {
+            // bsdtar, on Windows, writes a zip when the name ends .zip.
+            tar.args(["-a", "-cf"]);
+        }
+        tar.arg(&archive).arg(stem);
+        tar
+    };
+    let packed = cmd.current_dir(dist).status().is_ok_and(|s| s.success());
     if !packed {
         return Err(format!("Could not pack {archive}."));
     }
-    let archive = dist.join(archive);
-    if signed {
-        crate::macos_sign::notarize(&archive)?;
-    }
-    Ok(archive)
+    Ok(dist.join(archive))
 }
 
 /// The keys and rules ID a release's build gets: all always set, empty
