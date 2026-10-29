@@ -24,6 +24,9 @@ instead.\n";
 /// Builds the release, stages it under `dist/` and archives it. Returns the
 /// archive's path.
 pub fn release(project: &Project) -> Result<PathBuf, String> {
+    if cfg!(target_os = "macos") {
+        crate::macos_sign::check()?;
+    }
     // A packed release gets a key of its own, built into its program. Any
     // other build is made with none, so it reads loose sounds.
     if project.pack {
@@ -80,7 +83,8 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
 
     let exe = project.exe();
-    copy(&exe, &stage.join(exe.file_name().unwrap_or_default()))?;
+    let staged_exe = stage.join(exe.file_name().unwrap_or_default());
+    copy(&exe, &staged_exe)?;
     let mut packed = false;
     for item in &project.include {
         let from = project.dir.join(item);
@@ -108,6 +112,7 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
     if project.portable {
         std::fs::write(stage.join(PORTABLE_MARKER), PORTABLE_NOTE).map_err(|e| e.to_string())?;
     }
+    let signed = cfg!(target_os = "macos") && crate::macos_sign::sign(&stage, &staged_exe)?;
 
     let archive = if cfg!(target_os = "linux") {
         format!("{stem}.tar.gz")
@@ -131,7 +136,11 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
     if !packed {
         return Err(format!("Could not pack {archive}."));
     }
-    Ok(dist.join(archive))
+    let archive = dist.join(archive);
+    if signed {
+        crate::macos_sign::notarize(&archive)?;
+    }
+    Ok(archive)
 }
 
 /// The keys and rules ID a release's build gets: all always set, empty

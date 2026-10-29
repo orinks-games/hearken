@@ -13,6 +13,7 @@
 //! by a folder on this computer; nothing about any game is built in. Inside
 //! a game's own workspace the name can be left out.
 
+mod macos_sign;
 mod project;
 mod release;
 mod rules_module;

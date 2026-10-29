@@ -264,6 +264,14 @@ cargo install --git https://github.com/orinks-games/hearken hearken-cli
   same GitHub release. `hearken play --download` picks the one for the
   player's computer, and on an Arm Windows PC or Mac takes the x64 build
   when there is no Arm one.
+- On a Mac, `hearken release` signs the game with Developer ID when
+  `MACOS_SIGN_IDENTITY` names a codesigning identity (with
+  `MACOS_SIGN_KEYCHAIN` if it is not in the default keychains), using the
+  hardened runtime. With an App Store Connect API key in
+  `MACOS_NOTARY_KEY_PATH`, `MACOS_NOTARY_KEY_ID` and
+  `MACOS_NOTARY_ISSUER_ID` as well, it sends the zip to Apple's notary
+  service and fails unless Apple accepts it. Without them the game is
+  left ad hoc signed, and players have to allow it in Privacy & Security.
 - `hearken seal-key <game>` shows where a sealing game's key is kept and
   its ID; `--print` shows the key itself, for a CI secret.
 
