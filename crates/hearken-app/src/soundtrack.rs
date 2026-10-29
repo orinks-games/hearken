@@ -26,24 +26,49 @@
 //!   which voices open it, the order they join in, where some drop out and
 //!   come back, how it thins out at the end, how long it runs, and each
 //!   voice's level and place in the stereo field.
-//! - [`Variation`] moves the whole piece up or down a semitone or two (key
-//!   and tempo together, as a turntable would) and shades the mix.
+//! - [`Variation`] moves the whole piece up or down a semitone by default (key
+//!   and tempo together, as a turntable would; never left at the recorded
+//!   pitch) and shades the mix. With no bed, no loop holds fewer than two
+//!   voices.
 //! - [`Piece::Live`] hands the performance to the game's own
 //!   [`Performer`], which can compose as it goes.
 //!
 //! So a recording of one play is that play, not the piece: the stems stay
 //! in the game's sound pack and are only ever heard mixed, and the next
-//! play differs. What this cannot stop is someone recording what comes out
-//! of their speakers, or digging the pack key out of the program (see
-//! `hearken-pack`); nothing that plays sound on a player's computer can.
+//! play differs. A piece whose stems will not all load (a damaged pack
+//! entry) does not play at all, rather than play the ones that did.
+//!
+//! Arranging needs layers to move: at least three voices with no bed, or
+//! two over a bed ([`Stems::arranges`]). With fewer, every loop holds every
+//! voice and only the length, key and mix change from play to play.
+//!
+//! What this cannot stop, and nothing that plays sound on a player's
+//! computer can:
+//!
+//! - Recording what comes out of the speakers. A voice's level and place
+//!   hold for a whole play and the stems stay sample-aligned, so someone
+//!   patient can subtract one loop from the next to pull out the voices
+//!   that changed between them, and undo the pitch change, which is a
+//!   plain resample by a known step. Any loop where every voice plays is
+//!   the full mix of that loop.
+//! - Digging the pack key out of the program (see `hearken-pack`).
 //!
 //! # Saving
 //!
 //! The unlocked ids go to `soundtrack.json` in the game's data folder
 //! through [`crate::Vault`], so a release made with `seal = true` seals
 //! them like any other save: an edited or swapped file is set aside and the
-//! soundtrack starts over. A game that keeps its progress elsewhere
-//! overrides [`Game::load_soundtrack`] and [`Game::save_soundtrack`].
+//! soundtrack starts over. A save keeps what the file already holds and
+//! writes nothing while the file cannot be read, so a read that failed
+//! once never costs the player their tracks; a save that could not be
+//! made is tried again every few seconds, and as the game closes. A game that keeps its
+//! progress elsewhere overrides [`Game::load_soundtrack`] and
+//! [`Game::save_soundtrack`].
+//!
+//! The seal ties the file to the game, not to the player: a sealed
+//! `soundtrack.json` copied from another player of the same game, or an
+//! old copy of one's own, is taken as it is. No offline game can stop
+//! that.
 //!
 //! A developer build (any build `hearken release` did not make) opens every
 //! track while `<PREFIX>_ALL_TRACKS=1` is set, to audition them, and saves
@@ -52,6 +77,7 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use hearken_audio::{Audio, Bus, Sound, Start};
 use serde::{Deserialize, Serialize};
@@ -149,6 +175,9 @@ pub struct Variation {
 }
 
 impl Variation {
+    /// The furthest a play moves from the recorded key: an octave.
+    pub const MAX_SEMITONES: u8 = 12;
+
     /// Every play as recorded.
     pub const NONE: Variation = Variation {
         semitones: 0,
@@ -156,7 +185,7 @@ impl Variation {
         pan: 0.0,
     };
 
-    /// Up or down a semitone, levels within 2 dB, voices spread a quarter
+    /// A semitone up or down, levels within 2 dB, voices spread a quarter
     /// of the way out: different each time, and still the same piece.
     pub const GENTLE: Variation = Variation {
         semitones: 1,
@@ -164,10 +193,18 @@ impl Variation {
         pan: 0.25,
     };
 
-    /// The playback rate for this play.
+    /// The playback rate for this play. With any `semitones` at all, a
+    /// play is never at the recorded pitch, so no play is the shipped file
+    /// as it is. More than [`Variation::MAX_SEMITONES`] counts as that many,
+    /// which keeps the rate where the mixer can play it (`0.5..=2`).
     pub fn pitch(&self, v: &mut Variety) -> f32 {
-        let s = self.semitones as i32;
-        2f32.powf(v.range(-s, s) as f32 / 12.0)
+        let s = self.semitones.min(Variation::MAX_SEMITONES) as i32;
+        if s == 0 {
+            return 1.0;
+        }
+        let step = v.range(1, s);
+        let step = if v.chance(0.5) { step } else { -step };
+        2f32.powf(step as f32 / 12.0)
     }
 
     fn level(&self, v: &mut Variety) -> f32 {
@@ -182,8 +219,10 @@ impl Default for Variation {
 }
 
 /// Plays one performance of a piece. The engine calls `start` once, then
-/// `update` every frame until it returns false or the player stops it
-/// (`stop`). Every sound it starts should go on [`Bus::MUSIC`].
+/// `update` with no time passed (false there means nothing could play, and
+/// the player is told so), then `update` every frame until it returns
+/// false or the player stops it (`stop`). Every sound it starts should go
+/// on [`Bus::MUSIC`].
 pub trait Performer {
     fn start(&mut self, audio: &mut Audio);
     /// `dt` seconds on; false once the piece has ended.
@@ -207,8 +246,10 @@ pub struct Stems {
     pub voices: Vec<String>,
     /// Seconds in one loop of the stems, at the recorded speed.
     pub loop_s: f64,
-    /// About how long a play runs, in seconds. Rounded to whole loops, at
-    /// least enough for every voice to join and leave.
+    /// About how long a play runs, in seconds: each play runs up to a fifth
+    /// longer or shorter, in whole loops, and always long enough for every
+    /// voice to join and leave. At most an hour; anything not a number of
+    /// seconds is the default, 150.
     pub length_s: f64,
     /// Each voice's level before [`Variation::level_db`].
     pub level: f32,
@@ -220,7 +261,7 @@ impl Stems {
             bed: Vec::new(),
             voices: Vec::new(),
             loop_s,
-            length_s: 150.0,
+            length_s: DEFAULT_LENGTH_S,
             level: 0.8,
         }
     }
@@ -245,15 +286,40 @@ impl Stems {
         self
     }
 
+    /// Whether a play can change which layers sound: at least three voices
+    /// with no bed, or two over a bed. With fewer, every loop holds every
+    /// voice, so each play is the full mix throughout, changed only in
+    /// length, key and level.
+    pub fn arranges(&self) -> bool {
+        let n = self.voices.len();
+        if self.bed.is_empty() {
+            n >= 3
+        } else {
+            n >= 2
+        }
+    }
+
+    /// Whether `loop_s` is a length a piece can loop on: a number of
+    /// seconds, at most [`Stems::MAX_LOOP_S`].
+    pub fn loop_is_valid(&self) -> bool {
+        self.loop_s.is_finite() && self.loop_s <= Stems::MAX_LOOP_S
+    }
+
+    /// The longest loop a piece may have, in seconds: ten minutes.
+    pub const MAX_LOOP_S: f64 = 600.0;
+
     /// Which voices play in each loop of one performance: `plan[pass][voice]`.
     /// Every voice is heard, the last pass is never silent, and the plan
-    /// builds up, holds, breaks down and thins out.
+    /// builds up, holds, breaks down and thins out. With no bed, no loop
+    /// holds fewer than two voices, so no stem is ever heard alone.
     pub fn plan(&self, v: &mut Variety) -> Vec<Vec<bool>> {
         let n = self.voices.len();
+        let passes = self.passes(n, v);
         if n == 0 {
-            let passes = self.passes(0);
             return vec![Vec::new(); passes];
         }
+        // The fewest voices a loop holds: one over a bed, else two.
+        let floor = if self.bed.is_empty() { n.min(2) } else { 1 };
         // The entry order: the given order, neighbours swapped now and then.
         let mut order: Vec<usize> = (0..n).collect();
         for i in 1..n {
@@ -261,11 +327,10 @@ impl Stems {
                 order.swap(i - 1, i);
             }
         }
-        let passes = self.passes(n);
         let mut plan = Vec::with_capacity(passes);
         let mut on = vec![false; n];
         // Open with one or two voices.
-        let opening = if n > 1 && v.chance(0.4) { 2 } else { 1 };
+        let opening = if n > 1 && v.chance(0.4) { 2 } else { 1 }.max(floor);
         let mut joined = 0;
         for &i in order.iter().take(opening) {
             on[i] = true;
@@ -307,21 +372,28 @@ impl Stems {
                 }
             } else if pass >= thin_at && pass > 0 {
                 // Thin out: voices leave in a shuffled order, the last
-                // pass keeping one.
+                // pass keeping as few as it may.
                 let mut playing: Vec<usize> = (0..n).filter(|&i| on[i]).collect();
                 let left = passes - pass;
                 let keep = if left <= 1 {
-                    1
+                    floor
                 } else {
-                    playing.len().div_ceil(2).max(1)
+                    playing.len().div_ceil(2).max(floor)
                 };
                 v.shuffle(&mut playing);
                 for &i in playing.iter().skip(keep) {
                     on[i] = false;
                 }
             }
-            if !on.iter().any(|&o| o) {
-                on[order[0]] = true;
+            let mut count = on.iter().filter(|&&o| o).count();
+            for &i in &order {
+                if count >= floor {
+                    break;
+                }
+                if !on[i] {
+                    on[i] = true;
+                    count += 1;
+                }
             }
             plan.push(on.clone());
         }
@@ -337,12 +409,24 @@ impl Stems {
         plan
     }
 
-    fn passes(&self, voices: usize) -> usize {
-        let loop_s = self.loop_s.max(0.5);
-        let wanted = (self.length_s / loop_s).round() as usize;
+    /// How many loops this play runs: about `length_s`, a fifth either way.
+    fn passes(&self, voices: usize, v: &mut Variety) -> usize {
+        let loop_s = self.loop_s.clamp(0.5, Stems::MAX_LOOP_S);
+        let length_s = if self.length_s.is_finite() {
+            self.length_s.clamp(0.0, MAX_LENGTH_S)
+        } else {
+            DEFAULT_LENGTH_S
+        };
+        let wanted = (length_s / loop_s).round() as i64;
+        let spread = (wanted / 5).max(1) as i32;
+        let wanted = (wanted + v.range(-spread, spread) as i64).max(0) as usize;
         wanted.max(voices + 4).max(2)
     }
 }
+
+/// How long a play of [`Stems`] runs by default, and at most, in seconds.
+const DEFAULT_LENGTH_S: f64 = 150.0;
+const MAX_LENGTH_S: f64 = 3600.0;
 
 /// What a track plays.
 #[derive(Clone)]
@@ -508,7 +592,8 @@ struct ClipPerformer {
     pitch: f32,
     level: f32,
     sound: Option<Sound>,
-    /// Seconds left before a repeated clip is let go.
+    /// Seconds left before a repeated clip is let go: halfway through its
+    /// last time round, so it plays out to its end from there.
     left: Option<f64>,
 }
 
@@ -526,7 +611,8 @@ impl Performer for ClipPerformer {
             );
             match audio.length_s(s) {
                 Some(len) if len > 0.0 => {
-                    self.left = Some(len * self.repeats as f64 / self.pitch as f64);
+                    let rounds = self.repeats as f64 - 0.5;
+                    self.left = Some(len * rounds / self.pitch as f64);
                     self.sound = Some(s);
                     return;
                 }
@@ -557,9 +643,9 @@ impl Performer for ClipPerformer {
     }
 }
 
-/// One play of [`Stems`]: every stem starts together and keeps looping, so
-/// they never drift apart, and the plan fades voices in and out at loop
-/// boundaries.
+/// One play of [`Stems`]: every stem starts on the same sample and keeps
+/// looping, so they never drift apart, and the plan fades voices in and out
+/// at loop boundaries.
 struct Arrangement {
     bed: Vec<String>,
     voices: Vec<String>,
@@ -571,9 +657,15 @@ struct Arrangement {
     bed_level: f32,
     bed_sounds: Vec<Sound>,
     voice_sounds: Vec<Sound>,
-    clock: f64,
+    /// Seconds played, as the frames tell it and as the wall clock does.
+    /// The music keeps time by the later of the two: a frame that stalled
+    /// is reported short, but the stems played on through it.
+    frames_s: f64,
+    real_s: f64,
+    last: Option<Instant>,
     pass: usize,
-    ending: Option<f64>,
+    /// When the closing fade ends, on the clock above.
+    ending_at: Option<f64>,
 }
 
 impl Arrangement {
@@ -591,21 +683,39 @@ impl Arrangement {
             .map(|_| v.spread(variation.pan.clamp(0.0, 1.0)))
             .collect();
         let bed_level = (stems.level * variation.level(&mut v)).clamp(0.0, 1.0);
+        let valid = stems.loop_is_valid();
+        if !valid {
+            log::warn!(
+                "stems {:?}: a loop of {} s cannot play; give loop_s in seconds, at most {}",
+                stems.voices,
+                stems.loop_s,
+                Stems::MAX_LOOP_S
+            );
+        } else if !stems.arranges() {
+            log::warn!(
+                "stems {:?}: too few layers to arrange, so every loop is the full mix; \
+                 give three voices, or two over a bed",
+                stems.voices
+            );
+        }
+        let keys = |k: &Vec<String>| if valid { k.clone() } else { Vec::new() };
         Arrangement {
-            bed: stems.bed.clone(),
-            voices: stems.voices.clone(),
+            bed: keys(&stems.bed),
+            voices: keys(&stems.voices),
             plan,
             // The loop runs faster or slower with the pitch.
-            loop_s: stems.loop_s.max(0.5) / pitch as f64,
+            loop_s: stems.loop_s.clamp(0.5, Stems::MAX_LOOP_S) / pitch as f64,
             pitch,
             levels,
             pans,
             bed_level,
             bed_sounds: Vec::new(),
             voice_sounds: Vec::new(),
-            clock: 0.0,
+            frames_s: 0.0,
+            real_s: 0.0,
+            last: None,
             pass: 0,
-            ending: None,
+            ending_at: None,
         }
     }
 
@@ -629,14 +739,23 @@ impl Arrangement {
             .chain(self.voice_sounds.iter())
             .copied()
     }
+
+    fn stop_all(&mut self, audio: &mut Audio, fade_ms: u32) {
+        let all: Vec<Sound> = self.all().collect();
+        for s in all {
+            audio.stop(s, fade_ms);
+        }
+        self.bed_sounds.clear();
+        self.voice_sounds.clear();
+    }
 }
 
 impl Performer for Arrangement {
     fn start(&mut self, audio: &mut Audio) {
         let start = Start::LOOP.pitch(self.pitch);
+        let mut starts: Vec<(&str, Bus, Start)> = Vec::new();
         for key in &self.bed {
-            let s = audio.start_with(key, Bus::MUSIC, start.volume(self.bed_level));
-            self.bed_sounds.push(s);
+            starts.push((key, Bus::MUSIC, start.volume(self.bed_level)));
         }
         for (i, key) in self.voices.iter().enumerate() {
             let on = self
@@ -646,26 +765,67 @@ impl Performer for Arrangement {
                 .copied()
                 .unwrap_or(false);
             let level = if on { self.levels[i] } else { 0.0 };
-            let s = audio.start_with(key, Bus::MUSIC, start.volume(level).pan(self.pans[i]));
-            self.voice_sounds.push(s);
+            starts.push((key, Bus::MUSIC, start.volume(level).pan(self.pans[i])));
         }
+        // All on one sample, however long each takes to decode.
+        let mut sounds = audio.start_together(&starts);
+        // A stem that will not play, or plays its default instead, while
+        // others play: the piece is damaged, and what is left would lay
+        // the rest bare. Nothing plays. (With every stem missing, as in a
+        // build without its sounds yet, the defaults play as placeholders.)
+        let missing = audio.missing_clips();
+        let bad = starts
+            .iter()
+            .zip(&sounds)
+            .filter(|((key, _, _), &s)| s == Sound::NONE || missing.iter().any(|m| m == key))
+            .count();
+        if bad > 0 && bad < starts.len() {
+            log::warn!("a piece's stems did not all load, so it does not play");
+            for s in sounds.drain(..) {
+                audio.stop(s, 0);
+            }
+            return;
+        }
+        self.voice_sounds = sounds.split_off(self.bed.len());
+        self.bed_sounds = sounds;
+        self.last = Some(Instant::now());
     }
 
     fn update(&mut self, audio: &mut Audio, dt: f64) -> bool {
-        if let Some(left) = self.ending.as_mut() {
-            *left -= dt;
-            return *left > 0.0;
+        // Nothing would play (every stem missing or refused): done, rather
+        // than hold silence for the whole piece.
+        if !self.all().any(|s| audio.is_playing(s)) {
+            return false;
         }
-        self.clock += dt;
-        let pass = (self.clock / self.loop_s).floor() as usize;
+        let now = Instant::now();
+        let real = self
+            .last
+            .replace(now)
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f64());
+        // Paused stems do not move on.
+        if !self.all().any(|s| audio.is_paused(s)) {
+            self.frames_s += dt.max(0.0);
+            self.real_s += real;
+        }
+        let clock = self.frames_s.max(self.real_s);
+        if let Some(end) = self.ending_at {
+            if clock >= end {
+                self.stop_all(audio, 0);
+                return false;
+            }
+            return true;
+        }
+        let pass = (clock / self.loop_s).floor() as usize;
         if pass != self.pass {
             self.pass = pass;
             if pass >= self.plan.len() {
+                // Faded down but still held, so a stop now still cuts it
+                // short.
                 let all: Vec<Sound> = self.all().collect();
                 for s in all {
-                    audio.stop(s, END_FADE_MS);
+                    audio.set_volume_over(s, 0.0, END_FADE_MS);
                 }
-                self.ending = Some(END_FADE_MS as f64 / 1000.0);
+                self.ending_at = Some(clock + END_FADE_MS as f64 / 1000.0);
                 return true;
             }
             self.apply_pass(audio, VOICE_FADE_MS);
@@ -674,12 +834,7 @@ impl Performer for Arrangement {
     }
 
     fn stop(&mut self, audio: &mut Audio) {
-        let all: Vec<Sound> = self.all().collect();
-        for s in all {
-            audio.stop(s, STOP_FADE_MS);
-        }
-        self.bed_sounds.clear();
-        self.voice_sounds.clear();
+        self.stop_all(audio, STOP_FADE_MS);
     }
 }
 
@@ -725,19 +880,46 @@ pub fn load_from_vault(vault: &mut Vault, import_plain: bool) -> BTreeSet<String
 }
 
 /// Writes [`FILE`] through `vault`: the default [`Game::save_soundtrack`].
-pub fn save_to_vault(vault: &mut Vault, unlocked: &BTreeSet<String>) {
-    let saved = Saved {
-        unlocked: unlocked.clone(),
-    };
-    match serde_json::to_vec_pretty(&saved) {
-        Ok(bytes) => {
-            if let Err(e) = vault.write(FILE, &bytes) {
-                log::warn!("could not save {FILE}: {e}");
+/// It keeps whatever the file already holds, and writes nothing while the
+/// file cannot be read, so a read that failed never costs the player the
+/// tracks they earned. True once the file holds them.
+pub fn save_to_vault(vault: &mut Vault, unlocked: &BTreeSet<String>) -> bool {
+    let mut unlocked = unlocked.clone();
+    match vault.read(FILE) {
+        Opened::Sealed(bytes) | Opened::Plain(bytes) => {
+            if let Ok(saved) = serde_json::from_slice::<Saved>(&bytes) {
+                unlocked.extend(saved.unlocked);
             }
         }
-        Err(e) => log::warn!("could not encode {FILE}: {e}"),
+        Opened::Failed(e) => {
+            log::warn!("could not read {FILE}, so not saving over it yet: {e}");
+            return false;
+        }
+        Opened::Locked => {
+            log::warn!("{FILE} is sealed by a release this build cannot open; not saving");
+            // Nothing this build does will change that: do not retry.
+            return true;
+        }
+        Opened::Missing | Opened::Legacy(_) | Opened::Tampered(_) => {}
+    }
+    let saved = Saved { unlocked };
+    match serde_json::to_vec_pretty(&saved) {
+        Ok(bytes) => match vault.write(FILE, &bytes) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("could not save {FILE} yet: {e}");
+                false
+            }
+        },
+        Err(e) => {
+            log::warn!("could not encode {FILE}: {e}");
+            true
+        }
     }
 }
+
+/// How long after a save that could not be made it is tried again.
+const SAVE_RETRY_S: f64 = 3.0;
 
 /// The game's tracks and what the player has unlocked, at `ctx.soundtrack`.
 pub struct Soundtrack {
@@ -747,8 +929,16 @@ pub struct Soundtrack {
     /// Unlocked since the last `take_new`, by title.
     new: Vec<String>,
     listening: bool,
+    /// Listening was off at some point since the last frame's check: keys
+    /// noted in that time were heard out of play and never count.
+    deaf: bool,
+    /// An unlock not yet saved, and when (on `ctx.clock`) to try again.
+    unsaved: Option<f64>,
     /// The watch list must be rebuilt.
     dirty: bool,
+    /// The track list changed: music already playing may belong to a track
+    /// it added, and that start came before its key was watched.
+    scan: bool,
     /// A developer build with `<PREFIX>_ALL_TRACKS=1`.
     all: bool,
 }
@@ -761,7 +951,10 @@ impl Soundtrack {
             loaded: false,
             new: Vec::new(),
             listening: true,
+            deaf: false,
+            unsaved: None,
             dirty: true,
+            scan: true,
             all: false,
         }
     }
@@ -770,6 +963,7 @@ impl Soundtrack {
     pub fn set_tracks(&mut self, tracks: Vec<Track>) {
         self.tracks = tracks;
         self.dirty = true;
+        self.scan = true;
     }
 
     pub fn tracks(&self) -> &[Track] {
@@ -789,8 +983,13 @@ impl Soundtrack {
     /// Whether hearing a track's keys unlocks it. Off for a screen that
     /// plays sounds out of play, such as a sound test, so previewing the
     /// title theme there does not unlock it. On by default.
+    /// A key heard at any moment listening was off never counts, even if
+    /// it is back on by the end of the frame.
     pub fn listen(&mut self, on: bool) {
         self.listening = on;
+        if !on {
+            self.deaf = true;
+        }
     }
 
     pub fn is_listening(&self) -> bool {
@@ -864,14 +1063,35 @@ impl<G: Game> Ctx<G> {
             self.soundtrack.all = std::env::var(var).is_ok_and(|v| v == "1");
         }
         self.soundtrack.dirty = true;
+        self.soundtrack.scan = true;
     }
 
     fn save_soundtrack(&mut self) {
         if self.soundtrack.all {
             return;
         }
+        // Read again first: if the first read failed (a file held by a
+        // virus scanner, say), what it missed comes back now instead of
+        // being saved over.
+        let saved = G::load_soundtrack(self);
+        let before = self.soundtrack.unlocked.len();
+        self.soundtrack.unlocked.extend(saved);
+        if self.soundtrack.unlocked.len() != before {
+            self.soundtrack.dirty = true;
+        }
         let unlocked = self.soundtrack.unlocked.clone();
-        G::save_soundtrack(self, &unlocked);
+        self.soundtrack.unsaved = if G::save_soundtrack(self, &unlocked) {
+            None
+        } else {
+            Some(self.clock + SAVE_RETRY_S)
+        };
+    }
+
+    /// A last try at an unlock that could not be saved, as the game closes.
+    pub(crate) fn flush_soundtrack(&mut self) {
+        if self.soundtrack.unsaved.is_some() {
+            self.save_soundtrack();
+        }
     }
 
     /// Unlocks track `id` and saves: true when it was locked. Its title is
@@ -894,12 +1114,43 @@ impl<G: Game> Ctx<G> {
 
     /// Once a frame: unlocks the tracks whose keys were heard.
     pub(crate) fn update_soundtrack(&mut self) {
+        // Drained every frame, even with no tracks, so nothing heard now
+        // is held over to count later.
+        let heard = self.audio.take_watched();
+        let deaf = !self.soundtrack.listening || self.soundtrack.deaf;
+        self.soundtrack.deaf = !self.soundtrack.listening;
         if self.soundtrack.tracks.is_empty() {
+            if self.soundtrack.dirty {
+                self.soundtrack.dirty = false;
+                self.audio.watch_keys(Vec::new());
+            }
             return;
         }
         self.load_soundtrack();
-        let heard = self.audio.take_watched();
-        if self.soundtrack.listening && !heard.is_empty() {
+        if self.soundtrack.unsaved.is_some_and(|at| self.clock >= at) {
+            self.save_soundtrack();
+        }
+        let mut heard = if deaf { Vec::new() } else { heard };
+        if self.soundtrack.dirty {
+            self.soundtrack.dirty = false;
+            let keys = self.soundtrack.watch_list();
+            self.audio.watch_keys(keys);
+        }
+        if !deaf && self.soundtrack.scan {
+            // Music that started before its key was watched (the first
+            // screen's theme, a level's music started with its new list)
+            // and is still playing counts as heard: a loop starts only once.
+            self.soundtrack.scan = false;
+            let watched: BTreeSet<String> = self.soundtrack.watch_list().into_iter().collect();
+            heard.extend(
+                self.audio
+                    .live()
+                    .into_iter()
+                    .map(|l| l.key)
+                    .filter(|k| watched.contains(k)),
+            );
+        }
+        if !heard.is_empty() {
             let ids: Vec<String> = self
                 .soundtrack
                 .tracks
@@ -926,7 +1177,9 @@ impl<G: Game> Ctx<G> {
 /// The soundtrack menu: Play all (shuffled), then one row per listed
 /// track, then Back. Enter plays an unlocked track, or stops the one
 /// playing; on a locked track it reads the hint. Whatever the music slot
-/// was playing stops while the screen is open and comes back after.
+/// was playing is paused while the screen is open and goes on from the
+/// same place after. Nothing played here unlocks a track, and playback
+/// stops when another screen covers this one.
 pub struct SoundtrackScreen<G: Game> {
     core: MenuCore<Self, G>,
     album: Option<String>,
@@ -934,9 +1187,14 @@ pub struct SoundtrackScreen<G: Game> {
     playing: Option<(String, Box<dyn Performer>)>,
     /// Ids still to play after this one, for Play all.
     queue: Vec<String>,
-    /// The music slot's track when the screen opened.
-    resume_music: Option<(String, bool)>,
+    /// The music slot's sound this screen paused, to resume on leaving.
+    held_music: Option<Sound>,
+    /// Whether the soundtrack was listening when the screen opened.
+    was_listening: bool,
 }
+
+/// Said when a track has nothing that will play.
+const CANT_PLAY: &str = "Can't play that track.";
 
 /// [`SoundtrackScreen`]'s default name.
 pub const SCREEN_NAME: &str = "soundtrack";
@@ -953,7 +1211,8 @@ impl<G: Game> SoundtrackScreen<G> {
             name: SCREEN_NAME,
             playing: None,
             queue: Vec::new(),
-            resume_music: None,
+            held_music: None,
+            was_listening: true,
         }
     }
 
@@ -987,23 +1246,36 @@ impl<G: Game> SoundtrackScreen<G> {
         }
     }
 
-    fn play(&mut self, ctx: &mut Ctx<G>, id: &str) {
+    /// Starts track `id`: false when it is locked or nothing of it plays.
+    fn play(&mut self, ctx: &mut Ctx<G>, id: &str) -> bool {
         self.stop(ctx);
         let Some(track) = ctx.soundtrack.track(id).cloned() else {
-            return;
+            return false;
         };
         if !ctx.track_unlocked(id) {
-            return;
+            return false;
         }
         let mut p = track.perform(Variety::fresh());
         p.start(&mut ctx.audio);
+        if !p.update(&mut ctx.audio, 0.0) {
+            p.stop(&mut ctx.audio);
+            return false;
+        }
         self.playing = Some((track.id, p));
+        true
+    }
+
+    /// The playing track's title, for speech.
+    fn playing_title(&self, ctx: &Ctx<G>) -> String {
+        self.playing()
+            .and_then(|id| ctx.soundtrack.track(id))
+            .map(|t| crate::text::end_sentence(&t.title))
+            .unwrap_or_default()
     }
 
     fn play_next(&mut self, ctx: &mut Ctx<G>) -> bool {
         while let Some(id) = self.queue.pop() {
-            if ctx.track_unlocked(&id) {
-                self.play(ctx, &id);
+            if self.play(ctx, &id) {
                 return true;
             }
         }
@@ -1052,10 +1324,11 @@ impl<G: Game> SoundtrackScreen<G> {
                 if s.playing() == Some(id.as_str()) {
                     s.stop(ctx);
                     ctx.say("Stopped.");
+                } else if s.play(ctx, &id) {
+                    let title = s.playing_title(ctx);
+                    ctx.say(format!("Playing {title}"));
                 } else {
-                    s.play(ctx, &id);
-                    let title = ctx.soundtrack.track(&id).map(|t| t.title.clone());
-                    ctx.say(format!("Playing {}.", title.unwrap_or_default()));
+                    ctx.say(CANT_PLAY);
                 }
             },
         )
@@ -1112,12 +1385,10 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
                     Variety::fresh().shuffle(&mut ids);
                     s.queue = ids;
                     if s.play_next(ctx) {
-                        let title = s
-                            .playing()
-                            .and_then(|id| ctx.soundtrack.track(id))
-                            .map(|t| t.title.clone())
-                            .unwrap_or_default();
-                        ctx.say(format!("Playing all, shuffled. {title}."));
+                        let title = s.playing_title(ctx);
+                        ctx.say(format!("Playing all, shuffled. {title}"));
+                    } else {
+                        ctx.say("Can't play these tracks.");
                     }
                 })
                 .select_sound(None)
@@ -1144,26 +1415,38 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
     }
 
     fn enter(&mut self, ctx: &mut Ctx<G>) {
-        self.resume_music = ctx
-            .audio
-            .music()
-            .map(|k| (k.to_string(), ctx.audio.music_looping()));
-        ctx.audio.play_music(None, false);
+        self.was_listening = ctx.soundtrack.is_listening();
+        ctx.soundtrack.listen(false);
+        // Hold the game's music where it is. Music already paused (from a
+        // pause menu) is left as it is, for that menu to resume.
+        self.held_music = ctx.audio.music_sound().filter(|&s| !ctx.audio.is_paused(s));
+        if let Some(s) = self.held_music {
+            ctx.audio.pause(s);
+        }
         crate::menu::menu_enter(self, ctx);
     }
 
     fn exit(&mut self, ctx: &mut Ctx<G>) {
         self.queue.clear();
         self.stop(ctx);
-        if let Some((key, looping)) = self.resume_music.take() {
-            ctx.audio.play_music(Some(&key), looping);
+        // What this screen started is not heard in play.
+        ctx.audio.take_watched();
+        ctx.soundtrack.listen(self.was_listening);
+        if let Some(s) = self.held_music.take() {
+            ctx.audio.resume(s);
         }
+    }
+
+    fn cover(&mut self, ctx: &mut Ctx<G>) {
+        self.queue.clear();
+        self.stop(ctx);
     }
 
     fn announce(&mut self, ctx: &mut Ctx<G>) {
         let (unlocked, listed) = self.counts(ctx);
         let title = crate::text::end_sentence(&self.core.title);
-        ctx.say(format!("{title} {unlocked} of {listed} tracks unlocked."));
+        let tracks = if listed == 1 { "track" } else { "tracks" };
+        ctx.say(format!("{title} {unlocked} of {listed} {tracks} unlocked."));
         let current = self.current_text(ctx);
         ctx.say_queued(current);
     }
@@ -1174,7 +1457,10 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
         };
         if !p.update(&mut ctx.audio, dt) {
             self.playing = None;
-            self.play_next(ctx);
+            if self.play_next(ctx) {
+                let title = self.playing_title(ctx);
+                ctx.say_queued(format!("Playing {title}"));
+            }
         }
     }
 

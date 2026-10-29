@@ -173,6 +173,9 @@ pub struct KiraBackend<B: kira::backend::Backend = DeviceBackend> {
     channels: HashMap<Channel, Entry>,
     /// Channels mid fade-out, and when each one is due to be dropped.
     fading: Vec<(Channel, Instant)>,
+    /// While [`Backend::hold`] is on, the channels started since, paused at
+    /// their first sample.
+    held: Option<Vec<Channel>>,
     next: Channel,
     curve: GainCurve,
     law: PanLaw,
@@ -206,6 +209,7 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
             capture,
             channels: HashMap::new(),
             fading: Vec::new(),
+            held: None,
             next: 1,
             curve: GainCurve::default(),
             law: PanLaw::default(),
@@ -234,6 +238,13 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
 fn backend_error(e: impl std::fmt::Display) -> BackendError {
     BackendError(e.to_string())
 }
+
+/// No fade at all: for a hold, which must not move a sound off its start.
+const INSTANT: Tween = Tween {
+    start_time: kira::StartTime::Immediate,
+    duration: Duration::ZERO,
+    easing: kira::Easing::Linear,
+};
 
 /// A linear ramp over `ms`; zero is instant.
 fn ramp(ms: u32) -> Tween {
@@ -499,6 +510,11 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
             control
         });
         let mut track = manager.add_sub_track(builder).map_err(backend_error)?;
+        if self.held.is_some() {
+            // Paused before the sound is on it, so not one frame plays
+            // until the hold is let go.
+            track.pause(INSTANT);
+        }
         let mut length_s = None;
         let playing = match source {
             Source::Clip(bytes) => {
@@ -523,6 +539,9 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
         };
         let channel = self.next;
         self.next += 1;
+        if let Some(held) = &mut self.held {
+            held.push(channel);
+        }
         self.channels.insert(
             channel,
             Entry {
@@ -680,6 +699,20 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
             entry.track.pause(Tween::default());
         } else {
             entry.track.resume(Tween::default());
+        }
+    }
+
+    fn hold(&mut self, held: bool) {
+        if held {
+            self.held.get_or_insert_with(Vec::new);
+            return;
+        }
+        // One resume after another, with nothing slow between them, so
+        // they reach the mixer in the same block.
+        for channel in self.held.take().unwrap_or_default() {
+            if let Some(entry) = self.channels.get_mut(&channel) {
+                entry.track.resume(INSTANT);
+            }
         }
     }
 

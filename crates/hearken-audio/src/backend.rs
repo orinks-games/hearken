@@ -117,6 +117,15 @@ pub trait Backend: Send {
     /// Pauses or resumes a channel.
     fn pause(&mut self, channel: Channel, paused: bool);
 
+    /// While `true`, every channel started from now on is made ready but
+    /// stays silent at its start; `false` starts all of them at once. For
+    /// layers that must play in time with each other when each `play`
+    /// takes a while (it decodes the clip first). The default does nothing,
+    /// which suits a backend whose `play` returns at once.
+    fn hold(&mut self, held: bool) {
+        let _ = held;
+    }
+
     /// Whether the channel is still alive. A paused channel is still
     /// playing; only a channel that has ended or been stopped is not.
     fn is_playing(&mut self, channel: Channel) -> bool;

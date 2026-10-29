@@ -115,7 +115,8 @@ pub trait Game: Sized + 'static {
         Vec::new()
     }
 
-    /// The soundtrack's unlocked ids, read once. By default from
+    /// The soundtrack's unlocked ids, read on the first frame and again
+    /// before each save, so a read that failed loses nothing. By default from
     /// `soundtrack.json` through the vault, sealed in a sealing release. A
     /// plain `soundtrack.json` is never imported into a sealing release,
     /// whatever `IMPORTS_PLAIN_SAVES` says: no unsealed release wrote one
@@ -124,9 +125,11 @@ pub trait Game: Sized + 'static {
         crate::soundtrack::load_from_vault(&mut ctx.vault, false)
     }
 
-    /// Saves the soundtrack's unlocked ids, each time one is unlocked. By
+    /// Saves the soundtrack's unlocked ids, each time one is unlocked: true
+    /// once they are safely stored. A save that returns false is tried
+    /// again every few seconds, and once more as the game closes. By
     /// default to `soundtrack.json` through the vault.
-    fn save_soundtrack(ctx: &mut Ctx<Self>, unlocked: &std::collections::BTreeSet<String>) {
-        crate::soundtrack::save_to_vault(&mut ctx.vault, unlocked);
+    fn save_soundtrack(ctx: &mut Ctx<Self>, unlocked: &std::collections::BTreeSet<String>) -> bool {
+        crate::soundtrack::save_to_vault(&mut ctx.vault, unlocked)
     }
 }

@@ -544,6 +544,21 @@ impl Audio {
         self.start_clip(key, bytes, false, bus, start)
     }
 
+    /// Starts each `(key, bus, start)` as [`Audio::start_with`] would, all
+    /// on the same sample: layers recorded to play in time (a piece's
+    /// stems) stay in time however long each one takes to get ready. The
+    /// handles come back in the order given; a key that will not play is
+    /// [`Sound::NONE`], as with `start_with`.
+    pub fn start_together(&mut self, starts: &[(&str, Bus, Start)]) -> Vec<Sound> {
+        self.backend.hold(true);
+        let sounds = starts
+            .iter()
+            .map(|&(key, bus, start)| self.start_with(key, bus, start))
+            .collect();
+        self.backend.hold(false);
+        sounds
+    }
+
     /// Plays clip `bytes` the game found itself (its own packs, a file),
     /// named `key` for logs and [`Audio::live`], as `start` says. The clip
     /// source is not asked. A clip the backend refuses falls back the way a
@@ -1016,9 +1031,19 @@ impl Audio {
         std::mem::take(&mut self.seen)
     }
 
-    /// Whether the music slot's track ([`Audio::music`]) loops.
-    pub fn music_looping(&self) -> bool {
-        self.music.as_ref().is_some_and(|(_, looping, _)| *looping)
+    /// The music slot's sound ([`Audio::music`]), while it is still
+    /// playing: for a screen that holds the game's music where it is
+    /// ([`Audio::pause`]) and lets it go on after.
+    pub fn music_sound(&self) -> Option<Sound> {
+        self.music
+            .as_ref()
+            .map(|(_, _, sound)| *sound)
+            .filter(|sound| self.is_playing(*sound))
+    }
+
+    /// Whether `sound` is alive and paused.
+    pub fn is_paused(&self, sound: Sound) -> bool {
+        slot_ref(&self.slots, sound).is_some_and(|live| live.paused)
     }
 
     /// Starts writing what the player hears, the final mix, to a WAV file

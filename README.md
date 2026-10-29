@@ -418,38 +418,63 @@ playing, or when the game calls `ctx.unlock_track("night-song")` for a rule
 the engine cannot hear. The game hears of new ones through
 `ctx.soundtrack.take_new()` and announces them when it suits it. A screen
 that plays sounds outside play, such as a sound test, calls
-`ctx.soundtrack.listen(false)` while it is open. Unlocks are saved to
+`ctx.soundtrack.listen(false)` while it is open; a key heard at any
+moment listening was off never counts, even if the screen closed in the
+same frame. Unlocks are saved to
 `soundtrack.json` through `ctx.vault`, so a release with `seal = true`
 seals them; a game that keeps progress elsewhere overrides
 `Game::load_soundtrack` and `Game::save_soundtrack`. `SoundtrackScreen`
-lists one game's tracks with `.album("Lantern Lake")` when a collection
-groups them by `Track::album`. While it is open the music slot is quiet,
-and whatever it was playing comes back on Escape.
+lists one game's tracks with `.album("My Game")` when a collection
+groups them by `Track::album`. While it is open the game's music is
+paused, and it goes on from the same place on Escape. Nothing played on
+that screen unlocks a track, and playback stops when another screen is
+pushed over it. A save keeps what `soundtrack.json` already holds and
+writes nothing while the file cannot be read, so a file held for a moment
+by a virus scanner or a sync client never costs the player their tracks:
+a save that could not be made is tried again every few seconds, and once
+more as the game closes. `Game::save_soundtrack` returns whether it saved.
 
 Every play is its own performance, from a fresh seed:
 
-- `Stems` start every layer together, so they never drift, and fade
+- `Stems` start every layer on the same sample (`Audio::start_together`),
+  however long each takes to decode, so they never drift, and fade
   voices in and out at loop boundaries: which ones open, the order they
   join, a breakdown now and then, how it thins out, and how long it runs
-  all change. `tests/soundtrack.rs` checks that every voice is heard and
-  that eight plays give at least six arrangements.
+  all change; a play runs up to a fifth longer or shorter than
+  `length_s` (at most an hour). With no bed, no loop holds fewer than two
+  voices. The arrangement keeps time by the wall clock as well as the
+  frames, so a stalled frame does not put it behind the music. Arranging
+  needs at least three voices with no bed, or two over a bed
+  (`Stems::arranges`); with fewer, every loop is the full mix and a
+  warning is logged. A piece whose stems do not all load (a damaged pack
+  entry) does not play at all, and the screen says "Can't play that
+  track." `tests/soundtrack.rs` checks that every voice is heard and that
+  eight plays give at least six arrangements.
 - `Variation` (by default `GENTLE`) moves the whole piece up or down a
-  semitone, key and tempo together, and shades each voice's level and
-  place. `Variation::NONE` plays a track as recorded.
+  semitone, key and tempo together, never leaving it at the recorded
+  pitch, and shades each voice's level and place. It moves at most an
+  octave. `Variation::NONE` plays a track as recorded.
 - `Track::live` hands the play to the game's own `Performer`, made from
   that play's `Variety`, for music the game composes as it goes.
 
 In a developer build, `MY_GAME_ALL_TRACKS=1` opens every track to
 audition, and saves nothing.
 
-What this protects, and what it cannot: the stems stay in the encrypted
-sound pack and the player only ever hears a mix that differs each time,
-so there is no file to copy and no single take is the piece. Anyone can
-still record what comes out of their speakers, or take the program apart
-for the pack key, and a single-file `Track::clip` varies only in key and
-level. Unlocks have the limits of sealed saves: a sealed
-`soundtrack.json` copied from another player's install opens their
-tracks.
+What this cannot protect, as no offline game can:
+
+- **Recording the speakers.** A loopback recording of a play is that play.
+  A voice's level and place hold for the whole play and the stems stay
+  sample-aligned, so a patient listener can subtract one loop from the
+  next to pull out the voices that changed, and undo the pitch step,
+  which is a plain resample by a known amount. Any loop where every voice
+  plays is the full mix. Varying each play makes that slow work; it does not
+  make it impossible. A single-file `Track::clip` varies only in key and
+  level, so a recording of it is close to the file.
+- **Copied saves.** The seal ties `soundtrack.json` to the game, not to
+  the player. A sealed file copied from another player of the same game,
+  or an old copy of one's own, is taken as it is.
+- **The pack key.** Someone who digs it out of the program can read the
+  stems (see `hearken-pack`).
 
 ## Optional features
 

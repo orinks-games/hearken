@@ -181,6 +181,7 @@ impl<G: Game> App<G> {
         // `SHUTDOWN_WAIT` for a hung driver: a force-close during that wait
         // must not cost the player their settings.
         self.ctx.save_settings();
+        self.ctx.flush_soundtrack();
         self.ctx.audio.shutdown();
         // The line in flight (a goodbye, an update notice) gets to finish,
         // and the window keeps answering the OS while it does: events are
@@ -229,6 +230,9 @@ impl<G: Game> App<G> {
             for op in self.ctx.take_pending() {
                 match op {
                     StackOp::Push(mut next) => {
+                        if let Some(top) = self.states.last_mut() {
+                            top.cover(&mut self.ctx);
+                        }
                         next.enter(&mut self.ctx);
                         self.states.push(next);
                         reveal = None;

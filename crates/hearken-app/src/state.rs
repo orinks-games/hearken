@@ -12,6 +12,9 @@ pub trait State<G: Game> {
     fn enter(&mut self, _ctx: &mut Ctx<G>) {}
     /// Popped or replaced.
     fn exit(&mut self, _ctx: &mut Ctx<G>) {}
+    /// Another screen was pushed over this one. It gets no `update` until
+    /// it is revealed again, so anything it keeps going stops here.
+    fn cover(&mut self, _ctx: &mut Ctx<G>) {}
     /// Revealed again when the screen above it closes. Announces afresh by
     /// default.
     fn resume(&mut self, ctx: &mut Ctx<G>) {
