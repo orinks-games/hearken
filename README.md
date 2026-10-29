@@ -88,6 +88,11 @@ Some of what that gives a game:
   `.wav`, `.flac`, `.mp3`) in a `sounds` folder next to the game, and plays
   the game's built-in sound when there is no file. Dropping in a recording
   needs no code change.
+- **Unlockable soundtracks.** A game lists its music as `Track`s; the
+  player unlocks each by hearing it in play (or when the game says so) and
+  listens from `SoundtrackScreen`. Every play is a new performance, so the
+  stems never leave the sound pack as they are. See
+  [Soundtracks](#soundtracks).
 - **Tests without a window.** `hearken::Headless` runs a game with no
   window, sound or screen reader. Press keys, then check what it said.
 - **Saved settings and logs.** Settings, including the game's own, are
@@ -375,6 +380,76 @@ no marker is written at all. Games that never import (the default) leave
 no marker. This raises cheating from "open a text
 editor" to "reverse engineer the program", which is as far as any offline
 game can go.
+
+### Soundtracks
+
+A game can give players its music to listen to, a piece at a time as they
+earn it. It lists the pieces from `Game::soundtrack` (or
+`ctx.soundtrack.set_tracks` while running) and opens the menu with
+`ctx.push(SoundtrackScreen::<MyGame>::new())`:
+
+```rust
+use hearken::{Stems, Track};
+
+fn soundtrack() -> Vec<Track> {
+    vec![
+        // Unlocked the first time music/title plays.
+        Track::clip("title", "Title theme", "music/title")
+            .about("The title screen's theme.")
+            .hint("Open the game."),
+        // Layers recorded to loop together, arranged anew each play.
+        Track::stems(
+            "night-song",
+            "The night song",
+            Stems::new(8.0)
+                .bed(["song/base"])
+                .voices(["song/flute", "song/harp", "song/choir"]),
+        )
+        .unlocked_by(["music/night_complete"])
+        .hint("Finish a night."),
+        // Hidden, and not counted, until it is heard.
+        Track::clip("waltz", "Midnight waltz", "music/waltz").secret(),
+    ]
+}
+```
+
+A track unlocks the first time any of its `unlocked_by` keys starts
+playing, or when the game calls `ctx.unlock_track("night-song")` for a rule
+the engine cannot hear. The game hears of new ones through
+`ctx.soundtrack.take_new()` and announces them when it suits it. A screen
+that plays sounds outside play, such as a sound test, calls
+`ctx.soundtrack.listen(false)` while it is open. Unlocks are saved to
+`soundtrack.json` through `ctx.vault`, so a release with `seal = true`
+seals them; a game that keeps progress elsewhere overrides
+`Game::load_soundtrack` and `Game::save_soundtrack`. `SoundtrackScreen`
+lists one game's tracks with `.album("Lantern Lake")` when a collection
+groups them by `Track::album`. While it is open the music slot is quiet,
+and whatever it was playing comes back on Escape.
+
+Every play is its own performance, from a fresh seed:
+
+- `Stems` start every layer together, so they never drift, and fade
+  voices in and out at loop boundaries: which ones open, the order they
+  join, a breakdown now and then, how it thins out, and how long it runs
+  all change. `tests/soundtrack.rs` checks that every voice is heard and
+  that eight plays give at least six arrangements.
+- `Variation` (by default `GENTLE`) moves the whole piece up or down a
+  semitone, key and tempo together, and shades each voice's level and
+  place. `Variation::NONE` plays a track as recorded.
+- `Track::live` hands the play to the game's own `Performer`, made from
+  that play's `Variety`, for music the game composes as it goes.
+
+In a developer build, `MY_GAME_ALL_TRACKS=1` opens every track to
+audition, and saves nothing.
+
+What this protects, and what it cannot: the stems stay in the encrypted
+sound pack and the player only ever hears a mix that differs each time,
+so there is no file to copy and no single take is the piece. Anyone can
+still record what comes out of their speakers, or take the program apart
+for the pack key, and a single-file `Track::clip` varies only in key and
+level. Unlocks have the limits of sealed saves: a sealed
+`soundtrack.json` copied from another player's install opens their
+tracks.
 
 ## Optional features
 

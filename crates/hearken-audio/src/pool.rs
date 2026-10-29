@@ -250,6 +250,10 @@ pub struct Audio {
     pub(crate) shut_down: bool,
     /// Sounds started, kept only for an agent (`keep_heard`).
     heard: Option<Vec<Heard>>,
+    /// Keys whose start is noted for the game (`watch_keys`), and the ones
+    /// started since `take_watched`.
+    watched: BTreeSet<String>,
+    seen: Vec<String>,
 }
 
 /// A sound that started, as an agent listening to the game hears of it.
@@ -281,6 +285,8 @@ impl Audio {
             notice: None,
             shut_down: false,
             heard: None,
+            watched: BTreeSet::new(),
+            seen: Vec::new(),
         }
     }
 
@@ -996,6 +1002,25 @@ impl Audio {
         self.heard.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
+    /// Notes when any of `keys` starts playing, until the next call
+    /// replaces the set: [`Audio::take_watched`] then lists the ones that
+    /// started. For a game that unlocks something the first time the
+    /// player hears it, such as a soundtrack. An empty set watches nothing.
+    pub fn watch_keys(&mut self, keys: impl IntoIterator<Item = String>) {
+        self.watched = keys.into_iter().collect();
+        self.seen.retain(|k| self.watched.contains(k));
+    }
+
+    /// The watched keys that started since the last call, each once.
+    pub fn take_watched(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.seen)
+    }
+
+    /// Whether the music slot's track ([`Audio::music`]) loops.
+    pub fn music_looping(&self) -> bool {
+        self.music.as_ref().is_some_and(|(_, looping, _)| *looping)
+    }
+
     /// Starts writing what the player hears, the final mix, to a WAV file
     /// at `path`, when the backend can record.
     pub fn start_capture(&mut self, path: &std::path::Path) -> Result<(), BackendError> {
@@ -1009,6 +1034,9 @@ impl Audio {
     }
 
     fn alloc(&mut self, live: Live) -> Sound {
+        if self.watched.contains(&live.key) && !self.seen.contains(&live.key) {
+            self.seen.push(live.key.clone());
+        }
         if let Some(heard) = &mut self.heard {
             // ponytail: unbounded until taken; an agent drains it every call.
             heard.push(Heard {

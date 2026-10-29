@@ -65,6 +65,7 @@ impl<G: Game> App<G> {
         self.ctx.update_online();
         self.ctx.speech.poll(dt);
         self.ctx.update_audio();
+        self.ctx.update_soundtrack();
         self.ctx.update_duck();
 
         self.apply_pending();
