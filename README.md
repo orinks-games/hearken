@@ -89,6 +89,12 @@ Some of what that gives a game:
   `.wav`, `.flac`, `.mp3`) in a `sounds` folder next to the game, and plays
   the game's built-in sound when there is no file. Dropping in a recording
   needs no code change.
+- **Unlockable soundtracks.** A game lists its music as `Track`s; the
+  player unlocks each by hearing it in play (or when the game says so) and
+  listens from `SoundtrackScreen`, which plays each track as it was heard
+  in the game. A game can let players export a finished album to WAV, as
+  heard or freshly varied; the stems never leave the sound pack. See
+  [Soundtracks](#soundtracks).
 - **Tests without a window.** `hearken::Headless` runs a game with no
   window, sound or screen reader. Press keys, then check what it said.
 - **Saved settings and logs.** Settings, including the game's own, are
@@ -376,6 +382,133 @@ no marker is written at all. Games that never import (the default) leave
 no marker. This raises cheating from "open a text
 editor" to "reverse engineer the program", which is as far as any offline
 game can go.
+
+### Soundtracks
+
+A game can give players its music to listen to, a piece at a time as they
+earn it. It lists the pieces from `Game::soundtrack` (or
+`ctx.soundtrack.set_tracks` while running) and opens the menu with
+`ctx.push(SoundtrackScreen::<MyGame>::new())`:
+
+```rust
+use hearken::{Stems, Track};
+
+fn soundtrack() -> Vec<Track> {
+    vec![
+        // Unlocked the first time music/title plays.
+        Track::clip("title", "Title theme", "music/title")
+            .about("The title screen's theme.")
+            .hint("Open the game."),
+        // Layers recorded to loop together, arranged anew each play.
+        Track::stems(
+            "night-song",
+            "The night song",
+            Stems::new(8.0)
+                .bed(["song/base"])
+                .voices(["song/flute", "song/harp", "song/choir"]),
+        )
+        .unlocked_by(["music/night_complete"])
+        .hint("Finish a night."),
+        // Hidden, and not counted, until it is heard.
+        Track::clip("waltz", "Midnight waltz", "music/waltz").secret(),
+    ]
+}
+```
+
+A track unlocks the first time any of its `unlocked_by` keys starts
+playing, or when the game calls `ctx.unlock_track("night-song")` for a rule
+the engine cannot hear. The game hears of new ones through
+`ctx.soundtrack.take_new()` and announces them when it suits it. A screen
+that plays sounds outside play, such as a sound test, calls
+`ctx.soundtrack.listen(false)` while it is open; a key heard at any
+moment listening was off never counts, even if the screen closed in the
+same frame. Unlocks are saved to
+`soundtrack.json` through `ctx.vault`, so a release with `seal = true`
+seals them; a game that keeps progress elsewhere overrides
+`Game::load_soundtrack` and `Game::save_soundtrack`. `SoundtrackScreen`
+lists one game's tracks with `.album("My Game")` when a collection
+groups them by `Track::album`. While it is open the game's music is
+paused, and it goes on from the same place on Escape. Nothing played on
+that screen unlocks a track, and playback stops when another screen is
+pushed over it. A save keeps what `soundtrack.json` already holds and
+writes nothing while the file cannot be read, so a file held for a moment
+by a virus scanner or a sync client never costs the player their tracks:
+a save that could not be made is tried again every few seconds, and once
+more as the game closes. `Game::save_soundtrack` returns whether it saved.
+
+The menu plays a track as the player heard it: a clip as recorded, and
+`Stems` with the bed first and the voices joining one loop at a time in
+the order listed, then all playing to the end. A track marked
+`.varied()`, for music the game itself plays differently each time, is
+instead a new performance on every play, from a fresh seed:
+
+- `Stems` start every layer on the same sample (`Audio::start_together`),
+  however long each takes to decode, so they never drift, and fade
+  voices in and out at loop boundaries: which ones open, the order they
+  join, a breakdown now and then, how it thins out, and how long it runs
+  all change; a play runs up to a fifth longer or shorter than
+  `length_s` (at most an hour). With no bed, no loop holds fewer than two
+  voices. The arrangement keeps time by the wall clock as well as the
+  frames, so a stalled frame does not put it behind the music. Arranging
+  needs at least three voices with no bed, or two over a bed
+  (`Stems::arranges`); with fewer, every loop is the full mix and a
+  warning is logged. A piece whose stems do not all load (a damaged pack
+  entry) does not play at all, and the screen says "Can't play that
+  track." `tests/soundtrack.rs` checks that every voice is heard and that
+  eight plays give at least six arrangements.
+- `Variation` (by default `GENTLE`) moves the whole piece up or down a
+  semitone, key and tempo together, never leaving it at the recorded
+  pitch, and shades each voice's level and place. It moves at most an
+  octave. `Variation::NONE` plays a track as recorded.
+- `Track::live` hands the play to the game's own `Performer`, made from
+  that play's `Variety`, for music the game composes as it goes.
+
+#### Exporting an album
+
+Export is off unless the game turns it on, an album at a time (`""` is a
+game whose tracks have no album):
+
+```rust
+use hearken::soundtrack::AlbumOptions;
+
+ctx.soundtrack.set_album("", AlbumOptions { export: true, vary_export: false });
+```
+
+The menu then shows an "Export album" row (or "Export Lantern Lake" for a
+named album). It reads "Export album, locked: 2 of 5 heard" until every
+track listed in that album is unlocked; a secret track counts once heard.
+Export plays each track once on a mixer with no device, faster than real
+time, and writes only its finished mix, never the stems, as a 16-bit
+stereo 48 kHz WAV to `Music/<game>/<album>/01 <title>.wav`. When the
+system has no Music folder it uses `Soundtrack` in the game's data folder,
+and `ctx.soundtrack.set_export_dir` moves it anywhere else. A track that
+would run on (a live piece that never ends) stops at 15 minutes. The game
+keeps answering while it works; Escape stops it and leaves no half-written
+file, and when it is done it says where the files are. With
+`vary_export: true` each export is a fresh variation instead of the track
+as heard.
+
+In a developer build, `MY_GAME_ALL_TRACKS=1` opens every track to
+audition, and saves nothing.
+
+What this cannot protect, as no offline game can:
+
+- **Recording the speakers.** A loopback recording of a play is that play.
+  A voice's level and place hold for the whole play and the stems stay
+  sample-aligned, so a patient listener can subtract one loop from the
+  next to pull out the voices that changed, and undo the pitch step,
+  which is a plain resample by a known amount. Any loop where every voice
+  plays is the full mix. Varying each play makes that slow work; it does not
+  make it impossible. A single-file `Track::clip` varies only in key and
+  level, so a recording of it is close to the file.
+- **Exports.** An exported file is the mix as it is, to share or keep. A
+  player can export a varied album as many times as they like, and
+  nothing limits that.
+- **Copied saves.** The seal ties `soundtrack.json` to the game, not to
+  the player. A sealed file copied from another player of the same game,
+  or an old copy of one's own, is taken as it is.
+- **The pack key.** Someone who digs it out of the program can read the
+  stems (see `hearken-pack`).
 
 ## Optional features
 

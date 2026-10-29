@@ -65,6 +65,7 @@ impl<G: Game> App<G> {
         self.ctx.update_online();
         self.ctx.speech.poll(dt);
         self.ctx.update_audio();
+        self.ctx.update_soundtrack();
         self.ctx.update_duck();
 
         self.apply_pending();
@@ -196,6 +197,7 @@ impl<G: Game> App<G> {
         // `SHUTDOWN_WAIT` for a hung driver: a force-close during that wait
         // must not cost the player their settings.
         self.ctx.save_settings();
+        self.ctx.flush_soundtrack();
         // Bounded: waits only for a worker connected to Discord, at most
         // two seconds.
         self.ctx.discord.shutdown();
@@ -247,6 +249,9 @@ impl<G: Game> App<G> {
             for op in self.ctx.take_pending() {
                 match op {
                     StackOp::Push(mut next) => {
+                        if let Some(top) = self.states.last_mut() {
+                            top.cover(&mut self.ctx);
+                        }
                         next.enter(&mut self.ctx);
                         self.states.push(next);
                         reveal = None;

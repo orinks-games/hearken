@@ -250,6 +250,10 @@ pub struct Audio {
     pub(crate) shut_down: bool,
     /// Sounds started, kept only for an agent (`keep_heard`).
     heard: Option<Vec<Heard>>,
+    /// Keys whose start is noted for the game (`watch_keys`), and the ones
+    /// started since `take_watched`.
+    watched: BTreeSet<String>,
+    seen: Vec<String>,
 }
 
 /// A sound that started, as an agent listening to the game hears of it.
@@ -281,6 +285,8 @@ impl Audio {
             notice: None,
             shut_down: false,
             heard: None,
+            watched: BTreeSet::new(),
+            seen: Vec::new(),
         }
     }
 
@@ -536,6 +542,21 @@ impl Audio {
             return Sound::NONE;
         };
         self.start_clip(key, bytes, false, bus, start)
+    }
+
+    /// Starts each `(key, bus, start)` as [`Audio::start_with`] would, all
+    /// on the same sample: layers recorded to play in time (a piece's
+    /// stems) stay in time however long each one takes to get ready. The
+    /// handles come back in the order given; a key that will not play is
+    /// [`Sound::NONE`], as with `start_with`.
+    pub fn start_together(&mut self, starts: &[(&str, Bus, Start)]) -> Vec<Sound> {
+        self.backend.hold(true);
+        let sounds = starts
+            .iter()
+            .map(|&(key, bus, start)| self.start_with(key, bus, start))
+            .collect();
+        self.backend.hold(false);
+        sounds
     }
 
     /// Plays clip `bytes` the game found itself (its own packs, a file),
@@ -996,6 +1017,48 @@ impl Audio {
         self.heard.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
+    /// Mixes the next `frames` frames of everything playing, on a backend
+    /// with no device ([`crate::KiraBackend::offline`]). `None` on one that
+    /// plays to a device.
+    pub fn render(&mut self, frames: usize) -> Option<Vec<[f32; 2]>> {
+        self.backend.render(frames)
+    }
+
+    /// Whether this pool mixes offline ([`Audio::render`]), so time passes
+    /// only as frames are rendered, not on the wall clock.
+    pub fn is_offline(&self) -> bool {
+        self.backend.is_offline()
+    }
+
+    /// Notes when any of `keys` starts playing, until the next call
+    /// replaces the set: [`Audio::take_watched`] then lists the ones that
+    /// started. For a game that unlocks something the first time the
+    /// player hears it, such as a soundtrack. An empty set watches nothing.
+    pub fn watch_keys(&mut self, keys: impl IntoIterator<Item = String>) {
+        self.watched = keys.into_iter().collect();
+        self.seen.retain(|k| self.watched.contains(k));
+    }
+
+    /// The watched keys that started since the last call, each once.
+    pub fn take_watched(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.seen)
+    }
+
+    /// The music slot's sound ([`Audio::music`]), while it is still
+    /// playing: for a screen that holds the game's music where it is
+    /// ([`Audio::pause`]) and lets it go on after.
+    pub fn music_sound(&self) -> Option<Sound> {
+        self.music
+            .as_ref()
+            .map(|(_, _, sound)| *sound)
+            .filter(|sound| self.is_playing(*sound))
+    }
+
+    /// Whether `sound` is alive and paused.
+    pub fn is_paused(&self, sound: Sound) -> bool {
+        slot_ref(&self.slots, sound).is_some_and(|live| live.paused)
+    }
+
     /// Starts writing what the player hears, the final mix, to a WAV file
     /// at `path`, when the backend can record.
     pub fn start_capture(&mut self, path: &std::path::Path) -> Result<(), BackendError> {
@@ -1009,6 +1072,9 @@ impl Audio {
     }
 
     fn alloc(&mut self, live: Live) -> Sound {
+        if self.watched.contains(&live.key) && !self.seen.contains(&live.key) {
+            self.seen.push(live.key.clone());
+        }
         if let Some(heard) = &mut self.heard {
             // ponytail: unbounded until taken; an agent drains it every call.
             heard.push(Heard {

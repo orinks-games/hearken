@@ -26,6 +26,7 @@ pub mod settings;
 pub mod shell;
 pub mod single_instance;
 pub mod sound;
+pub mod soundtrack;
 pub mod speech_delivery;
 pub mod state;
 #[cfg(feature = "testing")]
@@ -68,6 +69,9 @@ pub use settings::{
 };
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
+pub use soundtrack::{
+    Performer, Piece, Soundtrack, SoundtrackScreen, Stems, Track, Variation, Variety,
+};
 pub use speech_delivery::SayEvent;
 pub use state::{Reveal, StackOp, State};
 #[cfg(feature = "testing")]

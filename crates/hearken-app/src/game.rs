@@ -122,4 +122,29 @@ pub trait Game: Sized + 'static {
     fn settings_rows(_ctx: &Ctx<Self>, rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {
         rows
     }
+
+    /// The game's soundtrack: the pieces a player unlocks and plays from
+    /// [`crate::SoundtrackScreen`]. Empty by default. A game whose list
+    /// changes as it runs sets it with `ctx.soundtrack.set_tracks`.
+    fn soundtrack() -> Vec<crate::soundtrack::Track> {
+        Vec::new()
+    }
+
+    /// The soundtrack's unlocked ids, read on the first frame and again
+    /// before each save, so a read that failed loses nothing. By default from
+    /// `soundtrack.json` through the vault, sealed in a sealing release. A
+    /// plain `soundtrack.json` is never imported into a sealing release,
+    /// whatever `IMPORTS_PLAIN_SAVES` says: no unsealed release wrote one
+    /// worth keeping, and a hand-written one would open every track.
+    fn load_soundtrack(ctx: &mut Ctx<Self>) -> std::collections::BTreeSet<String> {
+        crate::soundtrack::load_from_vault(&mut ctx.vault, false)
+    }
+
+    /// Saves the soundtrack's unlocked ids, each time one is unlocked: true
+    /// once they are safely stored. A save that returns false is tried
+    /// again every few seconds, and once more as the game closes. By
+    /// default to `soundtrack.json` through the vault.
+    fn save_soundtrack(ctx: &mut Ctx<Self>, unlocked: &std::collections::BTreeSet<String>) -> bool {
+        crate::soundtrack::save_to_vault(&mut ctx.vault, unlocked)
+    }
 }

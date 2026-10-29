@@ -209,6 +209,9 @@ pub trait Menu: Sized + 'static {
 
     fn exit(&mut self, _ctx: &mut Ctx<Self::Game>) {}
 
+    /// Another screen was pushed over this one (see [`State::cover`]).
+    fn cover(&mut self, _ctx: &mut Ctx<Self::Game>) {}
+
     /// Revealed again: rebuild the rows (a setting may have changed) and
     /// re-announce, keeping the cursor.
     fn resume(&mut self, ctx: &mut Ctx<Self::Game>) {
@@ -492,6 +495,9 @@ impl<M: Menu> State<M::Game> for M {
     }
     fn exit(&mut self, ctx: &mut Ctx<M::Game>) {
         Menu::exit(self, ctx)
+    }
+    fn cover(&mut self, ctx: &mut Ctx<M::Game>) {
+        Menu::cover(self, ctx)
     }
     fn resume(&mut self, ctx: &mut Ctx<M::Game>) {
         Menu::resume(self, ctx)

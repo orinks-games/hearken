@@ -64,6 +64,8 @@ pub struct Ctx<G: Game> {
     /// `sound().ui`, so a screen can point an earcon at nothing or a
     /// different sound at runtime.
     pub ui_sounds: UiSounds,
+    /// The game's soundtrack and what the player has unlocked of it.
+    pub soundtrack: crate::soundtrack::Soundtrack,
     sound: SoundConfig,
     pub(crate) delivery: Delivery<G::Category>,
     pending: Vec<StackOp<G>>,
@@ -117,6 +119,7 @@ impl<G: Game> Ctx<G> {
             clock: 0.0,
             audio: Audio::silent(),
             ui_sounds,
+            soundtrack: crate::soundtrack::Soundtrack::new(G::soundtrack()),
             sound,
             delivery,
             pending: Vec::new(),
