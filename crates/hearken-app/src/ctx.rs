@@ -36,6 +36,9 @@ pub struct Ctx<G: Game> {
     /// there (see [`crate::online`]).
     #[cfg(feature = "online")]
     pub online: crate::online::Online,
+    /// The game's Discord status (see [`crate::discord`]). Dormant unless
+    /// the game offers it and `run` started it.
+    pub discord: crate::discord::Discord,
     /// Which keys are down now, for a screen that polls instead of reacting
     /// to presses.
     pub held: HeldKeys,
@@ -100,6 +103,7 @@ impl<G: Game> Ctx<G> {
             #[cfg(feature = "online")]
             online,
             speech,
+            discord: crate::discord::Discord::dormant(),
             settings,
             vault,
             paths,
@@ -279,6 +283,13 @@ impl<G: Game> Ctx<G> {
     /// Push the saved speech settings to the voices.
     pub fn apply_speech_settings(&mut self) {
         hearken_speech::apply_speech_settings(self.speech.as_mut(), &mut self.settings.speech);
+    }
+
+    /// Turns Discord status on or off, as the player's setting. Saved with
+    /// the other settings.
+    pub fn set_discord_status(&mut self, on: bool) {
+        self.settings.discord.enabled = on;
+        self.discord.set_enabled(on);
     }
 
     /// Write `settings.json`. A failure is logged: the game plays on with

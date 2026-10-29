@@ -46,6 +46,14 @@ pub trait State<G: Game> {
     }
     /// Spoken on F1.
     fn help(&self, ctx: &Ctx<G>) -> String;
+    /// What Discord shows the player doing on this screen, or `None` to
+    /// leave it to the screen underneath (then `Game::presence`). Asked
+    /// each frame while Discord status is on, from the top screen down, so
+    /// a help or Settings screen over play can say nothing and the status
+    /// stays on the game. Plain, public game content only.
+    fn presence(&self, _ctx: &Ctx<G>) -> Option<crate::discord::Presence> {
+        None
+    }
     /// F1 (or a controller's Back) was pressed: speaks [`State::help`] by
     /// default. A screen whose help depends on what it is doing, or that
     /// must remember the press (a second press reading more), takes it here.

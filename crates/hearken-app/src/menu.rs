@@ -254,6 +254,11 @@ pub trait Menu: Sized + 'static {
         out
     }
 
+    /// See [`State::presence`].
+    fn presence(&self, _ctx: &Ctx<Self::Game>) -> Option<crate::discord::Presence> {
+        None
+    }
+
     /// F1: the focused row's help, or the menu's own help when the row has
     /// none.
     fn help(&self, ctx: &Ctx<Self::Game>) -> String {
@@ -517,5 +522,8 @@ impl<M: Menu> State<M::Game> for M {
     }
     fn help(&self, ctx: &Ctx<M::Game>) -> String {
         Menu::help(self, ctx)
+    }
+    fn presence(&self, ctx: &Ctx<M::Game>) -> Option<crate::discord::Presence> {
+        Menu::presence(self, ctx)
     }
 }

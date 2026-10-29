@@ -1,0 +1,19 @@
+[package]
+name = "hearken-discord"
+description = "Discord Rich Presence for a Hearken game: best-effort, off the game loop, silent when Discord is not running"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# The real client over Discord's local IPC pipe. Without it the service
+# stays dormant, so a game's presence code still compiles and does nothing.
+ipc = ["dep:discord-rich-presence"]
+
+[dependencies]
+log.workspace = true
+serde_json.workspace = true
+discord-rich-presence = { workspace = true, optional = true }

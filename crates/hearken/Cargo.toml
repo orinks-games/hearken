@@ -18,6 +18,9 @@ testing = ["hearken-app/testing"]
 # `--agent-server`, the MCP server an agent plays the real game through. Turn
 # it on from the game's own `agent-server` feature, so release builds drop it.
 agent-server = ["hearken-app/agent-server"]
+# Discord Rich Presence for a game that gives `Game::discord` its
+# application ID: the "Playing ..." status, through Discord's local pipe.
+discord = ["hearken-app/discord"]
 # Internet radio: `hearken::radio::Stream`.
 radio = ["dep:hearken-radio"]
 # HE-AAC for radio, through Fraunhofer's FDK AAC; read the README's licence notes first.
