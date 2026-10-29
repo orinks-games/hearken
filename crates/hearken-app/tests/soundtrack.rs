@@ -952,3 +952,260 @@ fn escape_during_the_closing_fade_cuts_it_short() {
         .collect();
     assert!(chans.iter().all(|c| cut.contains(c)), "{cut:?}");
 }
+
+fn play_pitches(h: &Headless<TestGame>, key: &str) -> Vec<f32> {
+    h.sounds
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Play { key: k, mix, .. } if k == key => Some(mix.pitch),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_menu_plays_a_track_as_the_player_heard_it() {
+    let mut h = game();
+    h.app.ctx.unlock_track("title");
+    h.app.ctx.push(SoundtrackScreen::new());
+    h.frame(0.0);
+    for _ in 0..5 {
+        // Rows: Play all, Title theme, ...
+        h.app.ctx.pop();
+        h.frame(0.0);
+        h.app.ctx.push(SoundtrackScreen::new());
+        h.frame(0.0);
+        h.press(Key::Down);
+        h.press(Key::Return);
+    }
+    let pitches = play_pitches(&h, "music/title");
+    assert_eq!(pitches.len(), 5);
+    assert!(pitches.iter().all(|&p| p == 1.0), "{pitches:?}");
+}
+
+#[test]
+fn stems_as_heard_join_one_loop_at_a_time_in_order() {
+    let stems = Stems::new(4.0).bed(["bed"]).voices(["a", "b", "c"]);
+    let plan = stems.plan_as_heard();
+    assert_eq!(plan[0], vec![true, false, false]);
+    assert_eq!(plan[1], vec![true, true, false]);
+    assert_eq!(plan[2], vec![true, true, true]);
+    assert!(plan[3..].iter().all(|p| p.iter().all(|&o| o)));
+    assert_eq!(plan, stems.plan_as_heard(), "the same every time");
+}
+
+#[test]
+fn a_varied_track_varies_in_the_menu_too() {
+    let track = Track::clip("t", "T", "music/t").varied();
+    let mut h = game();
+    let mut seen = BTreeSet::new();
+    for _ in 0..12 {
+        h.clear();
+        let mut p = track.perform_as_heard();
+        p.start(&mut h.app.ctx.audio);
+        p.stop(&mut h.app.ctx.audio);
+        for pitch in play_pitches(&h, "music/t") {
+            seen.insert((pitch * 1000.0) as i32);
+        }
+    }
+    assert!(seen.len() >= 2, "{seen:?}");
+    assert!(
+        !seen.contains(&1000),
+        "a varied play is never the recorded pitch"
+    );
+}
+
+#[test]
+fn export_is_off_unless_the_game_offers_it() {
+    let mut h = game();
+    h.app.ctx.push(SoundtrackScreen::new());
+    h.frame(0.0);
+    assert!(!h.app.top_lines().join("\n").contains("Export"));
+}
+
+fn wav_frames(path: &std::path::Path) -> usize {
+    let bytes = std::fs::read(path).unwrap();
+    assert_eq!(&bytes[0..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WAVE");
+    let data = u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize;
+    assert_eq!(data, bytes.len() - 44, "the sizes are filled in");
+    data / 4
+}
+
+#[test]
+fn an_album_exports_once_every_track_is_heard() {
+    use hearken_app::soundtrack::AlbumOptions;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Headless::new(Default::default(), Probe::new("base"));
+    h.app.ctx.soundtrack.set_tracks(vec![
+        Track::clip("one", "First: song?", "music/one").album("Lake"),
+        Track::stems(
+            "two",
+            "Second song",
+            Stems::new(1.0)
+                .bed(["song/base"])
+                .voices(["song/a", "song/b"])
+                .length_s(4.0),
+        )
+        .album("Lake"),
+        Track::clip("hidden", "Hidden", "music/hidden")
+            .album("Lake")
+            .secret(),
+    ]);
+    h.app.ctx.soundtrack.set_album(
+        "Lake",
+        AlbumOptions {
+            export: true,
+            vary_export: false,
+        },
+    );
+    h.app
+        .ctx
+        .soundtrack
+        .set_export_dir(Some(dir.path().to_path_buf()));
+    h.frame(0.0);
+    h.app.ctx.unlock_track("one");
+    h.app.ctx.push(SoundtrackScreen::new().album("Lake"));
+    h.frame(0.0);
+    let lines = h.app.top_lines().join("\n");
+    // The secret one does not count until it is heard.
+    assert!(
+        lines.contains("Export album, locked: 1 of 2 heard"),
+        "{lines}"
+    );
+    h.press(Key::End);
+    h.press(Key::Up);
+    h.clear();
+    h.press(Key::Return);
+    assert_eq!(
+        h.spoken(),
+        vec!["Locked. Hear every track first: 1 of 2 so far."]
+    );
+
+    h.app.ctx.unlock_track("two");
+    h.app.ctx.pop();
+    h.frame(0.0);
+    h.app.ctx.push(SoundtrackScreen::new().album("Lake"));
+    h.frame(0.0);
+    h.press(Key::End);
+    h.press(Key::Up);
+    h.clear();
+    h.press(Key::Return);
+    assert!(
+        h.spoken()[0].starts_with("Exporting 2 tracks."),
+        "{:?}",
+        h.spoken()
+    );
+    let began = Instant::now();
+    while !h.spoken().iter().any(|l| l.starts_with("Exported")) {
+        h.frame(0.016);
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "export never ended"
+        );
+    }
+    let folder = dir.path().join("Test Game").join("Lake");
+    assert!(
+        h.spoken()
+            .iter()
+            .any(|l| l.contains("Exported 2 tracks to") && l.contains("Lake")),
+        "{:?}",
+        h.spoken()
+    );
+    let mut names: Vec<String> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["01 First song.wav", "02 Second song.wav"]);
+    // The stems piece runs its length, then fades.
+    let frames = wav_frames(&folder.join("02 Second song.wav"));
+    let seconds = frames as f64 / hearken_app::soundtrack::export::RATE as f64;
+    assert!(seconds > 4.0 && seconds < 20.0, "{seconds}");
+    // It is the mix, not silence.
+    let bytes = std::fs::read(folder.join("02 Second song.wav")).unwrap();
+    let loudest = bytes[44..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b).unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    assert!(loudest > 300, "loudest sample {loudest}");
+}
+
+#[test]
+fn escape_stops_an_export_and_leaves_no_part_file() {
+    use hearken_app::soundtrack::AlbumOptions;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Headless::new(Default::default(), Probe::new("base"));
+    h.app.ctx.soundtrack.set_tracks(vec![Track::stems(
+        "long",
+        "Long song",
+        Stems::new(2.0)
+            .bed(["song/base"])
+            .voices(["song/a", "song/b"])
+            .length_s(600.0),
+    )
+    .open()]);
+    h.app.ctx.soundtrack.set_album(
+        "",
+        AlbumOptions {
+            export: true,
+            vary_export: true,
+        },
+    );
+    h.app
+        .ctx
+        .soundtrack
+        .set_export_dir(Some(dir.path().to_path_buf()));
+    h.frame(0.0);
+    h.app.ctx.push(SoundtrackScreen::new());
+    h.frame(0.0);
+    // Rows: Long song, Export album, Back.
+    h.press(Key::Down);
+    h.press(Key::Return);
+    h.frame(0.016);
+    h.frame(0.016);
+    assert!(h
+        .app
+        .top_lines()
+        .join("\n")
+        .contains("Export album, working"));
+    h.clear();
+    h.press(Key::Escape);
+    assert_eq!(h.spoken(), vec!["Export stopped."]);
+    assert_eq!(
+        h.app.top_name(),
+        "soundtrack",
+        "the first Escape only stops it"
+    );
+    let left: Vec<_> = walk(dir.path());
+    assert!(left.iter().all(|p| !p.ends_with(".part")), "{left:?}");
+}
+
+fn walk(dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p.to_string_lossy().into_owned());
+        }
+    }
+    out
+}
+
+#[test]
+fn export_file_names_are_safe_everywhere() {
+    use hearken_app::soundtrack::export::file_name;
+    assert_eq!(file_name("A/B: c?"), "A B c");
+    assert_eq!(file_name("..."), "Untitled");
+    assert_eq!(file_name("con"), "Untitled con");
+    assert_eq!(file_name("COM7"), "Untitled COM7");
+    assert_eq!(file_name("nul.txt"), "Untitled nul.txt");
+    assert_eq!(file_name("Comet"), "Comet");
+    assert_eq!(file_name("  End.  "), "End");
+}

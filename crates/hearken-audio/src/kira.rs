@@ -176,6 +176,11 @@ pub struct KiraBackend<B: kira::backend::Backend = DeviceBackend> {
     /// While [`Backend::hold`] is on, the channels started since, paused at
     /// their first sample.
     held: Option<Vec<Channel>>,
+    /// Decode every clip whole, never stream: an offline render runs faster
+    /// than a stream's decoder thread can keep up with.
+    whole: bool,
+    /// An offline render's mix, collected from the main track.
+    collected: Option<Arc<std::sync::Mutex<Vec<[f32; 2]>>>>,
     next: Channel,
     curve: GainCurve,
     law: PanLaw,
@@ -210,6 +215,8 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
             channels: HashMap::new(),
             fading: Vec::new(),
             held: None,
+            whole: false,
+            collected: None,
             next: 1,
             curve: GainCurve::default(),
             law: PanLaw::default(),
@@ -232,6 +239,44 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
     /// `None` once shut down.
     pub fn manager_mut(&mut self) -> Option<&mut AudioManager<B>> {
         self.manager.as_mut()
+    }
+}
+
+impl KiraBackend<kira::backend::mock::MockBackend> {
+    /// A backend with no device that mixes only when asked
+    /// ([`Backend::render`]), faster than real time: for writing a piece of
+    /// music to a file. Every clip decodes whole.
+    pub fn offline(sample_rate: u32) -> Result<Self, BackendError> {
+        let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut settings = AudioManagerSettings::<kira::backend::mock::MockBackend>::default();
+        settings.backend_settings.sample_rate = sample_rate.max(8_000);
+        settings
+            .main_track_builder
+            .add_effect(Collector(collected.clone()));
+        let mut backend = KiraBackend::with_settings(settings)
+            .map_err(|()| BackendError("the offline mixer did not start".into()))?;
+        backend.whole = true;
+        backend.collected = Some(collected);
+        Ok(backend)
+    }
+}
+
+/// Collects an offline render's final mix.
+struct Collector(Arc<std::sync::Mutex<Vec<[f32; 2]>>>);
+
+impl kira::effect::EffectBuilder for Collector {
+    type Handle = ();
+
+    fn build(self) -> (Box<dyn Effect>, ()) {
+        (Box::new(self), ())
+    }
+}
+
+impl Effect for Collector {
+    fn process(&mut self, input: &mut [Frame], _dt: f64, _info: &Info) {
+        if let Ok(mut out) = self.0.lock() {
+            out.extend(input.iter().map(|f| [f.left, f.right]));
+        }
     }
 }
 
@@ -324,8 +369,11 @@ fn play_clip(
     looping: bool,
     pitch: f32,
     from_s: f64,
+    whole: bool,
 ) -> Result<(Playing, f64), BackendError> {
-    let stream_over = if looping {
+    let stream_over = if whole {
+        usize::MAX
+    } else if looping {
         LOOP_STREAM_OVER_BYTES
     } else {
         STREAM_OVER_BYTES
@@ -518,7 +566,8 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
         let mut length_s = None;
         let playing = match source {
             Source::Clip(bytes) => {
-                let (playing, length) = play_clip(&mut track, bytes, looping, mix.pitch, from_s)?;
+                let (playing, length) =
+                    play_clip(&mut track, bytes, looping, mix.pitch, from_s, self.whole)?;
                 length_s = Some(length);
                 playing
             }
@@ -583,7 +632,7 @@ fn insert_effect(insert: &Insert) -> Box<dyn Effect> {
     }
 }
 
-impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
+impl<B: kira::backend::Backend + Send + 'static> Backend for KiraBackend<B> {
     fn name(&self) -> String {
         "Kira".to_string()
     }
@@ -718,6 +767,29 @@ impl<B: kira::backend::Backend + Send> Backend for KiraBackend<B> {
 
     fn is_playing(&mut self, channel: Channel) -> bool {
         self.channels.get(&channel).is_some_and(Entry::alive)
+    }
+
+    fn is_offline(&self) -> bool {
+        self.collected.is_some()
+    }
+
+    fn render(&mut self, frames: usize) -> Option<Vec<[f32; 2]>> {
+        let collected = self.collected.clone()?;
+        let manager = self.manager.as_mut()?;
+        let mock = (manager.backend_mut() as &mut dyn std::any::Any)
+            .downcast_mut::<kira::backend::mock::MockBackend>()?;
+        // One call mixes one internal buffer, 128 frames by default.
+        let mut have = 0;
+        while have < frames {
+            mock.on_start_processing();
+            mock.process();
+            let now = collected.lock().map(|c| c.len()).unwrap_or(frames);
+            if now == have {
+                break;
+            }
+            have = now;
+        }
+        collected.lock().ok().map(|mut c| std::mem::take(&mut *c))
     }
 
     fn update(&mut self) {

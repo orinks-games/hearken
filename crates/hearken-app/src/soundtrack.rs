@@ -17,10 +17,13 @@
 //! ([`Track::secret`]) is not listed or counted until it is unlocked, so a
 //! surprise stays a surprise.
 //!
-//! # Every play is a new performance
+//! # As heard, or varied
 //!
-//! The soundtrack does not play one fixed file. Each play draws a fresh
-//! [`Variety`] and performs the piece from it:
+//! The menu plays a track as the player heard it in the game
+//! ([`Track::perform_as_heard`]): a clip as recorded, stems joining one
+//! loop at a time in their listed order. A track marked [`Track::varied`]
+//! is performed afresh every time instead, in the menu too, from a new
+//! [`Variety`]:
 //!
 //! - [`Piece::Stems`] arranges a piece's looping layers anew every time:
 //!   which voices open it, the order they join in, where some drop out and
@@ -33,10 +36,21 @@
 //! - [`Piece::Live`] hands the performance to the game's own
 //!   [`Performer`], which can compose as it goes.
 //!
-//! So a recording of one play is that play, not the piece: the stems stay
-//! in the game's sound pack and are only ever heard mixed, and the next
-//! play differs. A piece whose stems will not all load (a damaged pack
-//! entry) does not play at all, rather than play the ones that did.
+//! The stems stay in the game's sound pack and are only ever heard mixed.
+//! A piece whose stems will not all load (a damaged pack entry) does not
+//! play at all, rather than play the ones that did.
+//!
+//! # Exporting an album
+//!
+//! An album the game opens with [`Soundtrack::set_album`] and
+//! [`AlbumOptions::export`] gets an "Export" row in the menu. It is locked
+//! until every track listed in the album is unlocked (a secret track counts
+//! once heard) and says how many are. Each track is then played on a
+//! mixer with no device, faster than real time, and its finished mix
+//! written as a WAV file to `Music/<game>/<album>/` (the game's data
+//! folder when there is no Music folder; see [`export`]). With
+//! [`AlbumOptions::vary_export`] each export is a fresh variation;
+//! otherwise it is the track as heard.
 //!
 //! Arranging needs layers to move: at least three voices with no bed, or
 //! two over a bed ([`Stems::arranges`]). With fewer, every loop holds every
@@ -409,6 +423,17 @@ impl Stems {
         plan
     }
 
+    /// The plan of a play as the player hears it in the game: the voices
+    /// join one loop at a time in their given order, then all play on to
+    /// about `length_s`.
+    pub fn plan_as_heard(&self) -> Vec<Vec<bool>> {
+        let n = self.voices.len();
+        let passes = self.passes(n, &mut Variety::new(0)).max(n + 2);
+        (0..passes)
+            .map(|pass| (0..n).map(|i| i <= pass).collect())
+            .collect()
+    }
+
     /// How many loops this play runs: about `length_s`, a fifth either way.
     fn passes(&self, voices: usize, v: &mut Variety) -> usize {
         let loop_s = self.loop_s.clamp(0.5, Stems::MAX_LOOP_S);
@@ -471,6 +496,8 @@ pub struct Track {
     pub unlocked_by: Vec<String>,
     pub piece: Piece,
     pub variation: Variation,
+    /// Every play varies, in the menu too ([`Track::varied`]).
+    pub varied: bool,
 }
 
 impl Track {
@@ -486,6 +513,7 @@ impl Track {
             unlocked_by: Vec::new(),
             piece,
             variation: Variation::GENTLE,
+            varied: false,
         }
     }
 
@@ -558,9 +586,38 @@ impl Track {
         self
     }
 
+    /// How far a varied play strays ([`Track::varied`], or an export from
+    /// an album with [`AlbumOptions::vary_export`]).
     pub fn variation(mut self, variation: Variation) -> Track {
         self.variation = variation;
         self
+    }
+
+    /// Every play of this track varies, in the soundtrack menu too: for
+    /// music the game itself plays differently each time, such as a tune it
+    /// makes up. Without it the menu plays a track as the player heard it.
+    pub fn varied(mut self) -> Track {
+        self.varied = true;
+        self
+    }
+
+    /// A performer for one play as the player hears it in the game: a clip
+    /// as recorded, stems joining one loop at a time in their given order
+    /// then all playing to the end, a live piece from a fixed seed. A
+    /// [`Track::varied`] track varies anyway, as it does in play.
+    pub fn perform_as_heard(&self) -> Box<dyn Performer> {
+        if self.varied {
+            return self.perform(Variety::fresh());
+        }
+        match &self.piece {
+            Piece::Clip { .. } => Track {
+                variation: Variation::NONE,
+                ..self.clone()
+            }
+            .perform(Variety::new(0)),
+            Piece::Stems(stems) => Box::new(Arrangement::as_heard(stems)),
+            Piece::Live(make) => make(Variety::new(0)),
+        }
     }
 
     /// A performer for one play of this track.
@@ -719,6 +776,17 @@ impl Arrangement {
         }
     }
 
+    /// One play as the player hears it: recorded key and levels, centred,
+    /// voices joining in order ([`Stems::plan_as_heard`]).
+    fn as_heard(stems: &Stems) -> Arrangement {
+        let mut a = Arrangement::new(stems, Variation::NONE, Variety::new(0));
+        a.plan = stems.plan_as_heard();
+        a.levels = vec![stems.level.clamp(0.0, 1.0); stems.voices.len()];
+        a.pans = vec![0.0; stems.voices.len()];
+        a.bed_level = stems.level.clamp(0.0, 1.0);
+        a
+    }
+
     fn apply_pass(&mut self, audio: &mut Audio, fade_ms: u32) {
         let Some(row) = self.plan.get(self.pass) else {
             return;
@@ -802,6 +870,8 @@ impl Performer for Arrangement {
             .last
             .replace(now)
             .map_or(0.0, |t| now.duration_since(t).as_secs_f64());
+        // Offline, time is only the frames rendered.
+        let real = if audio.is_offline() { 0.0 } else { real };
         // Paused stems do not move on.
         if !self.all().any(|s| audio.is_paused(s)) {
             self.frames_s += dt.max(0.0);
@@ -921,9 +991,24 @@ pub fn save_to_vault(vault: &mut Vault, unlocked: &BTreeSet<String>) -> bool {
 /// How long after a save that could not be made it is tried again.
 const SAVE_RETRY_S: f64 = 3.0;
 
+/// What an album of the soundtrack offers beyond listening. Both are off
+/// unless the game turns them on with [`Soundtrack::set_album`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AlbumOptions {
+    /// The soundtrack menu offers to write the album to sound files, once
+    /// every track listed in it is unlocked (see [`export`]).
+    pub export: bool,
+    /// Each exported track is a fresh variation ([`Track::perform`]), not
+    /// the track as the player hears it.
+    pub vary_export: bool,
+}
+
 /// The game's tracks and what the player has unlocked, at `ctx.soundtrack`.
 pub struct Soundtrack {
     tracks: Vec<Track>,
+    albums: std::collections::BTreeMap<String, AlbumOptions>,
+    /// Where exports go, in place of the player's Music folder.
+    export_dir: Option<std::path::PathBuf>,
     unlocked: BTreeSet<String>,
     loaded: bool,
     /// Unlocked since the last `take_new`, by title.
@@ -947,6 +1032,8 @@ impl Soundtrack {
     pub fn new(tracks: Vec<Track>) -> Soundtrack {
         Soundtrack {
             tracks,
+            albums: Default::default(),
+            export_dir: None,
             unlocked: BTreeSet::new(),
             loaded: false,
             new: Vec::new(),
@@ -968,6 +1055,42 @@ impl Soundtrack {
 
     pub fn tracks(&self) -> &[Track] {
         &self.tracks
+    }
+
+    /// Sets what `album` offers (`""` is a game whose tracks have no
+    /// album). Every album starts with [`AlbumOptions::default`]: listen
+    /// only.
+    pub fn set_album(&mut self, album: impl Into<String>, options: AlbumOptions) {
+        self.albums.insert(album.into(), options);
+    }
+
+    pub fn album_options(&self, album: &str) -> AlbumOptions {
+        self.albums.get(album).copied().unwrap_or_default()
+    }
+
+    /// The albums, in the order their first track is listed.
+    pub fn albums(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for t in &self.tracks {
+            if !out.contains(&t.album) {
+                out.push(t.album.clone());
+            }
+        }
+        out
+    }
+
+    /// Writes exports under `dir` instead of the player's Music folder.
+    pub fn set_export_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.export_dir = dir;
+    }
+
+    /// How many of `album`'s listed tracks are unlocked, and how many are
+    /// listed (a secret one counts once it is unlocked). The album can be
+    /// exported once the two match.
+    pub fn album_progress(&self, album: &str) -> (usize, usize) {
+        let listed = self.listed(Some(album));
+        let unlocked = listed.iter().filter(|t| self.is_unlocked(&t.id)).count();
+        (unlocked, listed.len())
     }
 
     pub fn track(&self, id: &str) -> Option<&Track> {
@@ -1191,7 +1314,27 @@ pub struct SoundtrackScreen<G: Game> {
     held_music: Option<Sound>,
     /// Whether the soundtrack was listening when the screen opened.
     was_listening: bool,
+    /// An album being written to files.
+    #[cfg(feature = "kira")]
+    export: Option<Export>,
 }
+
+/// An album being written, a slice a frame.
+#[cfg(feature = "kira")]
+struct Export {
+    album: String,
+    dir: std::path::PathBuf,
+    vary: bool,
+    tracks: Vec<Track>,
+    at: usize,
+    render: Option<export::Render>,
+    written: usize,
+    failed: usize,
+}
+
+/// How long an export may work each frame, so the game keeps answering.
+#[cfg(feature = "kira")]
+const EXPORT_SLICE: std::time::Duration = std::time::Duration::from_millis(30);
 
 /// Said when a track has nothing that will play.
 const CANT_PLAY: &str = "Can't play that track.";
@@ -1204,8 +1347,7 @@ impl<G: Game> SoundtrackScreen<G> {
     pub fn new() -> Self {
         SoundtrackScreen {
             core: MenuCore::new("Soundtrack").with_intro_help(
-                "Up and Down move, Enter plays or stops a track, Escape goes back. \
-                 Each play is a new performance.",
+                "Up and Down move, Enter plays or stops a track, Escape goes back.",
             ),
             album: None,
             name: SCREEN_NAME,
@@ -1213,6 +1355,8 @@ impl<G: Game> SoundtrackScreen<G> {
             queue: Vec::new(),
             held_music: None,
             was_listening: true,
+            #[cfg(feature = "kira")]
+            export: None,
         }
     }
 
@@ -1255,7 +1399,7 @@ impl<G: Game> SoundtrackScreen<G> {
         if !ctx.track_unlocked(id) {
             return false;
         }
-        let mut p = track.perform(Variety::fresh());
+        let mut p = track.perform_as_heard();
         p.start(&mut ctx.audio);
         if !p.update(&mut ctx.audio, 0.0) {
             p.stop(&mut ctx.audio);
@@ -1289,6 +1433,181 @@ impl<G: Game> SoundtrackScreen<G> {
             .filter(|t| ctx.soundtrack.is_unlocked(&t.id))
             .count();
         (unlocked, listed.len())
+    }
+
+    /// The rows that export albums: one for the album this screen lists,
+    /// or one per album that offers it.
+    #[cfg(feature = "kira")]
+    fn export_rows(&self, ctx: &Ctx<G>) -> Vec<MenuItem<Self, G>> {
+        let albums = match &self.album {
+            Some(a) => vec![a.clone()],
+            None => ctx.soundtrack.albums(),
+        };
+        let one = self.album.is_some();
+        albums
+            .into_iter()
+            .filter(|a| ctx.soundtrack.album_options(a).export)
+            .map(|album| {
+                let name = if one || album.is_empty() {
+                    "album".to_string()
+                } else {
+                    album.clone()
+                };
+                let label_album = album.clone();
+                let label_name = name.clone();
+                MenuItem::new(
+                    crate::menu::Label::dynamic(move |s: &Self, ctx: &Ctx<G>| {
+                        if s.export.as_ref().is_some_and(|e| e.album == label_album) {
+                            return format!("Export {label_name}, working");
+                        }
+                        let (heard, all) = ctx.soundtrack.album_progress(&label_album);
+                        if all > 0 && heard == all {
+                            format!("Export {label_name}")
+                        } else {
+                            format!("Export {label_name}, locked: {heard} of {all} heard")
+                        }
+                    }),
+                    move |s: &mut Self, ctx: &mut Ctx<G>| s.start_export(ctx, &album),
+                )
+                .select_sound(None)
+                .help(
+                    "Writes every track of the album to sound files in your Music folder, \
+                     once you have heard them all.",
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "kira")]
+    fn start_export(&mut self, ctx: &mut Ctx<G>, album: &str) {
+        if let Some(e) = &self.export {
+            let n = e.tracks.len();
+            ctx.say(format!("Exporting, track {} of {n}.", (e.at + 1).min(n)));
+            return;
+        }
+        ctx.load_soundtrack();
+        let (heard, all) = ctx.soundtrack.album_progress(album);
+        if all == 0 || heard < all {
+            ctx.say(format!(
+                "Locked. Hear every track first: {heard} of {all} so far."
+            ));
+            return;
+        }
+        self.queue.clear();
+        self.stop(ctx);
+        let tracks: Vec<Track> = ctx
+            .soundtrack
+            .listed(Some(album))
+            .into_iter()
+            .cloned()
+            .collect();
+        let base = ctx
+            .soundtrack
+            .export_dir
+            .clone()
+            .unwrap_or_else(|| export::base(&ctx.paths.data_dir));
+        let dir = export::folder(&base, G::TITLE, album);
+        let n = tracks.len();
+        let tracks_word = if n == 1 { "track" } else { "tracks" };
+        ctx.say(format!(
+            "Exporting {n} {tracks_word}. This takes a moment; Escape stops it."
+        ));
+        self.export = Some(Export {
+            album: album.to_string(),
+            dir,
+            vary: ctx.soundtrack.album_options(album).vary_export,
+            tracks,
+            at: 0,
+            render: None,
+            written: 0,
+            failed: 0,
+        });
+    }
+
+    /// Works on the export for up to [`EXPORT_SLICE`].
+    #[cfg(feature = "kira")]
+    fn step_export(&mut self, ctx: &mut Ctx<G>) {
+        let Some(e) = self.export.as_mut() else {
+            return;
+        };
+        let began = Instant::now();
+        while began.elapsed() < EXPORT_SLICE {
+            if e.render.is_none() {
+                let Some(track) = e.tracks.get(e.at) else {
+                    break;
+                };
+                let performer = if e.vary {
+                    track.perform(Variety::fresh())
+                } else {
+                    track.perform_as_heard()
+                };
+                let name = format!("{:02} {}.wav", e.at + 1, export::file_name(&track.title));
+                let clips = crate::sound::clip_source::<G>(
+                    hearken_audio::discover_clips(G::ENV_PREFIX).clips,
+                );
+                match export::Render::start(performer, clips, e.dir.join(name)) {
+                    Ok(r) => e.render = Some(r),
+                    Err(err) => {
+                        log::warn!("export of {:?} failed: {err}", track.id);
+                        e.failed += 1;
+                        e.at += 1;
+                        continue;
+                    }
+                }
+            }
+            let Some(r) = e.render.as_mut() else {
+                break;
+            };
+            match r.step(export::RATE as usize / 4) {
+                Ok(false) => {}
+                Ok(true) => {
+                    e.render = None;
+                    e.written += 1;
+                    e.at += 1;
+                }
+                Err(err) => {
+                    log::warn!("export to {} failed: {err}", r.path().display());
+                    if let Some(r) = e.render.take() {
+                        r.cancel();
+                    }
+                    e.failed += 1;
+                    e.at += 1;
+                }
+            }
+        }
+        if e.at >= e.tracks.len() {
+            let e = self.export.take().expect("export in progress");
+            let tracks_word = if e.written == 1 { "track" } else { "tracks" };
+            let mut line = format!(
+                "Exported {} {tracks_word} to {}.",
+                e.written,
+                e.dir.display()
+            );
+            if e.failed > 0 {
+                line.push_str(&format!(" {} could not be written.", e.failed));
+            }
+            if e.written == 0 {
+                line = "Could not export the album.".to_string();
+            }
+            ctx.say(line);
+        }
+    }
+
+    /// Stops an export, removing its unfinished file: true when one ran.
+    #[cfg(feature = "kira")]
+    fn cancel_export(&mut self) -> bool {
+        let Some(mut e) = self.export.take() else {
+            return false;
+        };
+        if let Some(r) = e.render.take() {
+            r.cancel();
+        }
+        true
+    }
+
+    #[cfg(not(feature = "kira"))]
+    fn cancel_export(&mut self) -> bool {
+        false
     }
 
     fn row(track: &Track) -> MenuItem<Self, G> {
@@ -1407,6 +1726,8 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
         if tracks.is_empty() {
             items.push(MenuItem::inert("No tracks yet."));
         }
+        #[cfg(feature = "kira")]
+        items.extend(self.export_rows(ctx));
         items.push(
             MenuItem::new("Back", |s: &mut Self, ctx: &mut Ctx<G>| s.on_escape(ctx))
                 .select_sound(None),
@@ -1427,6 +1748,7 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
     }
 
     fn exit(&mut self, ctx: &mut Ctx<G>) {
+        self.cancel_export();
         self.queue.clear();
         self.stop(ctx);
         // What this screen started is not heard in play.
@@ -1452,6 +1774,8 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
     }
 
     fn update(&mut self, ctx: &mut Ctx<G>, dt: f64) {
+        #[cfg(feature = "kira")]
+        self.step_export(ctx);
         let Some((_, p)) = self.playing.as_mut() else {
             return;
         };
@@ -1466,6 +1790,253 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
 
     fn on_escape(&mut self, ctx: &mut Ctx<G>) {
         ctx.play_ui(UiSound::Back);
+        if self.cancel_export() {
+            ctx.say("Export stopped.");
+            return;
+        }
         ctx.pop();
+    }
+}
+
+/// Writing an album of the soundtrack to sound files, for a game that
+/// offers it ([`AlbumOptions::export`]).
+///
+/// A track is played once on a mixer with no device, faster than real
+/// time, and its finished mix written as a 16-bit stereo WAV file at
+/// [`RATE`]: only the mix, never the stems. The soundtrack menu does this
+/// a slice at a time, so the game keeps answering while it works.
+#[cfg(feature = "kira")]
+pub mod export {
+    use std::fs::File;
+    use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+    use std::path::{Path, PathBuf};
+
+    use hearken_audio::{Audio, ClipSource, KiraBackend};
+
+    use super::Performer;
+
+    /// Frames a second in an exported file.
+    pub const RATE: u32 = 48_000;
+    /// The longest a track plays when exported: one that would go on longer
+    /// (a live piece that never ends) is faded there.
+    pub const MAX_S: f64 = 15.0 * 60.0;
+    /// Frames mixed at a time.
+    const CHUNK: usize = 1024;
+    /// Silence kept after a piece ends, so its last fade is whole.
+    const TAIL_S: f64 = 1.0;
+
+    /// `text` as a file or folder name on any system: no path separators
+    /// or characters Windows refuses, no trailing dots or spaces, at most 80
+    /// characters. Empty becomes `"Untitled"`.
+    pub fn file_name(text: &str) -> String {
+        let cleaned: String = text
+            .chars()
+            .map(|c| match c {
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => ' ',
+                c if c.is_control() => ' ',
+                c => c,
+            })
+            .collect();
+        let words: Vec<&str> = cleaned.split_whitespace().collect();
+        let mut name: String = words.join(" ").chars().take(80).collect();
+        while name.ends_with('.') || name.ends_with(' ') {
+            name.pop();
+        }
+        // Windows refuses these as a name, with or without an extension.
+        let stem = name
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .trim_end()
+            .to_uppercase();
+        let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
+            || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+                && stem.len() == 4
+                && stem.as_bytes()[3].is_ascii_digit());
+        if name.is_empty() || name.starts_with('.') || reserved {
+            name = format!("Untitled {name}").trim().to_string();
+        }
+        name
+    }
+
+    /// Where an album goes: `<base>/<game>/<album>`, or `<base>/<game>` for
+    /// a game whose tracks have no album.
+    pub fn folder(base: &Path, game: &str, album: &str) -> PathBuf {
+        let dir = base.join(file_name(game));
+        if album.is_empty() {
+            dir
+        } else {
+            dir.join(file_name(album))
+        }
+    }
+
+    /// The folder exports go under: the player's Music folder, else
+    /// `fallback` (the game's data folder).
+    pub fn base(fallback: &Path) -> PathBuf {
+        dirs::audio_dir().unwrap_or_else(|| fallback.join("Soundtrack"))
+    }
+
+    /// One track being written.
+    pub struct Render {
+        audio: Audio,
+        performer: Box<dyn Performer>,
+        out: Wav,
+        frames: usize,
+        tail: Option<usize>,
+        path: PathBuf,
+    }
+
+    impl Render {
+        /// Starts playing `performer` on a mixer of its own, loading clips
+        /// from `clips`, to be written to `path`.
+        pub fn start(
+            mut performer: Box<dyn Performer>,
+            clips: Box<dyn ClipSource>,
+            path: PathBuf,
+        ) -> io::Result<Render> {
+            let backend = KiraBackend::offline(RATE).map_err(|e| io::Error::other(e.0))?;
+            let mut audio = Audio::new(Box::new(backend), clips);
+            performer.start(&mut audio);
+            if !performer.update(&mut audio, 0.0) {
+                performer.stop(&mut audio);
+                return Err(io::Error::other("nothing of the track would play"));
+            }
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let out = Wav::create(&part_of(&path))?;
+            Ok(Render {
+                audio,
+                performer,
+                out,
+                frames: 0,
+                tail: None,
+                path,
+            })
+        }
+
+        /// Seconds written so far.
+        pub fn seconds(&self) -> f64 {
+            self.frames as f64 / RATE as f64
+        }
+
+        /// Writes about `frames` more frames: true once the track has ended
+        /// and its file is complete.
+        pub fn step(&mut self, frames: usize) -> io::Result<bool> {
+            let mut done = 0;
+            while done < frames.max(1) {
+                let dt = CHUNK as f64 / RATE as f64;
+                if self.tail.is_none() {
+                    let alive = self.performer.update(&mut self.audio, dt);
+                    if !alive || self.seconds() >= MAX_S {
+                        if alive {
+                            self.performer.stop(&mut self.audio);
+                        }
+                        self.tail = Some((TAIL_S * RATE as f64) as usize);
+                    }
+                }
+                self.audio.update(&|_| false);
+                let mix = self
+                    .audio
+                    .render(CHUNK)
+                    .ok_or_else(|| io::Error::other("the offline mixer is gone"))?;
+                if mix.is_empty() {
+                    return Err(io::Error::other("the offline mixer stopped"));
+                }
+                self.out.write(&mix)?;
+                self.frames += mix.len();
+                done += mix.len();
+                if let Some(left) = self.tail.as_mut() {
+                    *left = left.saturating_sub(mix.len());
+                    if *left == 0 {
+                        self.out.finish()?;
+                        std::fs::rename(part_of(&self.path), &self.path)?;
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
+
+        /// Where the finished file goes.
+        pub fn path(&self) -> &Path {
+            &self.path
+        }
+
+        /// Stops, and removes the unfinished file.
+        pub fn cancel(mut self) {
+            self.performer.stop(&mut self.audio);
+            let _ = std::fs::remove_file(part_of(&self.path));
+        }
+    }
+
+    impl Drop for Render {
+        fn drop(&mut self) {
+            self.audio.shutdown();
+        }
+    }
+
+    /// Writes one whole play of `performer` to `path` at once: for tests
+    /// and tools.
+    pub fn render_to(
+        performer: Box<dyn Performer>,
+        clips: Box<dyn ClipSource>,
+        path: PathBuf,
+    ) -> io::Result<PathBuf> {
+        let mut r = Render::start(performer, clips, path)?;
+        while !r.step(RATE as usize)? {}
+        Ok(r.path.clone())
+    }
+
+    /// The file a render writes until it is complete.
+    fn part_of(path: &Path) -> PathBuf {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(".part");
+        path.with_file_name(name)
+    }
+
+    /// A 16-bit stereo WAV file, its sizes filled in at the end.
+    struct Wav {
+        file: BufWriter<File>,
+        bytes: u32,
+    }
+
+    impl Wav {
+        fn create(path: &Path) -> io::Result<Wav> {
+            let mut file = BufWriter::new(File::create(path)?);
+            let rate = RATE;
+            file.write_all(b"RIFF\0\0\0\0WAVEfmt ")?;
+            file.write_all(&16u32.to_le_bytes())?;
+            file.write_all(&1u16.to_le_bytes())?; // PCM
+            file.write_all(&2u16.to_le_bytes())?; // stereo
+            file.write_all(&rate.to_le_bytes())?;
+            file.write_all(&(rate * 4).to_le_bytes())?;
+            file.write_all(&4u16.to_le_bytes())?;
+            file.write_all(&16u16.to_le_bytes())?;
+            file.write_all(b"data\0\0\0\0")?;
+            Ok(Wav { file, bytes: 0 })
+        }
+
+        fn write(&mut self, frames: &[[f32; 2]]) -> io::Result<()> {
+            let mut buf = Vec::with_capacity(frames.len() * 4);
+            for [l, r] in frames {
+                for s in [l, r] {
+                    let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                    buf.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            self.bytes = self.bytes.saturating_add(buf.len() as u32);
+            self.file.write_all(&buf)
+        }
+
+        fn finish(&mut self) -> io::Result<()> {
+            self.file.flush()?;
+            let file = self.file.get_mut();
+            file.seek(SeekFrom::Start(4))?;
+            file.write_all(&(36 + self.bytes).to_le_bytes())?;
+            file.seek(SeekFrom::Start(40))?;
+            file.write_all(&self.bytes.to_le_bytes())?;
+            file.sync_all()
+        }
     }
 }

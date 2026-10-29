@@ -126,6 +126,20 @@ pub trait Backend: Send {
         let _ = held;
     }
 
+    /// Whether this backend mixes only when asked ([`Backend::render`])
+    /// rather than in real time to a device.
+    fn is_offline(&self) -> bool {
+        false
+    }
+
+    /// Mixes the next `frames` frames (stereo, `-1..=1`) and hands them
+    /// back, for a backend with no device ([`crate::KiraBackend::offline`]);
+    /// it may hand back a few more. `None` for one that plays to a device.
+    fn render(&mut self, frames: usize) -> Option<Vec<[f32; 2]>> {
+        let _ = frames;
+        None
+    }
+
     /// Whether the channel is still alive. A paused channel is still
     /// playing; only a channel that has ended or been stopped is not.
     fn is_playing(&mut self, channel: Channel) -> bool;

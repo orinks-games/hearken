@@ -1017,6 +1017,19 @@ impl Audio {
         self.heard.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
+    /// Mixes the next `frames` frames of everything playing, on a backend
+    /// with no device ([`crate::KiraBackend::offline`]). `None` on one that
+    /// plays to a device.
+    pub fn render(&mut self, frames: usize) -> Option<Vec<[f32; 2]>> {
+        self.backend.render(frames)
+    }
+
+    /// Whether this pool mixes offline ([`Audio::render`]), so time passes
+    /// only as frames are rendered, not on the wall clock.
+    pub fn is_offline(&self) -> bool {
+        self.backend.is_offline()
+    }
+
     /// Notes when any of `keys` starts playing, until the next call
     /// replaces the set: [`Audio::take_watched`] then lists the ones that
     /// started. For a game that unlocks something the first time the
