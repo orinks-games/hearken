@@ -35,8 +35,31 @@ pub struct Settings<GS> {
     /// The player's online account, for a game with online play.
     #[serde(default, skip_serializing_if = "OnlineSettings::is_empty")]
     pub online: OnlineSettings,
+    /// Discord status, for a game that offers it.
+    #[serde(default, skip_serializing_if = "DiscordSettings::is_default")]
+    pub discord: DiscordSettings,
     #[serde(default)]
     pub game: GS,
+}
+
+/// Whether Discord shows what the player is doing, for a game that offers
+/// it (`Game::discord`). On by default.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct DiscordSettings {
+    pub enabled: bool,
+}
+
+impl Default for DiscordSettings {
+    fn default() -> Self {
+        DiscordSettings { enabled: true }
+    }
+}
+
+impl DiscordSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// A secret kept in `settings.json`: never shown by `Debug`, so it stays

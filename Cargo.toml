@@ -31,6 +31,7 @@ hearken-audio = { path = "crates/hearken-audio", default-features = false }
 hearken-radio = { path = "crates/hearken-radio" }
 hearken-voice = { path = "crates/hearken-voice" }
 hearken-replay = { path = "crates/hearken-replay" }
+hearken-discord = { path = "crates/hearken-discord" }
 kira = { version = "0.12", default-features = false, features = ["cpal", "symphonia"] }
 # Kira's own versions: hearken-audio opens the device itself.
 cpal = "0.18"
@@ -50,6 +51,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-platform-verifier = "0.6"
 icy-metadata = { version = "0.6", default-features = false }
 url = "2"
+# Discord Rich Presence over its local IPC pipe (hearken-discord's `ipc`).
+discord-rich-presence = "1.1"
 m3u8-rs = "6"
 mpeg2ts = "0.6"
 fundsp = { version = "0.23", default-features = false, features = ["std"] }

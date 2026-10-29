@@ -102,6 +102,21 @@ pub trait Game: Sized + 'static {
         None
     }
 
+    /// The game's Discord application, for Rich Presence: friends see
+    /// "Playing <the application's name>" and what [`crate::State::presence`] or
+    /// [`Game::presence`] reports. `None` (the default) keeps Discord out
+    /// entirely. Needs Hearken's `discord` feature to reach Discord.
+    fn discord() -> Option<crate::discord::DiscordConfig> {
+        None
+    }
+
+    /// What Discord shows when no screen on the stack reports a presence:
+    /// the game's own fallback, read from `ctx.game`. `None` leaves the
+    /// status as it was.
+    fn presence(_ctx: &Ctx<Self>) -> Option<crate::discord::Presence> {
+        None
+    }
+
     /// The Settings screen's rows, built-in ones first: a chance to hide,
     /// reorder or add to them. The default keeps every built-in row as is.
     fn settings_rows(_ctx: &Ctx<Self>, rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {

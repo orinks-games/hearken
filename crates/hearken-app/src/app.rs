@@ -68,9 +68,25 @@ impl<G: Game> App<G> {
         self.ctx.update_duck();
 
         self.apply_pending();
+        self.update_presence();
         self.ctx.frame += 1;
         self.ctx.clock += dt;
         self.ctx.sync_pacer_clock();
+    }
+
+    /// What Discord shows: the first screen from the top that reports a
+    /// presence, else the game's fallback. Only asked while it is on.
+    fn update_presence(&mut self) {
+        if !self.ctx.discord.is_on() {
+            return;
+        }
+        let presence = self
+            .states
+            .iter()
+            .rev()
+            .find_map(|s| s.presence(&self.ctx))
+            .or_else(|| G::presence(&self.ctx));
+        self.ctx.discord.update(presence);
     }
 
     /// The bookkeeping every event gets before any screen sees it. False
@@ -180,6 +196,9 @@ impl<G: Game> App<G> {
         // `SHUTDOWN_WAIT` for a hung driver: a force-close during that wait
         // must not cost the player their settings.
         self.ctx.save_settings();
+        // Bounded: waits only for a worker connected to Discord, at most
+        // two seconds.
+        self.ctx.discord.shutdown();
         self.ctx.audio.shutdown();
         // The line in flight (a goodbye, an update notice) gets to finish,
         // and the window keeps answering the OS while it does: events are

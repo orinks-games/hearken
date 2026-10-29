@@ -31,6 +31,11 @@ fn toggle_controller<G: Game>(ctx: &mut Ctx<G>) {
     ctx.controller.set_enabled(on);
 }
 
+fn toggle_discord<G: Game>(ctx: &mut Ctx<G>) {
+    let on = !ctx.settings.discord.enabled;
+    ctx.set_discord_status(on);
+}
+
 fn toggle_duck<G: Game>(ctx: &mut Ctx<G>) {
     ctx.settings.audio.duck_for_speech = !ctx.settings.audio.duck_for_speech;
 }
@@ -274,6 +279,24 @@ impl<G: Game> Menu for SettingsScreen<G> {
             .help("Whether the game listens to a game controller. Enter, Left or Right changes it.")
             .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_controller(ctx)),
         ));
+
+        if ctx.discord.is_offered() {
+            rows.push(SettingsRow::new(
+                "discord",
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        let on = ctx.settings.discord.enabled;
+                        format!("Discord status: {}", if on { "on" } else { "off" })
+                    }),
+                    |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, toggle_discord),
+                )
+                .help(
+                    "Whether Discord shows your friends what you are doing in the game. \
+                     Enter, Left or Right changes it.",
+                )
+                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_discord(ctx)),
+            ));
+        }
 
         #[cfg(feature = "online")]
         if ctx.online.is_offered() {

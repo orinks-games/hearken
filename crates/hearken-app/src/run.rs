@@ -146,6 +146,16 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     ctx.notices.extend(sounds.notice);
     ctx.apply_speech_settings();
 
+    // An agent session plays in a sandbox and never shows on the player's
+    // Discord.
+    #[cfg(feature = "agent-server")]
+    let sandboxed = agent.is_some();
+    #[cfg(not(feature = "agent-server"))]
+    let sandboxed = false;
+    if let (Some(config), false) = (G::discord(), sandboxed) {
+        ctx.discord = crate::discord::Discord::start(&config, ctx.settings.discord.enabled);
+    }
+
     let mut app = App::new(ctx, first());
     #[cfg(feature = "agent-server")]
     if let Some(agent) = agent.as_mut() {

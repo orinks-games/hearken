@@ -10,6 +10,7 @@ pub mod clock;
 pub mod commentary;
 pub mod controller;
 pub mod ctx;
+pub mod discord;
 pub mod game;
 pub mod held_keys;
 pub mod input;
@@ -37,6 +38,7 @@ pub use clock::LocalTime;
 pub use commentary::{Commentary, Line};
 pub use controller::{ControllerManager, InputDevice};
 pub use ctx::{Ctx, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
+pub use discord::{Discord, DiscordConfig, Presence};
 pub use game::Game;
 pub use hearken_audio as audio;
 #[cfg(feature = "kira")]
@@ -61,7 +63,8 @@ pub use run::{already_running_line, run};
 pub use screens::SettingsRow;
 pub use sdl_shell::SdlShell;
 pub use settings::{
-    default_volume, AudioSettings, ControllerSettings, MenuSettings, OnlineSettings, Settings,
+    default_volume, AudioSettings, ControllerSettings, DiscordSettings, MenuSettings,
+    OnlineSettings, Settings,
 };
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};

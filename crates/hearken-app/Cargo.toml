@@ -22,6 +22,10 @@ agent-server = []
 # `ctx.online`: verified runs sent to the game's server (see `online`), and
 # connecting an account from Settings. HTTPS through ureq.
 online = ["dep:ureq", "dep:hearken-replay"]
+# Discord Rich Presence for a game that gives `Game::discord` an application
+# ID: the real client over Discord's local pipe. Without it the hooks still
+# compile and nothing reaches Discord.
+discord = ["hearken-discord/ipc"]
 
 [dependencies]
 hearken-speech.workspace = true
@@ -29,6 +33,8 @@ hearken-audio.workspace = true
 hearken-synth.workspace = true
 # Sealed data files (`ctx.vault`) for releases built with `seal = true`.
 hearken-seal.workspace = true
+# Discord Rich Presence (`ctx.discord`); the pipe itself needs `discord`.
+hearken-discord.workspace = true
 log.workspace = true
 env_logger.workspace = true
 serde.workspace = true
