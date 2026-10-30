@@ -1,0 +1,34 @@
+[package]
+name = "hearken-update"
+description = "A released game updating itself: signed update manifests from any host, checked, downloaded, unpacked and swapped in"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build.rs"
+
+[features]
+default = ["http"]
+# The real HTTPS client. `hearken release` signs manifests with this crate
+# and leaves it off; the engine's `update` feature turns it on.
+http = ["dep:ureq", "dep:url"]
+
+# No audio, speech or window code, so `cargo test -p hearken-update` is quick.
+[dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "fast", "zeroize"] }
+sha2 = { version = "0.11", default-features = false }
+getrandom = "0.4"
+semver = "1"
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+zip = { version = "2.6", default-features = false, features = ["deflate"] }
+ureq = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

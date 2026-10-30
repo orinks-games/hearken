@@ -36,6 +36,24 @@ fn toggle_discord<G: Game>(ctx: &mut Ctx<G>) {
     ctx.set_discord_status(on);
 }
 
+/// Steps the update channel through the game's list, wrapping. The update
+/// the check at start found was for the old channel, so it is forgotten.
+#[cfg(feature = "update")]
+fn step_channel<G: Game>(ctx: &mut Ctx<G>, delta: i32) {
+    let channels = ctx.updates.channels();
+    let current = ctx.updates.channel(&ctx.settings.updates);
+    let at = channels.iter().position(|c| *c == current).unwrap_or(0);
+    let next = (at as i32 + delta).rem_euclid(channels.len() as i32) as usize;
+    ctx.settings.updates.channel = Some(channels[next].clone());
+    ctx.updates.forget();
+}
+
+#[cfg(feature = "update")]
+fn toggle_update_check<G: Game>(ctx: &mut Ctx<G>) {
+    let updates = &mut ctx.settings.updates;
+    updates.check_at_start = !updates.check_at_start;
+}
+
 fn toggle_duck<G: Game>(ctx: &mut Ctx<G>) {
     ctx.settings.audio.duck_for_speech = !ctx.settings.audio.duck_for_speech;
 }
@@ -324,6 +342,67 @@ impl<G: Game> Menu for SettingsScreen<G> {
                     )
                 })),
             ));
+        }
+
+        #[cfg(feature = "update")]
+        if ctx.updates.is_offered() {
+            rows.push(SettingsRow::new(
+                "updates",
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx: &Ctx<G>| match ctx.updates.available() {
+                        Some(update) => format!(
+                            "Install version {}",
+                            crate::updates::spoken_version(update.version())
+                        ),
+                        None => "Check for updates".to_string(),
+                    }),
+                    |_s: &mut Self, ctx: &mut Ctx<G>| match ctx.updates.available().cloned() {
+                        Some(update) => {
+                            ctx.push(crate::screens::UpdatePromptScreen::<G>::new(update))
+                        }
+                        None => ctx.push(crate::screens::UpdateCheckScreen::new()),
+                    },
+                )
+                .help("Looks for a newer version of the game, and installs it if you choose."),
+            ));
+            if ctx.updates.channels().len() > 1 {
+                rows.push(SettingsRow::new(
+                    "update_channel",
+                    MenuItem::new(
+                        Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                            format!(
+                                "Update channel: {}",
+                                ctx.updates.channel(&ctx.settings.updates)
+                            )
+                        }),
+                        |s: &mut Self, ctx: &mut Ctx<G>| {
+                            toggle_row(s, ctx, |ctx| step_channel(ctx, 1))
+                        },
+                    )
+                    .help("Which releases this copy follows. Left and Right change it.")
+                    .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_channel(ctx, delta)),
+                ));
+            }
+            if ctx.updates.config().is_some_and(|c| c.check_at_start) {
+                rows.push(SettingsRow::new(
+                    "update_at_start",
+                    MenuItem::new(
+                        Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                            let on = ctx.settings.updates.check_at_start;
+                            format!(
+                                "Check for updates at start: {}",
+                                if on { "on" } else { "off" }
+                            )
+                        }),
+                        |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, toggle_update_check),
+                    )
+                    .help(
+                        "Whether the game looks for a newer version each time it starts. \
+                         Enter, Left or Right changes it.",
+                    )
+                    .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_update_check(ctx)),
+                ));
+            }
         }
 
         let rows = G::settings_rows(&*ctx, rows);

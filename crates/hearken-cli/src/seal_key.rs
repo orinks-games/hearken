@@ -231,23 +231,10 @@ mod tests {
     const LOCK: &str = "[[package]]\nname = \"hearken-seal\"\n";
 
     fn project(seal: bool, seal_id: Option<&str>) -> Project {
-        Project {
-            dir: PathBuf::from("."),
-            target_dir: PathBuf::from("target"),
-            package: "my-game".into(),
-            bin: "my-game".into(),
-            version: "0.1.0".into(),
-            default_features: Vec::new(),
-            portable: false,
-            pack: false,
-            seal,
-            seal_id: seal_id.map(String::from),
-            include: Vec::new(),
-            rules: None,
-            app_name: "my-game".into(),
-            bundle_id: "io.hearken.my-game".into(),
-            icon: None,
-        }
+        let mut project = Project::for_tests("my-game");
+        project.seal = seal;
+        project.seal_id = seal_id.map(String::from);
+        project
     }
 
     fn inputs(dir: &tempfile::TempDir) -> Inputs {

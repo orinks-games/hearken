@@ -36,6 +36,11 @@ voice-download = ["voice", "hearken-voice/download"]
 # account from Settings. HTTPS through ureq.
 online = ["hearken-app/online"]
 
+# A released copy updating itself from wherever the game publishes it
+# (`Game::updates`): GitHub releases, any HTTPS host, or a source of the
+# game's own, with every update signed. HTTPS through ureq.
+update = ["hearken-app/update"]
+
 [dependencies]
 hearken-app.workspace = true
 # `hearken::replay`: recording runs, and the rules a server replays them with.

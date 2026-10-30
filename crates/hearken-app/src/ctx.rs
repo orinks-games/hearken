@@ -36,6 +36,10 @@ pub struct Ctx<G: Game> {
     /// there (see [`crate::online`]).
     #[cfg(feature = "online")]
     pub online: crate::online::Online,
+    /// The game's updates (see [`crate::updates`]): what the check at start
+    /// found, and the way to check and install.
+    #[cfg(feature = "update")]
+    pub updates: crate::updates::Updates,
     /// The game's Discord status (see [`crate::discord`]). Dormant unless
     /// the game offers it and `run` started it.
     pub discord: crate::discord::Discord,
@@ -102,6 +106,8 @@ impl<G: Game> Ctx<G> {
         let mut ctx = Ctx {
             #[cfg(feature = "online")]
             online,
+            #[cfg(feature = "update")]
+            updates: crate::updates::Updates::new(G::updates()),
             speech,
             discord: crate::discord::Discord::dormant(),
             settings,
@@ -206,6 +212,21 @@ impl<G: Game> Ctx<G> {
         if self.online.update() {
             self.settings.online = self.online.saved();
             self.save_settings();
+        }
+    }
+
+    /// Collects the check at start, and announces an update it found. Once
+    /// a frame.
+    #[cfg(feature = "update")]
+    pub(crate) fn update_updates(&mut self) {
+        let Some(update) = self.updates.poll_background(&self.settings.updates) else {
+            return;
+        };
+        if self.updates.announces() {
+            let title = self.updates.title(&update);
+            self.say_queued(format!(
+                "{title} is available. To install it, choose Check for updates in Settings."
+            ));
         }
     }
 

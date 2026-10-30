@@ -19,6 +19,7 @@ mod project;
 mod release;
 mod rules_module;
 mod seal_key;
+mod update_key;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -26,16 +27,21 @@ use std::process::{Command, ExitCode, Stdio};
 use project::Project;
 
 const USAGE: &str = "Usage: hearken play [game] [--download | --source]
-       hearken release [game]
+       hearken release [game] [--channel=NAME] [--notes=FILE]
        hearken seal-key [game] [--print]
+       hearken update-key [game] [--print]
 
-play     starts a game. With Rust installed it builds the latest source as a
-         developer build; otherwise it downloads the latest release.
-         --download and --source choose.
-release  builds the zip players get, without the agent server, into dist/,
-         and the rules module for verified runs when the game names one.
-seal-key shows where a game's seal key is kept and its ID; --print shows
-         the key itself, for a CI secret.
+play       starts a game. With Rust installed it builds the latest source as a
+           developer build; otherwise it downloads the latest release.
+           --download and --source choose.
+release    builds the zip players get, without the agent server, into dist/,
+           and the rules module for verified runs when the game names one.
+           A game with update = true also gets a signed update manifest
+           for --channel (stable unless named), with --notes as its notes.
+seal-key   shows where a game's seal key is kept and its ID; --print shows
+           the key itself, for a CI secret.
+update-key shows where a game's update key is kept and its public half;
+           --print shows the secret, for a CI secret.
 
 A game is its GitHub repository, as owner/name or its URL, or a folder on
 this computer. Inside a game's own folder it can be left out.";
@@ -89,11 +95,17 @@ fn main() -> ExitCode {
         words.iter().skip(1).partition(|w| !w.starts_with("--"));
     let game = names.first().map(|n| Game::parse(n)).transpose();
     let result = match (words.first().copied(), names.len(), game) {
-        (Some("play" | "release" | "seal-key"), _, Err(e)) => Err(e),
+        (Some("play" | "release" | "seal-key" | "update-key"), _, Err(e)) => Err(e),
         (Some("play"), 0 | 1, Ok(game)) => play(game, &flags),
-        (Some("release"), 0 | 1, Ok(game)) if flags.is_empty() => release_game(game),
+        (Some("release"), 0 | 1, Ok(game)) => match release_options(&flags) {
+            Some(options) => release_game(game, &options),
+            None => Err(USAGE.to_string()),
+        },
         (Some("seal-key"), 0 | 1, Ok(game)) if matches!(flags[..], [] | ["--print"]) => {
             show_seal_key(game, !flags.is_empty())
+        }
+        (Some("update-key"), 0 | 1, Ok(game)) if matches!(flags[..], [] | ["--print"]) => {
+            show_update_key(game, !flags.is_empty())
         }
         _ => Err(USAGE.to_string()),
     };
@@ -152,25 +164,52 @@ fn play(game: Option<Game>, flags: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn release_game(game: Option<Game>) -> Result<(), String> {
-    let project = match game {
-        // A release builds exactly what is checked out: no pull.
-        Some(Game::Repo(repo)) => Project::load(&checkout(&repo, false)?, None)?,
-        Some(Game::Folder(dir)) => Project::load(&dir, None)?,
-        None => Project::load(Path::new("."), None)?,
-    };
-    let archive = release::release(&project)?;
+/// `--channel=NAME` and `--notes=FILE`, each at most once; `None` for
+/// anything else.
+fn release_options(flags: &[&str]) -> Option<release::Options> {
+    let mut options = release::Options::default();
+    let (mut channel, mut notes) = (None, None);
+    for flag in flags {
+        let (slot, value) = match flag.split_once('=') {
+            Some(("--channel", value)) => (&mut channel, value),
+            Some(("--notes", value)) => (&mut notes, value),
+            _ => return None,
+        };
+        if slot.is_some() || value.is_empty() {
+            return None;
+        }
+        *slot = Some(value.to_string());
+    }
+    if let Some(channel) = channel {
+        options.channel = channel;
+    }
+    options.notes = notes.map(PathBuf::from);
+    Some(options)
+}
+
+/// The game a command that does not play it is about. A release builds
+/// exactly what is checked out: no pull.
+fn project_for(game: Option<Game>) -> Result<Project, String> {
+    match game {
+        Some(Game::Repo(repo)) => Project::load(&checkout(&repo, false)?, None),
+        Some(Game::Folder(dir)) => Project::load(&dir, None),
+        None => Project::load(Path::new("."), None),
+    }
+}
+
+fn release_game(game: Option<Game>, options: &release::Options) -> Result<(), String> {
+    let project = project_for(game)?;
+    let archive = release::release(&project, options)?;
     println!("Packed {}", archive.display());
     Ok(())
 }
 
 fn show_seal_key(game: Option<Game>, print: bool) -> Result<(), String> {
-    let project = match game {
-        Some(Game::Repo(repo)) => Project::load(&checkout(&repo, false)?, None)?,
-        Some(Game::Folder(dir)) => Project::load(&dir, None)?,
-        None => Project::load(Path::new("."), None)?,
-    };
-    seal_key::command(&project, print)
+    seal_key::command(&project_for(game)?, print)
+}
+
+fn show_update_key(game: Option<Game>, print: bool) -> Result<(), String> {
+    update_key::command(&project_for(game)?, print)
 }
 
 /// The repository's checkout: the one holding the current folder, or else
@@ -511,6 +550,17 @@ mod tests {
         );
         assert!(Game::parse("a/b/c").is_err());
         assert!(Game::parse("owner/my game").is_err());
+    }
+
+    #[test]
+    fn release_takes_a_channel_and_notes() {
+        assert_eq!(release_options(&[]), Some(release::Options::default()));
+        let options = release_options(&["--channel=beta", "--notes=NOTES.md"]).unwrap();
+        assert_eq!(options.channel, "beta");
+        assert_eq!(options.notes, Some(PathBuf::from("NOTES.md")));
+        assert_eq!(release_options(&["--channel=a", "--channel=b"]), None);
+        assert_eq!(release_options(&["--notes="]), None);
+        assert_eq!(release_options(&["--print"]), None);
     }
 
     #[test]

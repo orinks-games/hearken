@@ -26,6 +26,10 @@ online = ["dep:ureq", "dep:hearken-replay"]
 # ID: the real client over Discord's local pipe. Without it the hooks still
 # compile and nothing reaches Discord.
 discord = ["hearken-discord/ipc"]
+# A released game updating itself, for a game that names where its updates
+# are published in `Game::updates`: the check, the spoken screens and the
+# swap. HTTPS through ureq.
+update = ["dep:hearken-update", "hearken-update/http"]
 
 [dependencies]
 hearken-speech.workspace = true
@@ -43,6 +47,7 @@ dirs.workspace = true
 tempfile = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 hearken-replay = { workspace = true, optional = true }
+hearken-update = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -62,3 +67,6 @@ sdl2 = { workspace = true, features = ["bundled", "static-link"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+# Release archives for the update tests.
+flate2 = "1"
+tar = { version = "0.4", default-features = false }

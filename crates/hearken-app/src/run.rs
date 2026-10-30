@@ -121,6 +121,11 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
         return say_and_exit::<G>(&line, 0);
     }
 
+    // An update stopped part-way is undone before anything is read from the
+    // game's folder; only the copy holding the lock does it.
+    #[cfg(feature = "update")]
+    let recovered = crate::updates::recover_interrupted();
+
     // The window first, so a failure speaks through one voice started for
     // that line alone.
     let mut shell = match SdlShell::new(G::TITLE) {
@@ -144,6 +149,8 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     );
     ctx.notices.extend(notice);
     ctx.notices.extend(sounds.notice);
+    #[cfg(feature = "update")]
+    ctx.notices.extend(recovered);
     ctx.apply_speech_settings();
 
     // An agent session plays in a sandbox and never shows on the player's
@@ -154,6 +161,13 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     let sandboxed = false;
     if let (Some(config), false) = (G::discord(), sandboxed) {
         ctx.discord = crate::discord::Discord::start(&config, ctx.settings.discord.enabled);
+    }
+
+    // Off the game loop; an agent session never updates the real game.
+    #[cfg(feature = "update")]
+    if !sandboxed {
+        let settings = ctx.settings.updates.clone();
+        ctx.updates.check_at_start(&settings);
     }
 
     let mut app = App::new(ctx, first());

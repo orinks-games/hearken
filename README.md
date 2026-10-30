@@ -52,6 +52,7 @@ A game depends on one crate, `hearken`, which brings in the rest:
 | `hearken-seal` | A game's records and saves, sealed in a release so a player cannot edit, swap or restore them (`ctx.vault`, `hearken::seal`). |
 | `hearken-replay` | Verified online runs: a run recorded as its seed and inputs, and the game's rules built for WebAssembly so a server can replay it and trust only the result it computes (`hearken::replay`, `ctx.online` with the `online` feature). The server side is `server/`; see `docs/online.md`. |
 | `hearken-bake` | Build scripts only: puts a release's keys into the program as scattered shares. |
+| `hearken-update` | A released game updating itself from GitHub releases, any HTTPS host, or a source of its own, with every update signed (`ctx.updates`, with the `update` feature). See `docs/updates.md`. |
 | `hearken-discord` | Discord Rich Presence: the "Playing ..." status friends see, from the game's own Discord application. Off the game loop, throttled, and silent when Discord is not running (`ctx.discord`, with the `discord` feature). |
 | `hearken-radio` | Internet radio, played as a sound: HTTP and ICY stations, playlists and live HLS, with now-playing titles. Optional. |
 
@@ -281,6 +282,11 @@ cargo install --git https://github.com/orinks-games/hearken hearken-cli
   allow it in Privacy & Security.
 - `hearken seal-key <game>` shows where a sealing game's key is kept and
   its ID; `--print` shows the key itself, for a CI secret.
+- For a game with `update = true`, `hearken release` also writes a signed
+  update manifest beside the archive (`update-stable-linux-x64.json`);
+  `--channel=beta` publishes on another channel and `--notes=NOTES.md` adds
+  release notes. `hearken update-key <game>` shows the update key, as
+  `seal-key` does. See Updates.
 
 The command knows no games of its own: a game is its GitHub repository or
 a folder on this computer.
@@ -306,6 +312,8 @@ portable = true                               # saves beside the game
 pack = true                                   # sounds in an encrypted sounds.pak
 seal = true                                   # data written through ctx.vault is sealed
 seal-id = "k1:3f9a0c2e7b14d685"               # the seal key's ID, added after the first release
+update = true                                 # releases sign an update manifest
+update-key = "ed25519:3d40…"                  # the update key's public half, added after the first release
 include = ["sounds", "README.md", "LICENSE"]  # the default
 app-name = "My Game"                          # the Mac app's name; the package's by default
 bundle-id = "com.example.my-game"             # the Mac app's ID; io.hearken.<package> by default
@@ -548,6 +556,8 @@ What this cannot protect, as no offline game can:
 - `voice-download`: `voice`, plus the in-game installer for the voice
   package. It adds `ureq` and rustls.
 - `discord`: Discord Rich Presence. See Discord status.
+- `update`: a released copy checks for, downloads and installs its own
+  updates, from wherever the game publishes them. See Updates.
 
 ## Discord status
 
@@ -600,6 +610,38 @@ What the engine does with it:
 - **Quitting stays quick.** The status is cleared at quit, waiting at most
   two seconds, and only when Discord is connected.
 - Tests (`Headless`) and agent sessions never touch Discord.
+
+## Updates
+
+A released game can update itself from wherever its developer publishes:
+GitHub releases, any HTTPS host, or a source the game writes. Turn on
+`hearken`'s `update` feature, set `update = true` under
+`[package.metadata.hearken]`, and say where updates are:
+
+```rust
+impl Game for MyGame {
+    // ...
+    fn updates() -> Option<hearken::UpdateConfig> {
+        hearken::UpdateConfig::github("My Game", "me", "my-game")
+        // or UpdateConfig::manifest_url("My Game",
+        //     "https://example.com/my-game/update-{channel}-{platform}.json")
+    }
+}
+```
+
+`hearken release` signs a small manifest for each platform with the game's
+own Ed25519 key, and a released copy installs only what that key signed,
+for its own game, platform and channel, and newer than itself. The archive
+must match its signed size and SHA-256 before it is unpacked, and it is
+unpacked as untrusted input. A detached script waits for the game to close,
+backs up the install, swaps the update in, puts the backup back if that
+fails, and starts the game again. The player hears a check at start, can
+check from Settings, choose a channel, read what's new, skip a version, and
+cancel a download with Escape. Developer builds, iOS, and copies run by AG
+Now never update themselves.
+
+`docs/updates.md` covers publishing, keys, the manifest format and what
+this cannot protect against.
 
 ## Commentary voices
 

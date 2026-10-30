@@ -7,6 +7,8 @@
 //! pack = true                                      # sounds in an encrypted sounds.pak
 //! seal = true                                      # data written through ctx.vault is sealed
 //! seal-id = "k1:3f9a0c2e7b14d685"                  # the seal key's ID, checked by release
+//! update = true                                    # releases sign an update manifest
+//! update-key = "ed25519:…"                         # the update key's public half, checked by release
 //! rules = "my-game-rules"                          # built for WebAssembly, for verified runs
 //! include = ["sounds", "README.md", "LICENSE"]     # shipped in a release
 //! bin = "my-game"                                  # when it has several
@@ -41,6 +43,10 @@ pub struct Project {
     pub seal: bool,
     /// The committed ID of the game's seal key, which a release must match.
     pub seal_id: Option<String>,
+    /// Whether a release signs an update manifest (see `update_key`).
+    pub update: bool,
+    /// The committed public update key, which a release's secret must match.
+    pub update_key: Option<String>,
     /// Files and folders, relative to `dir`, that a release ships.
     pub include: Vec<String>,
     /// The game's rules crate, which a release also builds for WebAssembly
@@ -185,6 +191,8 @@ impl Project {
             pack: hearken["pack"].as_bool().unwrap_or(false),
             seal: hearken["seal"].as_bool().unwrap_or(false),
             seal_id: hearken["seal-id"].as_str().map(String::from),
+            update: hearken["update"].as_bool().unwrap_or(false),
+            update_key: hearken["update-key"].as_str().map(String::from),
             include,
             rules,
             app_name: hearken["app-name"]
@@ -194,6 +202,30 @@ impl Project {
             icon: hearken["icon"].as_str().map(String::from),
             package: name,
         })
+    }
+
+    /// A game with nothing set, for other modules' tests.
+    #[cfg(test)]
+    pub fn for_tests(package: &str) -> Project {
+        Project {
+            dir: PathBuf::from("."),
+            target_dir: PathBuf::from("target"),
+            package: package.into(),
+            bin: package.into(),
+            version: "0.1.0".into(),
+            default_features: Vec::new(),
+            portable: false,
+            pack: false,
+            seal: false,
+            seal_id: None,
+            update: false,
+            update_key: None,
+            include: Vec::new(),
+            rules: None,
+            app_name: package.into(),
+            bundle_id: format!("io.hearken.{package}"),
+            icon: None,
+        }
     }
 
     /// `cargo build` arguments for a release (`dev` false: the agent server
@@ -385,6 +417,18 @@ mod tests {
         assert!(p
             .exe()
             .starts_with(Path::new("/cache/cargo-target").join("release")));
+    }
+
+    #[test]
+    fn reads_the_update_settings() {
+        let p = Project::from_metadata(&game(serde_json::json!({}), serde_json::json!({})), None)
+            .unwrap();
+        assert!(!p.update);
+        assert_eq!(p.update_key, None);
+        let hearken = serde_json::json!({ "update": true, "update-key": "ed25519:00" });
+        let p = Project::from_metadata(&game(serde_json::json!({}), hearken), None).unwrap();
+        assert!(p.update);
+        assert_eq!(p.update_key.as_deref(), Some("ed25519:00"));
     }
 
     #[test]

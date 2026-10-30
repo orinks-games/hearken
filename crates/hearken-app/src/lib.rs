@@ -32,6 +32,8 @@ pub mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod text;
+#[cfg(feature = "update")]
+pub mod updates;
 
 pub use app::App;
 pub use bindings::{Action, Chord, KeyBindings, NoAction, PadChord};
@@ -55,6 +57,9 @@ pub use hearken_speech::{
     Category, EventPriority, Level, NoCategory, PacerConfig, Rule, Verbosity,
 };
 pub use hearken_synth as synth;
+/// Signed updates, without the engine: sources, keys, manifests, checks.
+#[cfg(feature = "update")]
+pub use hearken_update as update;
 pub use held_keys::HeldKeys;
 pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent, Key, Mods};
 #[cfg(feature = "online")]
@@ -65,7 +70,7 @@ pub use screens::SettingsRow;
 pub use sdl_shell::SdlShell;
 pub use settings::{
     default_volume, AudioSettings, ControllerSettings, DiscordSettings, MenuSettings,
-    OnlineSettings, Settings,
+    OnlineSettings, Settings, UpdateSettings,
 };
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
@@ -76,3 +81,5 @@ pub use speech_delivery::SayEvent;
 pub use state::{Reveal, StackOp, State};
 #[cfg(feature = "testing")]
 pub use testing::Headless;
+#[cfg(feature = "update")]
+pub use updates::{UpdateConfig, Updates};

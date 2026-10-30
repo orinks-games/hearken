@@ -23,9 +23,37 @@ const PORTABLE_NOTE: &str = "This copy of the game is portable: its settings, sa
 are kept in the saves folder beside it. Delete this file to keep them in your user folder \
 instead.\n";
 
+/// What `hearken release` was asked for beyond the game itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Options {
+    /// The update channel this release is published on.
+    pub channel: String,
+    /// A Markdown file of release notes for the update manifest.
+    pub notes: Option<PathBuf>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            channel: hearken_update::DEFAULT_CHANNEL.to_string(),
+            notes: None,
+        }
+    }
+}
+
 /// Builds the release, stages it under `dist/` and archives it. Returns the
 /// archive's path.
-pub fn release(project: &Project) -> Result<PathBuf, String> {
+pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> {
+    if !hearken_update::manifest::is_channel(&options.channel) {
+        return Err(format!(
+            "The channel {:?} may hold only lowercase letters, digits and hyphens, like beta.",
+            options.channel
+        ));
+    }
+    let notes = match &options.notes {
+        Some(path) => read_notes(path)?,
+        None => String::new(),
+    };
     if cfg!(target_os = "macos") {
         crate::macos_sign::check()?;
     }
@@ -43,19 +71,31 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
     // Always passed, empty when the game does not seal, so a key in the
     // developer's shell never reaches a release by accident.
     let seal = crate::seal_key::release_key(project)?.map(|k| k.to_hex());
+    // The public half goes into the game; the secret signs the manifest.
+    let update = crate::update_key::release_key(project)?;
+    let identity = match &update {
+        Some(key) => UpdateIdentity {
+            key: key.public().to_string(),
+            game: project.package.clone(),
+            version: project.version.clone(),
+            channel: options.channel.clone(),
+        },
+        None => UpdateIdentity::default(),
+    };
     // The rules module first: its ID goes into the game.
     let rules = match &project.rules {
         Some(rules) => Some(crate::rules_module::build(project, rules)?),
         None => None,
     };
     let rules_id = rules.as_ref().map(|m| m.id.clone()).unwrap_or_default();
-    project.build_with(false, &key_env(&hex, &seal.unwrap_or_default(), &rules_id))?;
-    let stem = format!(
-        "{}-{}-{}",
-        project.package,
-        project.version,
-        platform(std::env::consts::OS, std::env::consts::ARCH)
-    );
+    project.build_with(
+        false,
+        &key_env(&hex, &seal.unwrap_or_default(), &rules_id, &identity),
+    )?;
+    // The platform part of the name, the one `hearken play --download`
+    // looks for and the update manifest names.
+    let platform = hearken_update::platform::current();
+    let stem = format!("{}-{}-{platform}", project.package, project.version);
     let dist = project.dir.join("dist");
     // An earlier release's module is not this one's.
     let stale = format!("{}-{}-rules-", project.package, project.version);
@@ -143,7 +183,133 @@ pub fn release(project: &Project) -> Result<PathBuf, String> {
             make_archive(&dist, &stem)?;
         }
     }
+    if let Some(key) = &update {
+        let manifest = write_manifest(
+            &archive,
+            &ManifestFor {
+                game: &project.package,
+                version: &project.version,
+                channel: &options.channel,
+                platform: &platform,
+                notes: &notes,
+            },
+            key,
+        )?;
+        let name = manifest
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        println!(
+            "Update manifest: dist/{name}\n\
+             Publish it beside the archive, under this name: as assets of the same GitHub \
+             release, or in the folder the game's manifest URL points at."
+        );
+    }
     Ok(archive)
+}
+
+/// The update identity a release is built with. Empty, every variable is
+/// still set, so none in the developer's shell reaches a release.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct UpdateIdentity {
+    key: String,
+    game: String,
+    version: String,
+    channel: String,
+}
+
+/// What a release's update manifest says, besides its archive.
+struct ManifestFor<'a> {
+    game: &'a str,
+    version: &'a str,
+    channel: &'a str,
+    platform: &'a str,
+    notes: &'a str,
+}
+
+/// Signs the update manifest for `archive` and writes it beside it, as
+/// `update-<channel>-<platform>.json`.
+fn write_manifest(
+    archive: &Path,
+    what: &ManifestFor,
+    key: &hearken_update::SecretKey,
+) -> Result<PathBuf, String> {
+    let name = archive
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let size = std::fs::metadata(archive)
+        .map_err(|e| format!("Could not read {name}: {e}"))?
+        .len();
+    let sha256 = hearken_update::download::sha256_file(archive)
+        .map_err(|e| format!("Could not read {name}: {e}"))?;
+    let manifest = hearken_update::Manifest {
+        format: hearken_update::manifest::FORMAT,
+        game: what.game.to_string(),
+        version: what.version.to_string(),
+        channel: what.channel.to_string(),
+        platform: what.platform.to_string(),
+        archive: name,
+        url: None,
+        size,
+        sha256,
+        notes: what.notes.to_string(),
+        published: Some(utc_now()),
+    };
+    let text = hearken_update::manifest::sign(&manifest, key)
+        .map_err(|e| format!("Could not sign the update manifest: {e}"))?;
+    let path = archive.with_file_name(hearken_update::source::manifest_name(
+        what.channel,
+        what.platform,
+    ));
+    std::fs::write(&path, text).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+/// Release notes for the manifest, from a Markdown file.
+fn read_notes(path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("Could not read the notes {}: {e}", path.display()))?;
+    if text.len() > hearken_update::manifest::MAX_NOTES_BYTES {
+        return Err(format!(
+            "The notes in {} are longer than {} KB.",
+            path.display(),
+            hearken_update::manifest::MAX_NOTES_BYTES / 1024
+        ));
+    }
+    Ok(text)
+}
+
+/// Now, in UTC, as RFC 3339: `2026-10-30T02:12:20Z`.
+fn utc_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    rfc3339(secs)
+}
+
+/// Seconds since 1970 as an RFC 3339 UTC time (Hinnant's civil-from-days).
+fn rfc3339(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem / 60 % 60,
+        rem % 60
+    )
 }
 
 /// Archives `dist/stem` as `dist/stem.zip`, or `.tar.gz` on Linux.
@@ -181,15 +347,25 @@ fn make_archive(dist: &Path, stem: &str) -> Result<PathBuf, String> {
     Ok(dist.join(archive))
 }
 
-/// The keys and rules ID a release's build gets: all always set, empty
-/// when unused, so none in the developer's shell reaches a release.
-fn key_env<'a>(pack: &'a str, seal: &'a str, rules: &'a str) -> [(&'static str, &'a str); 4] {
+/// The keys, rules ID and update identity a release's build gets: all
+/// always set, empty when unused, so none in the developer's shell reaches
+/// a release.
+fn key_env<'a>(
+    pack: &'a str,
+    seal: &'a str,
+    rules: &'a str,
+    update: &'a UpdateIdentity,
+) -> [(&'static str, &'a str); 8] {
     [
         (PACK_KEY_VAR, pack),
         (crate::seal_key::BUILD_VAR, seal),
         (crate::rules_module::RULES_VAR, rules),
         // A release, with or without rules: no developer override is read.
         (crate::rules_module::RELEASE_VAR, "1"),
+        (crate::update_key::KEY_VAR, &update.key),
+        (crate::update_key::GAME_VAR, &update.game),
+        (crate::update_key::VERSION_VAR, &update.version),
+        (crate::update_key::CHANNEL_VAR, &update.channel),
     ]
 }
 
@@ -235,20 +411,6 @@ fn pack(sounds: &Path, stage: &Path, key: &[u8; 32]) -> Result<(), String> {
         hearken_pack::FILE_NAME
     );
     Ok(())
-}
-
-/// The platform part of a release's name, the one `hearken play --download`
-/// looks for.
-pub fn platform(os: &str, arch: &str) -> String {
-    let arch = match arch {
-        "x86_64" => "x64",
-        "aarch64" => "arm64",
-        other => other,
-    };
-    match (os, arch) {
-        ("macos", "x64") => "macos".to_string(),
-        _ => format!("{os}-{arch}"),
-    }
 }
 
 /// SDL2 and any other library the build put beside the exe, and the Visual
@@ -377,20 +539,80 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        directml_notices, engine_reads_packs, key_env, platform, rules_file_name, vc_arch,
+        directml_notices, engine_reads_packs, key_env, read_notes, rfc3339, rules_file_name,
+        vc_arch, write_manifest, ManifestFor, UpdateIdentity,
     };
 
     #[test]
     fn a_build_without_keys_still_clears_them() {
         assert_eq!(
-            key_env("", "", ""),
+            key_env("", "", "", &UpdateIdentity::default()),
             [
                 ("HEARKEN_PACK_KEY", ""),
                 ("HEARKEN_SEAL_KEY", ""),
                 ("HEARKEN_RULES_ID", ""),
-                ("HEARKEN_RELEASE", "1")
+                ("HEARKEN_RELEASE", "1"),
+                ("HEARKEN_UPDATE_KEY", ""),
+                ("HEARKEN_UPDATE_GAME", ""),
+                ("HEARKEN_UPDATE_VERSION", ""),
+                ("HEARKEN_UPDATE_CHANNEL", ""),
             ]
         );
+    }
+
+    #[test]
+    fn the_update_manifest_is_signed_beside_its_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("my-game-1.2.0-linux-x64.tar.gz");
+        std::fs::write(&archive, b"archive bytes").unwrap();
+        let key = hearken_update::SecretKey::generate().unwrap();
+        let path = write_manifest(
+            &archive,
+            &ManifestFor {
+                game: "my-game",
+                version: "1.2.0",
+                channel: "beta",
+                platform: "linux-x64",
+                notes: "- Faster.",
+            },
+            &key,
+        )
+        .unwrap();
+        assert_eq!(path, dir.path().join("update-beta-linux-x64.json"));
+        let text = std::fs::read(&path).unwrap();
+        let manifest = hearken_update::manifest::open(&text, &key.public()).unwrap();
+        assert_eq!(manifest.archive, "my-game-1.2.0-linux-x64.tar.gz");
+        assert_eq!(manifest.size, 13);
+        assert_eq!(
+            manifest.sha256,
+            hearken_update::download::sha256_file(&archive).unwrap()
+        );
+        assert_eq!(
+            (manifest.channel.as_str(), manifest.version.as_str()),
+            ("beta", "1.2.0")
+        );
+        assert_eq!(manifest.notes, "- Faster.");
+        assert!(manifest.published.is_some());
+        // The secret never lands in the file.
+        assert!(!String::from_utf8(text).unwrap().contains(&key.to_hex()));
+    }
+
+    #[test]
+    fn notes_are_read_whole_or_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("NOTES.md");
+        std::fs::write(&notes, "## New\n- A thing.").unwrap();
+        assert_eq!(read_notes(&notes).unwrap(), "## New\n- A thing.");
+        std::fs::write(&notes, "x".repeat(70_000)).unwrap();
+        assert!(read_notes(&notes).is_err());
+        assert!(read_notes(&dir.path().join("missing.md")).is_err());
+    }
+
+    #[test]
+    fn times_are_written_as_rfc3339() {
+        assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(rfc3339(1_793_326_340), "2026-10-30T02:12:20Z");
     }
 
     #[test]
@@ -434,6 +656,7 @@ mod tests {
 
     #[test]
     fn names_match_what_play_downloads() {
+        let platform = hearken_update::platform::name;
         assert_eq!(platform("windows", "x86_64"), "windows-x64");
         assert_eq!(platform("linux", "x86_64"), "linux-x64");
         assert_eq!(platform("linux", "aarch64"), "linux-arm64");
