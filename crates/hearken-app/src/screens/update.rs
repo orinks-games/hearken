@@ -44,13 +44,29 @@ pub fn download_size(update: &Update) -> String {
 pub struct UpdateCheckScreen {
     checker: Option<Checker>,
     message: String,
+    /// Whether it said it is finding which files the player already has.
+    planning: bool,
 }
+
+/// What the check screen says while it hashes the player's files.
+const PLANNING_LINE: &str = "Found an update. Checking which files you already have.";
 
 impl UpdateCheckScreen {
     pub fn new() -> Self {
         UpdateCheckScreen {
             checker: None,
             message: String::new(),
+            planning: false,
+        }
+    }
+
+    fn status(&self) -> &str {
+        if !self.message.is_empty() {
+            &self.message
+        } else if self.planning {
+            PLANNING_LINE
+        } else {
+            "Checking for updates."
         }
     }
 }
@@ -84,6 +100,10 @@ impl<G: Game> State<G> for UpdateCheckScreen {
             return;
         }
         let Some(outcome) = self.checker.as_mut().and_then(|c| c.poll()).cloned() else {
+            if !self.planning && self.checker.as_ref().is_some_and(|c| c.planning()) {
+                self.planning = true;
+                ctx.say(PLANNING_LINE);
+            }
             return;
         };
         match outcome {
@@ -117,20 +137,17 @@ impl<G: Game> State<G> for UpdateCheckScreen {
     }
 
     fn lines(&self, _ctx: &Ctx<G>) -> Vec<String> {
-        let status = if self.message.is_empty() {
-            "Checking for updates."
-        } else {
-            &self.message
-        };
         vec![
             "Check for updates".to_string(),
             String::new(),
-            status.to_string(),
+            self.status().to_string(),
         ]
     }
 
     fn help(&self, _ctx: &Ctx<G>) -> String {
-        if self.message.is_empty() {
+        if self.message.is_empty() && self.planning {
+            format!("{PLANNING_LINE} Escape stops and goes back.")
+        } else if self.message.is_empty() {
             "Checking for a newer version. Escape goes back.".to_string()
         } else {
             format!("{} Escape goes back.", self.message)

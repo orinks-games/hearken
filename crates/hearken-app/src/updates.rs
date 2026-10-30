@@ -14,6 +14,7 @@
 
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
 
@@ -148,13 +149,30 @@ pub fn recover_interrupted() -> Option<String> {
 /// the player saying why it could not tell.
 pub type CheckOutcome = Result<Option<Update>, String>;
 
-/// A check running on its own thread.
+/// A check running on its own thread. Dropping it cancels the check's
+/// hashing of the install.
 pub struct Checker {
     rx: Receiver<CheckOutcome>,
     done: Option<CheckOutcome>,
+    /// Set by the thread once it found an update and is hashing the
+    /// install's files to see which it already has.
+    planning: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Drop for Checker {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Checker {
+    /// Whether the check found an update and is now finding which files
+    /// this copy already has. Until the outcome comes in.
+    pub fn planning(&self) -> bool {
+        self.done.is_none() && self.planning.load(Ordering::SeqCst)
+    }
+
     /// The outcome, once there is one. Keeps answering the same outcome.
     pub fn poll(&mut self) -> Option<&CheckOutcome> {
         if self.done.is_none() {
@@ -175,6 +193,8 @@ impl Checker {
         Checker {
             rx,
             done: Some(outcome),
+            planning: Arc::new(AtomicBool::new(false)),
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -327,9 +347,18 @@ impl Updates {
             .to_string()
     }
 
-    /// Starts a check of `channel` on its own thread. `None` when this
-    /// copy cannot update itself.
+    /// Starts a check of `channel` on its own thread, for the player to
+    /// install what it finds: an update found comes with its plan, which
+    /// files this copy already has. `None` when this copy cannot update
+    /// itself.
     pub fn check(&self, channel: &str) -> Option<Checker> {
+        self.start_check(channel, true)
+    }
+
+    /// A check that only tells whether there is an update, without
+    /// fetching its file index or hashing the install: what the check at
+    /// start runs, since installing goes through a check of its own.
+    fn start_check(&self, channel: &str, with_plan: bool) -> Option<Checker> {
         let config = self.config.as_ref()?;
         if self.blocked().is_some() {
             return None;
@@ -340,6 +369,9 @@ impl Updates {
         let host = self.host.clone();
         let wanted = channel.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
+        let planning = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (planning_flag, cancel_flag) = (planning.clone(), cancelled.clone());
         let spawned = std::thread::Builder::new()
             .name("update-check".into())
             .spawn(move || {
@@ -348,10 +380,18 @@ impl Updates {
                         .map(|found| {
                             // Which files this copy already has, so the
                             // offer gives the smaller download. Hashing
-                            // them takes a while; it is on this thread.
+                            // them takes a while; it is on this thread,
+                            // and stops when the checker is dropped.
                             found.map(|mut update| {
-                                update.plan =
-                                    hearken_update::plan(&update, fetch.as_ref(), &host.install());
+                                if with_plan && !cancel_flag.load(Ordering::SeqCst) {
+                                    planning_flag.store(true, Ordering::SeqCst);
+                                    update.plan = hearken_update::plan_until(
+                                        &update,
+                                        fetch.as_ref(),
+                                        &host.install(),
+                                        &cancel_flag,
+                                    );
+                                }
                                 update
                             })
                         })
@@ -367,14 +407,19 @@ impl Updates {
                 "The update check could not start.".to_string()
             )));
         }
-        Some(Checker { rx, done: None })
+        Some(Checker {
+            rx,
+            done: None,
+            planning,
+            cancelled,
+        })
     }
 
     /// The check at start, when the game and the player want one.
     pub fn check_at_start(&mut self, settings: &UpdateSettings) {
         let wanted = self.config.as_ref().is_some_and(|c| c.check_at_start);
         if wanted && settings.check_at_start && self.background.is_none() {
-            self.background = self.check(&self.channel(settings));
+            self.background = self.start_check(&self.channel(settings), false);
         }
     }
 

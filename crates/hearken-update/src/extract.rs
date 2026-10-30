@@ -193,7 +193,16 @@ impl Writer<'_> {
         Ok(())
     }
 
-    fn entry(&mut self, name: &str, kind: Kind, body: &mut dyn Read) -> io::Result<()> {
+    /// Writes one entry. A file's body is read no further than the room
+    /// left under the limits, and no further than `cap` when one is given
+    /// (an entry's signed size): one byte past it is refused at once.
+    fn entry(
+        &mut self,
+        name: &str,
+        kind: Kind,
+        body: &mut dyn Read,
+        cap: Option<u64>,
+    ) -> io::Result<()> {
         if self.cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
             return Err(cancelled_error());
         }
@@ -218,7 +227,11 @@ impl Writer<'_> {
                 }
                 let mut file = fs::File::create(&path)?;
                 let room = self.limits.bytes - self.bytes;
-                let written = io::copy(&mut body.take(room.saturating_add(1)), &mut file)?;
+                let most = cap.map_or(room, |cap| cap.min(room));
+                let written = copy_heeding(body, &mut file, most, self.cancelled)?;
+                if cap.is_some_and(|cap| written > cap) {
+                    return Err(refuse(format!("{name} is larger than its index says")));
+                }
                 if written > room {
                     return Err(refuse("the archive unpacks to more than allowed"));
                 }
@@ -240,6 +253,37 @@ impl Writer<'_> {
             }
         }
     }
+}
+
+/// Copies at most `most` bytes of `body` into `file`, and says how many it
+/// copied; reading one more than `most` is how a caller sees the body is
+/// too long. A cancel is heard between chunks, so one large entry does not
+/// hold it up until it is all written. (`io::copy` would retry the cancel's
+/// `Interrupted` error, so this is its own loop.)
+fn copy_heeding(
+    body: &mut dyn Read,
+    file: &mut fs::File,
+    most: u64,
+    cancelled: Option<&AtomicBool>,
+) -> io::Result<u64> {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut copied = 0u64;
+    let end = most.saturating_add(1);
+    while copied < end {
+        if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            return Err(cancelled_error());
+        }
+        let want = (end - copied).min(buf.len() as u64) as usize;
+        let n = match body.read(&mut buf[..want]) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        file.write_all(&buf[..n])?;
+        copied += n as u64;
+    }
+    Ok(copied)
 }
 
 /// A file's permissions from the archive, without set-id bits or write
@@ -400,9 +444,9 @@ fn extract_zip(archive: &Path, writer: &mut Writer, assembly: Option<&Assembly>)
                     return Err(refuse(format!("{} changed", installed.display())));
                 }
                 let mut source = fs::File::open(installed)?;
-                writer.entry(&name, kind, &mut source)?;
+                writer.entry(&name, kind, &mut source, expected.map(|e| e.size))?;
             }
-            None => writer.entry(&name, kind, &mut entry)?,
+            None => writer.entry(&name, kind, &mut entry, expected.map(|e| e.size))?,
         }
         // What is on disk is what ships: it must be the signed bytes.
         if let (Some(expected), true) = (expected, is_file) {
@@ -447,7 +491,7 @@ fn extract_tar_gz(archive: &Path, writer: &mut Writer) -> io::Result<()> {
                 )))
             }
         };
-        writer.entry(&name, kind, &mut entry)?;
+        writer.entry(&name, kind, &mut entry, None)?;
     }
     Ok(())
 }
@@ -779,5 +823,79 @@ pub(crate) mod tests {
         let archive = dir.path().join("a.rar");
         fs::write(&archive, b"x").unwrap();
         assert!(unpack(&archive, &dir.path().join("o")).is_err());
+    }
+
+    fn writer<'a>(dest: &'a Path, cancelled: Option<&'a AtomicBool>) -> Writer<'a> {
+        Writer {
+            dest,
+            limits: Limits::default(),
+            entries: 0,
+            bytes: 0,
+            cancelled,
+        }
+    }
+
+    /// Endless zeros, setting `flag` after `after` bytes.
+    struct Zeros<'a> {
+        read: u64,
+        after: u64,
+        flag: Option<&'a AtomicBool>,
+    }
+
+    impl Read for Zeros<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.read >= self.after {
+                if let Some(flag) = self.flag {
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
+            buf.fill(0);
+            self.read += buf.len() as u64;
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn a_file_is_cut_off_one_byte_past_its_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = writer(dir.path(), None);
+        let mut body = Zeros {
+            read: 0,
+            after: u64::MAX,
+            flag: None,
+        };
+        let err = w
+            .entry("a.bin", Kind::File { mode: None }, &mut body, Some(1000))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+        assert_eq!(fs::metadata(dir.path().join("a.bin")).unwrap().len(), 1001);
+        // At its cap exactly, it is written.
+        let mut w = writer(dir.path(), None);
+        w.entry(
+            "b.bin",
+            Kind::File { mode: None },
+            &mut &[7u8; 1000][..],
+            Some(1000),
+        )
+        .unwrap();
+        assert_eq!(fs::read(dir.path().join("b.bin")).unwrap(), [7u8; 1000]);
+    }
+
+    #[test]
+    fn a_cancel_is_heard_within_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancelled = AtomicBool::new(false);
+        let mut w = writer(dir.path(), Some(&cancelled));
+        let mut body = Zeros {
+            read: 0,
+            after: 1_000_000,
+            flag: Some(&cancelled),
+        };
+        let err = w
+            .entry("a.bin", Kind::File { mode: None }, &mut body, None)
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        let len = fs::metadata(dir.path().join("a.bin")).unwrap().len();
+        assert!(len < 2_000_000, "{len}");
     }
 }

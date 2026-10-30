@@ -103,7 +103,24 @@ pub enum Phase {
 /// install's larger files, so it runs off the game loop. `None` for
 /// anything else, and the whole archive is downloaded.
 pub fn plan(update: &Update, fetch: &dyn Fetch, install: &Install) -> Option<Plan> {
-    plan_with(update, fetch, install, Thresholds::default())
+    plan_inner(update, fetch, install, Thresholds::default(), None)
+}
+
+/// [`plan`] that stops, with `None`, once `cancelled` is set: between the
+/// install's files and within each one's hashing.
+pub fn plan_until(
+    update: &Update,
+    fetch: &dyn Fetch,
+    install: &Install,
+    cancelled: &AtomicBool,
+) -> Option<Plan> {
+    plan_inner(
+        update,
+        fetch,
+        install,
+        Thresholds::default(),
+        Some(cancelled),
+    )
 }
 
 /// [`plan`] with other thresholds.
@@ -112,6 +129,16 @@ pub fn plan_with(
     fetch: &dyn Fetch,
     install: &Install,
     thresholds: Thresholds,
+) -> Option<Plan> {
+    plan_inner(update, fetch, install, thresholds, None)
+}
+
+fn plan_inner(
+    update: &Update,
+    fetch: &dyn Fetch,
+    install: &Install,
+    thresholds: Thresholds,
+    cancelled: Option<&AtomicBool>,
 ) -> Option<Plan> {
     let manifest = &update.manifest;
     let wanted = manifest.index.as_ref()?;
@@ -142,7 +169,7 @@ pub fn plan_with(
         log::warn!("the update's file index is for another archive");
         return None;
     }
-    let plan = plan_from_index(index, install, thresholds);
+    let plan = plan_from_index_inner(index, install, thresholds, cancelled);
     if let Some(plan) = &plan {
         log::info!(
             "the update downloads {} of its {} bytes: {} files are already here",
@@ -156,16 +183,56 @@ pub fn plan_with(
 
 /// The plan for a checked `index` over `install`.
 pub fn plan_from_index(index: Index, install: &Install, thresholds: Thresholds) -> Option<Plan> {
+    plan_from_index_inner(index, install, thresholds, None)
+}
+
+/// The SHA-256 of the file at `path`, or `None` once `cancelled` is set.
+fn sha256_file_until(path: &Path, cancelled: Option<&AtomicBool>) -> Option<String> {
+    let Some(cancelled) = cancelled else {
+        return sha256_file(path).ok();
+    };
+    let file = fs::File::open(path).ok()?;
+    let heeding = Heeding {
+        inner: file,
+        cancelled,
+    };
+    hash_reader(heeding).ok().map(|(_, sum)| sum)
+}
+
+/// A reader that fails, for good, once `cancelled` is set.
+struct Heeding<'a, R> {
+    inner: R,
+    cancelled: &'a AtomicBool,
+}
+
+impl<R: Read> Read for Heeding<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(io::Error::other("the check was canceled"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+fn plan_from_index_inner(
+    index: Index,
+    install: &Install,
+    thresholds: Thresholds,
+    cancelled: Option<&AtomicBool>,
+) -> Option<Plan> {
     let installed = install_paths(&index, install);
     let mut reuse = BTreeMap::new();
     for (i, (entry, path)) in index.entries.iter().zip(installed).enumerate() {
+        if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            return None;
+        }
         let Some(path) = path else { continue };
         if entry.is_dir() || entry.size < thresholds.min_reuse {
             continue;
         }
         let same_size = fs::symlink_metadata(&path)
             .is_ok_and(|meta| meta.is_file() && meta.len() == entry.size);
-        if same_size && sha256_file(&path).is_ok_and(|sum| sum == entry.sha256) {
+        if same_size && sha256_file_until(&path, cancelled).is_some_and(|sum| sum == entry.sha256) {
             reuse.insert(i, path);
         }
     }
@@ -950,6 +1017,19 @@ mod tests {
             assert_eq!(*server.whole_downloads.lock().unwrap(), 1, "{mode:?}");
             assert_eq!(tree(staged.path()), full, "{mode:?}");
         }
+    }
+
+    #[test]
+    fn a_cancel_stops_the_plan() {
+        let f = fixture();
+        let server = f.server(Mode::Honest);
+        let go = AtomicBool::new(false);
+        assert!(plan_inner(&f.update, &server, &f.install, thresholds(), Some(&go)).is_some());
+        let stop = AtomicBool::new(true);
+        assert_eq!(
+            plan_inner(&f.update, &server, &f.install, thresholds(), Some(&stop)),
+            None
+        );
     }
 
     #[test]

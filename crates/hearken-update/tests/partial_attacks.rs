@@ -1,6 +1,6 @@
 //! Attacks on the partial download by a host, mirror or anything between
 //! them that has no signing key: it can change any byte of a range answer,
-//! and nothing else. Each test here is a bug: it fails until it is fixed.
+//! and nothing else.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -101,6 +101,11 @@ struct Release {
 /// player's copy of the one before: the same 2 MB sound pack, a changed
 /// 300 KB file and a changed program.
 fn release() -> Release {
+    release_with(300_000)
+}
+
+/// [`release`], with the changed file `changed` bytes long.
+fn release_with(changed: usize) -> Release {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(NAME);
     let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
@@ -109,7 +114,7 @@ fn release() -> Release {
     for (name, body) in [
         ("g-1.1.0-windows-x64/g.exe", b"MZ new".to_vec()),
         ("g-1.1.0-windows-x64/sounds.pak", noise(1, 2_000_000)),
-        ("g-1.1.0-windows-x64/data/changed.bin", noise(3, 300_000)),
+        ("g-1.1.0-windows-x64/data/changed.bin", noise(3, changed)),
     ] {
         zip.start_file(name, o).unwrap();
         zip.write_all(&body).unwrap();
@@ -149,7 +154,7 @@ fn release() -> Release {
     fs::create_dir_all(game.join("data")).unwrap();
     fs::write(game.join("g.exe"), b"MZ old").unwrap();
     fs::write(game.join("sounds.pak"), noise(1, 2_000_000)).unwrap();
-    fs::write(game.join("data/changed.bin"), noise(2, 300_000)).unwrap();
+    fs::write(game.join("data/changed.bin"), noise(2, changed)).unwrap();
     Release {
         dir,
         archive,
@@ -195,14 +200,6 @@ fn running(secret: &SecretKey) -> Running {
     }
 }
 
-/// A downloaded entry's compressed bytes are not covered by any signature
-/// until they are unpacked and hashed. A man in the middle swaps the
-/// 300 KB changed file's deflate stream for one of zeros that inflates
-/// without end. The unpack writes until the archive-wide limit (20 times
-/// the archive, at least 32 MB; 20 GB for a 1 GB game) before anything
-/// compares it with the signed 300 KB, so the player's disk fills with
-/// what a whole download, checked against the signed SHA-256 first, would
-/// never unpack. Each entry should be cut off at its signed size.
 /// The changed file's entry, and a host whose range answers carry, in
 /// place of its compressed bytes, a deflate stream of 100 MB of zeros.
 fn bomb_host(release: &Release) -> (index::IndexEntry, Host) {
@@ -243,6 +240,12 @@ fn planned(release: &Release, host: &Host) -> hearken_update::Update {
     update
 }
 
+/// A downloaded entry's compressed bytes are not covered by any signature
+/// until they are unpacked and hashed. A man in the middle swaps the
+/// 300 KB changed file's deflate stream for one of zeros that inflates
+/// without end. Without a bound, the unpack would write until the
+/// archive-wide limit (20 times the archive) before comparing it with the
+/// signed 300 KB. Each entry is cut off one byte past its signed size.
 #[test]
 fn a_tampered_range_inflates_far_past_its_signed_size() {
     let release = release();
@@ -273,22 +276,21 @@ fn a_tampered_range_inflates_far_past_its_signed_size() {
         fs::read(staged.path().join("data/changed.bin")).unwrap(),
         noise(3, 300_000)
     );
-    // But before that, the unsigned bytes were unpacked far past the
-    // signed size.
+    // Before that, the unsigned bytes were never unpacked past the signed
+    // size (and the byte that shows it is too long).
     assert!(
-        largest <= entry.size,
+        largest <= entry.size + 1,
         "{largest} bytes written for an entry signed at {} bytes",
         entry.size
     );
 }
 
-/// The same tampered entry, and the player presses Escape once 1 MB of it
-/// is on disk. The unpack hears a cancel only between entries, so it goes
-/// on writing the attacker's zeros to the archive-wide limit first (20 GB
-/// for a 1 GB game) while the screen says it is cancelling.
+/// A tampered entry signed at 12 MB, and the player presses Escape once
+/// 1 MB of it is on disk. The unpack hears it within a chunk, not only between
+/// entries.
 #[test]
 fn a_cancel_is_heard_inside_a_tampered_entry() {
-    let release = release();
+    let release = release_with(12_000_000);
     let (_, host) = bomb_host(&release);
     let update = planned(&release, &host);
     let staging = release.dir.path().join("staging");

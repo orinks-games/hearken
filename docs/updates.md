@@ -246,9 +246,12 @@ player back to a version with a known flaw.
    signed size, the gaps left empty, and that is unpacked by the same code
    and with the same checks as a whole archive (step 2), except that each
    kept file is copied from the install instead of read from a gap. Every
-   entry must be where the index says. Every file and link written,
-   downloaded or copied, must then be the signed size and SHA-256, read
-   back from the disk, so the folder holds exactly what a whole download
+   entry must be where the index says. A file, downloaded or copied, is
+   cut off one byte past its signed size, so a tampered part cannot
+   unpack to more than the file it stands for; Escape is heard while a
+   file is being written, not only between files. Every file and link
+   written must then be the signed size and SHA-256, read back from the
+   disk, so the folder holds exactly what a whole download
    would have unpacked, with the same modes and links.
 
    Anything off, and the whole archive is downloaded after all, with
@@ -366,10 +369,14 @@ player back to a version with a known flaw.
   are thrown away and the whole archive downloads, so the player may get
   a little more than the archive's size. The offer gives the smaller
   size.
-- **Finding the kept files reads them.** The check hashes each install
-  file of 64 KB or more that the update has at the same size, which on a
-  big install takes a few seconds of disk work each time an update is
-  found. It runs off the game loop.
+- **Finding the kept files reads them.** When the player chooses Check
+  for updates and there is one, the check hashes each install file of
+  64 KB or more that the update has at the same size, which on a big
+  install takes a few seconds of disk work. It runs off the game loop, the
+  screen says "Found an update. Checking which files you already have.",
+  and Escape stops it. The check at start never does this: it only says
+  whether there is an update, so a skipped version or a quiet game's
+  check costs no more than the manifest.
 - **The partial download still takes the archive's size on disk.** It is
   put together in a file of the archive's full size (the gaps are sparse
   where the system allows), then unpacked as a whole one is.

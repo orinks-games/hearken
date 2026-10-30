@@ -58,7 +58,7 @@ pub use install::{
 pub use key::{PublicKey, SecretKey};
 pub use manifest::{IndexRef, Manifest, ManifestError};
 pub use notes::flatten_markdown;
-pub use partial::{download_and_stage, plan, Phase, Plan};
+pub use partial::{download_and_stage, plan, plan_until, Phase, Plan};
 pub use source::{Found, GitHubReleases, ManifestUrl, Query, SourceError, UpdateSource};
 pub use version::{spoken_version, Version};
 
