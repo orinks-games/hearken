@@ -751,6 +751,7 @@ name = "hearken-speech"
 version = "0.1.0"
 dependencies = [
  "log",
+ "objc2",
  "prismer",
  "serde",
  "serde_json",

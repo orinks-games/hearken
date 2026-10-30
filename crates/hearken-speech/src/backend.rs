@@ -314,6 +314,12 @@ impl VoiceRegistry for PrismRegistry {
     }
 
     fn acquire(&self, id: BackendId) -> Result<Box<dyn VoiceBackend>, SpeechError> {
+        // Prism's VoiceOver can hang the main thread for minutes; see
+        // `crate::voiceover`.
+        #[cfg(target_os = "macos")]
+        if self.name_of(id).as_deref() == Some(crate::voiceover::NAME) {
+            return Ok(Box::new(crate::voiceover::VoiceOverAnnouncer::open()?));
+        }
         let shared = &self.shared;
         let backend = shared.instances.acquire(
             id,

@@ -69,6 +69,8 @@ pub mod pacer;
 pub mod spoken;
 pub mod threaded;
 pub mod verbosity;
+#[cfg(target_os = "macos")]
+pub mod voiceover;
 
 pub use backend::{
     narrator_running, pick_backend, pick_backend_gated, pick_event_backend,

@@ -37,6 +37,7 @@ symphonia-core = "0.6"
 symphonia-adapter-fdk-aac = "0.2"
 # The radio's HE-AAC: Media Foundation on Windows, AudioToolbox on macOS.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_LibraryLoader"] }
+objc2 = "0.6"
 objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "AudioConverter", "AudioFormat", "objc2-core-audio-types"] }
 objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
 ureq = { version = "2.12", default-features = false, features = ["tls", "native-certs"] }
