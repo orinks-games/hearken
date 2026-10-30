@@ -64,7 +64,11 @@ impl Fetch for Host {
 
     fn open(&self, url: &str) -> Result<Body, FetchError> {
         let body = self.get(url, &[], u64::MAX)?;
-        self.whole_downloads.fetch_add(1, Ordering::SeqCst);
+        // The file index comes this way too; only the archive is a whole
+        // download.
+        if url.ends_with(".zip") {
+            self.whole_downloads.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(Body {
             length: Some(body.len() as u64),
             reader: Box::new(io::Cursor::new(body)),

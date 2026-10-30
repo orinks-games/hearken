@@ -4,9 +4,10 @@
 //! a copy finds the files it already has, byte for byte (the same size and
 //! the signed SHA-256, hashed here, never taken from the zip's CRC-32), and
 //! downloads the rest of the archive with HTTP range requests: every other
-//! entry, the local headers, and the central directory. The archive is put
-//! together in the staging folder at its full size, the parts it skipped
-//! left empty, and unpacked by the same code as a whole download, with the
+//! entry and the central directory, nothing of a kept one. The archive is
+//! put together in the staging folder at its full size, the parts it
+//! skipped left empty but for a stand-in local header for each kept file,
+//! and unpacked by the same code as a whole download, with the
 //! player's own files copied in for the parts it skipped. Every file and
 //! link it writes is checked against the signed index once it is on disk.
 //!
@@ -28,7 +29,7 @@ use std::time::Duration;
 use crate::check::Update;
 use crate::download::{self, sha256_file, stream_to_file, DownloadError, IDLE_TIMEOUT};
 use crate::extract::{self, safe_path, Assembly, Limits};
-use crate::fetch::{Fetch, RangeBody};
+use crate::fetch::{read_limited, Fetch, FetchError, RangeBody};
 use crate::index::{hash_reader, Index};
 use crate::install::{self, Install, Staged, UNPACKED};
 use crate::manifest::{archive_kind, ArchiveKind};
@@ -146,7 +147,7 @@ fn plan_inner(
         return None;
     }
     let url = update.index_url.as_deref()?;
-    let bytes = match fetch.get(url, &[], wanted.size) {
+    let bytes = match fetch_index(fetch, url, wanted.size, cancelled) {
         Ok(bytes) => bytes,
         Err(e) => {
             log::info!("no file index for the update ({e}); it downloads whole");
@@ -179,6 +180,32 @@ fn plan_inner(
         );
     }
     plan
+}
+
+/// The index at `url`, at most `limit` (its signed size) bytes. Through
+/// [`Fetch::open`], like the archive: a big game's index can be megabytes,
+/// so it gets the download's idle bound rather than a small request's
+/// deadline for the whole answer.
+fn fetch_index(
+    fetch: &dyn Fetch,
+    url: &str,
+    limit: u64,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Vec<u8>, FetchError> {
+    let body = fetch.open(url)?;
+    if body.length.is_some_and(|n| n > limit) {
+        return Err(FetchError::TooLarge);
+    }
+    match cancelled {
+        Some(cancelled) => read_limited(
+            Heeding {
+                inner: body.reader,
+                cancelled,
+            },
+            limit,
+        ),
+        None => read_limited(body.reader, limit),
+    }
 }
 
 /// The plan for a checked `index` over `install`.
@@ -230,6 +257,11 @@ fn plan_from_index_inner(
         if entry.is_dir() || entry.size < thresholds.min_reuse {
             continue;
         }
+        // Its local header is not downloaded: one standing in for it must
+        // fit where the real one was (see `local_header_stub`).
+        if local_header_stub(entry.data.saturating_sub(entry.header)).is_none() {
+            continue;
+        }
         let same_size = fs::symlink_metadata(&path)
             .is_ok_and(|meta| meta.is_file() && meta.len() == entry.size);
         if same_size && sha256_file_until(&path, cancelled).is_some_and(|sum| sum == entry.sha256) {
@@ -243,11 +275,11 @@ fn plan_from_index_inner(
         .entries
         .iter()
         .enumerate()
-        .map(|(i, entry)| match reuse.contains_key(&i) {
-            // The local header only: the unpack reads where the data starts.
-            true => entry.header..entry.data,
-            false => entry.header..entry.end,
-        })
+        // Nothing of a kept entry: not even its local header, which is
+        // written in its place, so the parts on either side of a run of
+        // kept files are one request.
+        .filter(|(i, _)| !reuse.contains_key(i))
+        .map(|(_, entry)| entry.header..entry.end)
         .chain(std::iter::once(index.central_start..index.archive_size))
         .filter(|r| !r.is_empty())
         .collect();
@@ -428,6 +460,23 @@ pub fn download_and_stage_with(
     )?)
 }
 
+/// The size of a zip local header with no name or extra field.
+const LOCAL_HEADER_FIXED: u64 = 30;
+
+/// A zip local header `span` bytes long (header to data), saying nothing but
+/// its own length: the signature, zeros, and name and extra field lengths
+/// that add up to the rest. `None` when no header can be that long.
+fn local_header_stub(span: u64) -> Option<[u8; LOCAL_HEADER_FIXED as usize]> {
+    let rest = span.checked_sub(LOCAL_HEADER_FIXED)?;
+    let name = rest.min(u16::MAX as u64);
+    let extra = u16::try_from(rest - name).ok()?;
+    let mut stub = [0u8; LOCAL_HEADER_FIXED as usize];
+    stub[..4].copy_from_slice(&0x0403_4b50u32.to_le_bytes());
+    stub[26..28].copy_from_slice(&(name as u16).to_le_bytes());
+    stub[28..30].copy_from_slice(&extra.to_le_bytes());
+    Some(stub)
+}
+
 /// Why a partial download is given up, logged; the caller downloads the
 /// whole archive.
 fn off(why: impl std::fmt::Display) -> DownloadError {
@@ -518,6 +567,29 @@ fn partial(
         }
         done += len;
     }
+    // A kept entry's local header was not downloaded. The unpack reads it
+    // only to find where the entry's data starts, checks that against the
+    // signed index, and copies the player's file instead of reading the
+    // data; its name, kind and mode come from the signed central directory.
+    // A header that says just that stands in for it.
+    for &i in plan.reuse.keys() {
+        let entry = plan
+            .index
+            .entries
+            .get(i)
+            .ok_or_else(|| off("a kept file is not in the index"))?;
+        let stub = entry
+            .data
+            .checked_sub(entry.header)
+            .and_then(local_header_stub)
+            .ok_or_else(|| off("a kept file's header does not fit"))?;
+        if entry.data > plan.index.central_start {
+            return Err(off("a kept file is past the central directory"));
+        }
+        let mut part = file.try_clone()?;
+        part.seek(SeekFrom::Start(entry.header))?;
+        io::Write::write_all(&mut part, &stub)?;
+    }
     drop(file);
     // The central directory is what the unpack trusts for every entry's
     // name, kind and place: it must be the signed one.
@@ -554,7 +626,7 @@ fn partial(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fetch::{Body, FetchError};
+    use crate::fetch::Body;
     use crate::index::index_name;
     use crate::key::to_hex;
     use crate::manifest::tests::sample;
@@ -626,17 +698,19 @@ mod tests {
 
     impl Fetch for Server {
         fn get(&self, url: &str, _: &[(&str, &str)], limit: u64) -> Result<Vec<u8>, FetchError> {
-            let body = match url {
-                INDEX_URL => self.index.clone(),
-                _ => return Err(FetchError::Status(404)),
-            };
-            if body.len() as u64 > limit {
-                return Err(FetchError::TooLarge);
-            }
-            Ok(body)
+            // The index comes through `open`, with no deadline for the
+            // whole answer.
+            let _ = (url, limit);
+            Err(FetchError::Status(404))
         }
 
         fn open(&self, url: &str) -> Result<Body, FetchError> {
+            if url == INDEX_URL {
+                return Ok(Body {
+                    length: Some(self.index.len() as u64),
+                    reader: Box::new(io::Cursor::new(self.index.clone())),
+                });
+            }
             assert_eq!(url, ARCHIVE_URL);
             *self.whole_downloads.lock().unwrap() += 1;
             Ok(Body {
@@ -1109,6 +1183,84 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, DownloadError::Cancelled), "{err:?}");
         assert_eq!(*server.whole_downloads.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_kept_files_header_is_not_downloaded() {
+        let f = fixture();
+        let server = f.server(Mode::Honest);
+        let plan = plan_with(&f.update, &server, &f.install, thresholds()).unwrap();
+        for &i in plan.reuse.keys() {
+            let entry = &plan.index.entries[i];
+            for range in &plan.ranges {
+                assert!(
+                    range.end <= entry.header || range.start >= entry.data,
+                    "{range:?} fetches {}'s header",
+                    entry.path
+                );
+            }
+        }
+        // Staged, it is still what the whole archive unpacks to.
+        let update = f.planned(&server);
+        let staged = f.stage_with(&update, &server).unwrap();
+        assert_eq!(*server.whole_downloads.lock().unwrap(), 0);
+        assert_eq!(tree(staged.path()), f.full());
+    }
+
+    #[test]
+    fn a_stand_in_header_says_only_its_length() {
+        assert_eq!(local_header_stub(29), None);
+        assert_eq!(local_header_stub(30 + 2 * u16::MAX as u64 + 1), None);
+        for span in [30, 31, 100, 30 + u16::MAX as u64, 30 + 2 * u16::MAX as u64] {
+            let stub = local_header_stub(span).unwrap();
+            assert_eq!(stub[..4], [0x50, 0x4b, 0x03, 0x04]);
+            assert!(stub[4..26].iter().all(|&b| b == 0));
+            let name = u16::from_le_bytes([stub[26], stub[27]]) as u64;
+            let extra = u16::from_le_bytes([stub[28], stub[29]]) as u64;
+            assert_eq!(30 + name + extra, span);
+        }
+    }
+
+    /// A `Fetch` that only answers `open`, as the index is fetched, and
+    /// says what it answered.
+    struct Opens {
+        body: Vec<u8>,
+        declared: Option<u64>,
+    }
+
+    impl Fetch for Opens {
+        fn get(&self, _: &str, _: &[(&str, &str)], _: u64) -> Result<Vec<u8>, FetchError> {
+            panic!("the index has a small request's deadline");
+        }
+
+        fn open(&self, _: &str) -> Result<Body, FetchError> {
+            Ok(Body {
+                length: self.declared,
+                reader: Box::new(io::Cursor::new(self.body.clone())),
+            })
+        }
+    }
+
+    #[test]
+    fn the_index_is_read_like_a_download_and_bounded_by_its_signed_size() {
+        let fetch = |body: &[u8], declared| Opens {
+            body: body.to_vec(),
+            declared,
+        };
+        assert_eq!(
+            fetch_index(&fetch(b"abcd", Some(4)), INDEX_URL, 4, None).unwrap(),
+            b"abcd"
+        );
+        assert_eq!(
+            fetch_index(&fetch(b"abcd", None), INDEX_URL, 3, None),
+            Err(FetchError::TooLarge)
+        );
+        assert_eq!(
+            fetch_index(&fetch(b"ab", Some(5)), INDEX_URL, 4, None),
+            Err(FetchError::TooLarge)
+        );
+        let cancelled = AtomicBool::new(true);
+        assert!(fetch_index(&fetch(b"abcd", None), INDEX_URL, 4, Some(&cancelled)).is_err());
     }
 
     #[test]

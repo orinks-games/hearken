@@ -229,24 +229,32 @@ player back to a version with a known flaw.
    server that declares another size is refused at once.
 
    With a file index, the check (off the game loop) first fetches the
-   index, refuses it unless it is the size and SHA-256 the manifest signed
+   index, the way the archive is fetched (it can be megabytes for a big
+   game, so a slow line gets as long as it needs, and only a connection
+   that goes quiet gives up), refuses it unless it is the size and SHA-256 the manifest signed
    and describes that very archive, then looks for each file of 64 KB or
    more where the install has it (below the archive's top folder, and for
    a Mac app below the app, as the update is laid out once unpacked). A
    file is kept only when it is the same size and its SHA-256, computed
    from the player's copy, is the signed one; the zip's CRC-32 is never
    trusted. When that saves at least a megabyte, the download fetches only
-   the rest with range requests: every other entry, the kept files' local
-   headers, and the zip's central directory, nearby parts in one request,
-   at most 1,000 requests. Each answer must be exactly the part asked for
+   the rest with range requests: every other entry and the zip's central
+   directory, nearby parts in one request, at most 1,000 requests. Nothing
+   of a kept file is fetched, not even its local header, so a run of kept
+   files between two changed ones costs no request; a thousand kept sounds
+   and one changed file is two or three requests, not a thousand. Each answer must be exactly the part asked for
    (status 206, the right `Content-Range`, no byte more or fewer), and the
    central directory must match the SHA-256 the index signs.
 
    The parts are written at their places in a file of the archive's
    signed size, the gaps left empty, and that is unpacked by the same code
    and with the same checks as a whole archive (step 2), except that each
-   kept file is copied from the install instead of read from a gap. Every
-   entry must be where the index says. A file, downloaded or copied, is
+   kept file is copied from the install instead of read from a gap. A kept
+   file's local header, which the unpack reads only to find where the
+   entry's data starts, is written in as a stand-in that says just its
+   length; that start must still be where the index signs it, and the
+   entry's name, kind and mode come from the signed central directory.
+   Every entry must be where the index says. A file, downloaded or copied, is
    cut off one byte past its signed size, so a tampered part cannot
    unpack to more than the file it stands for; Escape is heard while a
    file is being written, not only between files. Every file and link
