@@ -136,6 +136,13 @@ gave them:
 A manifest may also name its archive's full HTTPS URL (`url`), to keep the
 archives on another host; `hearken release` leaves it out.
 
+Redirects are followed (GitHub's asset links redirect to its file
+storage), up to five, but each address is checked before anything is sent
+to it: a redirect to plain HTTP, or to anything but HTTPS or this computer,
+ends the request there. Credentials a custom source sends (an
+`Authorization` or `Cookie` header) are dropped once a redirect leaves the
+server they were meant for.
+
 ## Keys
 
 The update key is the game's own and stays the same for good: every copy a
@@ -220,16 +227,29 @@ player back to a version with a known flaw.
    again and deletes the folder, itself with it.
 
    - **A folder install** (Windows, Linux): the install is copied to a
-     backup first, and if that fails, nothing is touched. The update is then
-     copied over the install, and if that fails, the backup is copied back.
+     backup first, and if that fails, nothing is touched. Then a journal,
+     `.hearken-update-journal`, is put in the install, naming the backup,
+     and the update is copied over the install, the program last: it is
+     copied in beside the old one and renamed over it, so the old program
+     stays whole until the very end. Only then is the journal removed. If
+     the copy fails, or the script is stopped part-way (a power cut, the
+     computer shutting down, the script killed), the journal is still
+     there, and the next time the game starts, before it reads anything
+     else, it puts the backup back exactly: each file is copied in beside
+     the one it replaces and renamed over it, and what the update added is
+     removed. The player is told the update did not finish. Stopped again
+     during that, it simply happens again at the next start. A folder that
+     holds such a backup is kept for 30 days rather than one.
      The `saves` folder of a portable copy is never copied either way. On
      Windows the script uses
      robocopy, which refuses `\\?\` paths, so they are written in their
      plain form; a `%` in a path is doubled for cmd, and `$`, backticks,
      backslashes and quotes are escaped for sh.
-   - **A Mac app**: the whole app is swapped. The old app is moved aside
-     (`My Game.app.old`) until the new one is in place, and moved back if it
-     is not. An app running from App Translocation (opened straight from a
+   - **A Mac app**: the whole app is swapped. The new app is first copied
+     in beside the old one (`My Game.app.update-new`), so a copy that fails
+     or is stopped leaves the old app as it was. Then the old app is moved
+     aside (`My Game.app.old`), the new one renamed into its place, and the
+     old one removed; if the rename fails, the old app is moved back. An app running from App Translocation (opened straight from a
      quarantined download) is never swapped: the player is told where the
      new one is saved instead.
    - **An AppImage**: the file itself is swapped, by copying the new one in
@@ -244,7 +264,8 @@ player back to a version with a known flaw.
   back it up offline, and give CI only the secret it needs. There is no key
   rotation: a new key needs players to download a release by hand.
 - **Freezing.** A host, or anyone between it and the player, can keep
-  serving an old manifest, or none. The game then offers nothing newer; it
+  serving an old manifest, or none, or redirect the game to another HTTPS
+  server that does. The game then offers nothing newer; it
   never installs anything older. Manifests carry no expiry.
 - **The same version is never offered again.** Rebuilding `1.4.0` and
   publishing it under the same version reaches no one who has `1.4.0`; bump
@@ -256,8 +277,23 @@ player back to a version with a known flaw.
   older than that is not found.
 - **Files a release drops stay behind** in a folder install: the update is
   copied over the install, never mirrored, so the player's own files there
-  are never deleted. A failed copy is put back from the backup, but files
-  that only the new version has may remain.
+  are never deleted. (Putting back an unfinished update is exact; that is
+  the one time files are removed, and only ones the update added.)
+- **An unfinished update is put back by the old program.** The program is
+  copied last, so after a stopped copy it is the old one, whole, but beside
+  libraries and data that may already be new. A game whose old program
+  cannot start with its next version's libraries (a changed DLL it loads
+  before `run`) cannot put itself back; the player downloads it again.
+  Data the game loads before calling `run` is read before the folder is
+  put back; it is right from the next start.
+- **A Mac app is missing for an instant.** Between moving the old app
+  aside and renaming the new one into place, there is no app at its path.
+  Stopped exactly there, `My Game.app.old` and `My Game.app.update-new`
+  are left beside where it was, and the player renames one back by hand.
+- **The backup is in the temporary folder.** A system that clears it at
+  start (some Linux setups mount `/tmp` in memory) loses the backup along
+  with an unfinished update; the game then says the update did not finish
+  and could not be undone, and the player downloads it again.
 - **Windows waits by process ID**, polling `tasklist` once a second. If the
   game's ID is taken by another process within that second, the script
   waits for that one too, up to five minutes.

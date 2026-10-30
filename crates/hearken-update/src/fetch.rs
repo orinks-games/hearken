@@ -102,7 +102,9 @@ mod http {
         fn default() -> Self {
             let user_agent = concat!("hearken-update/", env!("CARGO_PKG_VERSION"));
             HttpFetch {
+                // Redirects are followed by `call`, which checks each one.
                 small: ureq::AgentBuilder::new()
+                    .redirects(0)
                     .timeout_connect(CONNECT_TIMEOUT)
                     .timeout(REQUEST_TIMEOUT)
                     .user_agent(user_agent)
@@ -111,6 +113,7 @@ mod http {
                 // long as it takes. Each read gives up after the idle bound,
                 // so a connection that goes quiet still ends.
                 download: ureq::AgentBuilder::new()
+                    .redirects(0)
                     .timeout_connect(CONNECT_TIMEOUT)
                     .timeout_read(crate::download::IDLE_TIMEOUT)
                     .user_agent(user_agent)
@@ -119,17 +122,70 @@ mod http {
         }
     }
 
-    fn call(request: ureq::Request) -> Result<ureq::Response, FetchError> {
-        let response = match request.call() {
-            Ok(response) => response,
-            Err(ureq::Error::Status(code, _)) => return Err(FetchError::Status(code)),
-            Err(e) => return Err(FetchError::Offline(e.kind().to_string())),
-        };
-        // A redirect may land anywhere; it must still be HTTPS.
-        if !url_allowed(response.get_url()) {
-            return Err(FetchError::NotAllowed(response.get_url().to_string()));
+    /// How many redirects one request follows.
+    const MAX_REDIRECTS: usize = 5;
+
+    /// GETs `url` on `agent`, following redirects by hand. ureq would
+    /// follow them itself and only show where it landed after it had
+    /// already sent the request there; here every hop's address is checked
+    /// before anything is sent to it, so a redirect can never make the game
+    /// reach a plain HTTP server, or a computer on the player's network.
+    fn call(
+        agent: &ureq::Agent,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<ureq::Response, FetchError> {
+        let mut current = url.to_string();
+        let mut same_origin = true;
+        for _ in 0..=MAX_REDIRECTS {
+            if !url_allowed(&current) {
+                return Err(FetchError::NotAllowed(current));
+            }
+            let mut request = agent.get(&current);
+            for (name, value) in headers {
+                if same_origin || !is_credential(name) {
+                    request = request.set(name, value);
+                }
+            }
+            let response = match request.call() {
+                Ok(response) => response,
+                Err(ureq::Error::Status(code, _)) => return Err(FetchError::Status(code)),
+                Err(e) => return Err(FetchError::Offline(e.kind().to_string())),
+            };
+            let status = response.status();
+            if !matches!(status, 301 | 302 | 303 | 307 | 308) {
+                if (300..400).contains(&status) {
+                    return Err(FetchError::Status(status));
+                }
+                return Ok(response);
+            }
+            let next = response
+                .header("location")
+                .and_then(|location| redirect_target(&current, location))
+                .ok_or_else(|| FetchError::Offline("a redirect to no usable address".into()))?;
+            same_origin = same_origin && origin(&current) == origin(&next);
+            current = next;
         }
-        Ok(response)
+        Err(FetchError::Offline("too many redirects".into()))
+    }
+
+    /// Where a redirect's `Location` points, read against the address that
+    /// sent it (it may be relative).
+    pub(super) fn redirect_target(from: &str, location: &str) -> Option<String> {
+        let base = url::Url::parse(from).ok()?;
+        Some(base.join(location.trim()).ok()?.to_string())
+    }
+
+    /// The scheme, host and port of `url`.
+    fn origin(url: &str) -> Option<url::Origin> {
+        url::Url::parse(url).ok().map(|u| u.origin())
+    }
+
+    /// Headers that are never sent on to another server.
+    fn is_credential(name: &str) -> bool {
+        ["authorization", "proxy-authorization", "cookie"]
+            .iter()
+            .any(|c| name.eq_ignore_ascii_case(c))
     }
 
     impl Fetch for HttpFetch {
@@ -139,14 +195,7 @@ mod http {
             headers: &[(&str, &str)],
             limit: u64,
         ) -> Result<Vec<u8>, FetchError> {
-            if !url_allowed(url) {
-                return Err(FetchError::NotAllowed(url.to_string()));
-            }
-            let mut request = self.small.get(url);
-            for (name, value) in headers {
-                request = request.set(name, value);
-            }
-            let response = call(request)?;
+            let response = call(&self.small, url, headers)?;
             let declared = response
                 .header("content-length")
                 .and_then(|v| v.trim().parse::<u64>().ok());
@@ -157,10 +206,7 @@ mod http {
         }
 
         fn open(&self, url: &str) -> Result<Body, FetchError> {
-            if !url_allowed(url) {
-                return Err(FetchError::NotAllowed(url.to_string()));
-            }
-            let response = call(self.download.get(url))?;
+            let response = call(&self.download, url, &[])?;
             let length = response
                 .header("content-length")
                 .and_then(|v| v.trim().parse::<u64>().ok());
@@ -198,6 +244,28 @@ mod tests {
         ] {
             assert!(!url_allowed(url), "{url}");
         }
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn redirects_are_read_against_the_address_that_sent_them() {
+        use super::http::redirect_target;
+        let from = "https://example.com/releases/v1/update.json";
+        for (location, to) in [
+            (
+                "https://cdn.example.net/a.zip",
+                "https://cdn.example.net/a.zip",
+            ),
+            ("/other/a.zip", "https://example.com/other/a.zip"),
+            ("a.zip", "https://example.com/releases/v1/a.zip"),
+            ("//cdn.example.net/a.zip", "https://cdn.example.net/a.zip"),
+        ] {
+            assert_eq!(redirect_target(from, location).as_deref(), Some(to));
+        }
+        // A plain HTTP target is still read; `call` refuses it before
+        // anything is sent there.
+        let plain = redirect_target(from, "http://192.168.1.1/admin").unwrap();
+        assert!(!url_allowed(&plain));
     }
 
     #[test]

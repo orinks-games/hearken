@@ -195,6 +195,12 @@ pub fn in_cargo_target(exe: &Path) -> bool {
 /// are removed when the next one is made.
 pub const STALE_STAGING: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// A staging folder whose update was being copied in holds the backup an
+/// unfinished copy is put back from (see [`crate::apply::recover_interrupted`]),
+/// so it is kept this long instead: the player may not start the game again
+/// for a while.
+pub const STALE_BACKUP: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// A new, empty folder under the system's temporary folder, that only this
 /// user can open. On Linux that folder is `/tmp`, shared by every user: the
 /// folder's name is random, it is made with `create_dir` (which never
@@ -281,6 +287,11 @@ pub fn sweep_stale_staging(base: &Path, prefix: &str, keep: &Path, older_than: D
             }
         }
         let _ = &mine;
+        let older_than = if path.join("backup").is_dir() {
+            older_than.max(STALE_BACKUP)
+        } else {
+            older_than
+        };
         let old = meta
             .modified()
             .ok()
@@ -459,7 +470,7 @@ fn remove_any(path: &Path) -> io::Result<()> {
 
 /// Copies a file, or a folder and everything in it, to `to`, which must not
 /// exist. Links are copied as links, never followed.
-fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(from)?;
     if meta.file_type().is_symlink() {
         #[cfg(unix)]
@@ -753,8 +764,12 @@ mod tests {
         // Nothing is old enough yet.
         sweep_stale_staging(base, "my-game", &keep, STALE_STAGING);
         assert!(old.is_dir());
+        // One holding a backup an unfinished update may need is kept longer.
+        let with_backup = make_staging_dir_in(base, "my-game").unwrap();
+        fs::create_dir(with_backup.join("backup")).unwrap();
         sweep_stale_staging(base, "my-game", &keep, Duration::ZERO);
         assert!(!old.exists());
+        assert!(with_backup.join("backup").is_dir());
         assert!(keep.is_dir() && other_game.is_dir() && file.is_file());
         assert_eq!(fs::read(outside.join("precious")).unwrap(), b"mine");
     }

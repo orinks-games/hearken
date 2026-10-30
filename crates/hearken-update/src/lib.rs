@@ -41,7 +41,7 @@ mod baked {
     include!(concat!(env!("OUT_DIR"), "/baked.rs"));
 }
 
-pub use apply::{apply_and_restart, apply_and_restart_with};
+pub use apply::{apply_and_restart, apply_and_restart_with, recover_interrupted, Recovery};
 pub use check::{check, CheckError, Refusal, Running, Update};
 pub use download::{download, DownloadError, IDLE_TIMEOUT};
 pub use extract::Limits;

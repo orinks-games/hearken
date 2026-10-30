@@ -13,7 +13,7 @@ build = "build.rs"
 default = ["http"]
 # The real HTTPS client. `hearken release` signs manifests with this crate
 # and leaves it off; the engine's `update` feature turns it on.
-http = ["dep:ureq"]
+http = ["dep:ureq", "dep:url"]
 
 # No audio, speech or window code, so `cargo test -p hearken-update` is quick.
 [dependencies]
@@ -28,6 +28,7 @@ flate2 = "1"
 tar = { version = "0.4", default-features = false }
 zip = { version = "2.6", default-features = false, features = ["deflate"] }
 ureq = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

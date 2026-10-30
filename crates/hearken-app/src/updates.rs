@@ -116,6 +116,34 @@ impl std::fmt::Debug for UpdateConfig {
     }
 }
 
+/// Puts the version before an update back when that update did not finish
+/// being copied in (the computer shut down part-way, or the copy failed).
+/// Runs as the game starts, before anything opens. Returns the line to
+/// tell the player, when there is one.
+pub fn recover_interrupted() -> Option<String> {
+    let install = Host::current().install();
+    match hearken_update::recover_interrupted(&install) {
+        Ok(hearken_update::Recovery::Nothing) => None,
+        Ok(hearken_update::Recovery::Restored) => Some(
+            "The last update did not finish installing, so the version before it was put back."
+                .to_string(),
+        ),
+        Ok(hearken_update::Recovery::NoBackup) => Some(
+            "The last update did not finish installing. If the game does not work as it \
+             should, download it again."
+                .to_string(),
+        ),
+        Err(e) => {
+            log::warn!("could not undo an unfinished update: {e}");
+            Some(
+                "The last update did not finish installing, and the version before it could \
+                 not be put back. If the game does not work as it should, download it again."
+                    .to_string(),
+            )
+        }
+    }
+}
+
 /// What a check found: an update, nothing newer (`Ok(None)`), or a line for
 /// the player saying why it could not tell.
 pub type CheckOutcome = Result<Option<Update>, String>;
