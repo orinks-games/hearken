@@ -135,6 +135,28 @@ fn a_packed_build_reads_its_pack_and_nothing_else() {
 }
 
 #[test]
+fn a_packed_mac_app_reads_the_pack_in_its_resources() {
+    let prefix = "HEARKEN_TEST_PACKED_MAC_APP";
+    let (dir, key) = packed_game(prefix);
+    let contents = dir.path().join("Game.app/Contents");
+    std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+    std::fs::create_dir_all(contents.join("Resources")).unwrap();
+    std::fs::rename(
+        dir.path().join(hearken_pack::FILE_NAME),
+        contents.join("Resources").join(hearken_pack::FILE_NAME),
+    )
+    .unwrap();
+    let mut found =
+        hearken_audio::discover_clips_from(prefix, Some(key), Some(&contents.join("MacOS")));
+    assert!(found.notice.is_none());
+    assert_eq!(
+        found.clips.load("door").as_deref(),
+        Some(&b"packed door"[..])
+    );
+    std::env::remove_var(format!("{prefix}_SOUNDS"));
+}
+
+#[test]
 fn a_packed_build_with_a_missing_or_damaged_pack_plays_nothing_loose() {
     let prefix = "HEARKEN_TEST_PACK_DAMAGED";
     let (dir, key) = packed_game(prefix);
