@@ -140,6 +140,16 @@ jobs:
       - name: Online clippy
         if: runner.os == 'Linux'
         run: cargo clippy -p hearken-app --features online --all-targets --locked -- -D warnings
+      # Updates are behind a feature as well. Every runner: the install
+      # layouts and apply scripts differ on each system.
+      - name: Update tests
+        run: cargo test -p hearken-app --features update --locked
+      - name: Update clippy
+        run: cargo clippy -p hearken-app --features update --all-targets --locked -- -D warnings
+      # hearken release signs with hearken-update and no HTTP client.
+      - name: Update crate without HTTP
+        if: runner.os == 'Linux'
+        run: cargo clippy -p hearken-update --no-default-features --all-targets --locked -- -D warnings
 
   # Verified runs: the replay crate builds for WebAssembly, and the server
   # library verifies the runs its Rust tests record with the real module.
