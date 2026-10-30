@@ -403,6 +403,42 @@ fn only_check_for_updates_looks_for_the_files_the_player_has() {
     assert!(w.table.1.lock().unwrap().contains(&index_url));
 }
 
+/// An update the check at start found, with a file index, is checked
+/// again from Settings' "Install version" row, so its offer and download
+/// take only the files that changed.
+#[test]
+fn installing_from_settings_looks_for_the_files_the_player_has() {
+    let mut w = world();
+    let index_url = publish_indexed(&w);
+    let settings = w.h.app.ctx.settings.updates.clone();
+    w.h.app.ctx.updates.check_at_start(&settings);
+    frames_until(&mut w.h, "Patched version 1.1.0 is available.");
+    assert!(!w.table.1.lock().unwrap().contains(&index_url));
+    w.h.app.ctx.reset_to(SettingsScreen::<Patched>::new());
+    w.h.frame(0.016);
+    for _ in 0..40 {
+        if w.h
+            .spoken()
+            .last()
+            .is_some_and(|l| l.contains("Install version"))
+        {
+            break;
+        }
+        w.h.press(Key::Down);
+        w.h.frame(0.016);
+    }
+    assert!(
+        w.h.spoken()
+            .last()
+            .is_some_and(|l| l.contains("Install version")),
+        "{:?}",
+        w.h.spoken()
+    );
+    w.h.press(Key::Return);
+    frames_until(&mut w.h, "Update available");
+    assert!(w.table.1.lock().unwrap().contains(&index_url));
+}
+
 #[test]
 fn escape_cancels_a_download() {
     let mut w = world();

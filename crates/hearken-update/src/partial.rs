@@ -432,10 +432,14 @@ pub fn download_and_stage_with(
     if let Some(plan) = &update.plan {
         phase(Phase::Downloading);
         let partial = partial(
-            update, plan, fetch, staging, install, limits, progress, phase, cancelled, idle,
+            update, plan, fetch, staging, limits, progress, phase, cancelled, idle,
         );
         match partial {
-            Ok(staged) => return Ok(staged),
+            // Past here the update is unpacked as a whole download would
+            // have unpacked it: a refusal of what it holds (no program
+            // under the same name) would be the same after a whole
+            // download, so it is not a reason to make one.
+            Ok(()) => return Ok(install::staged_from(staging, install)?),
             Err(_) if cancelled.load(Ordering::SeqCst) => return Err(DownloadError::Cancelled),
             Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
             Err(e) => {
@@ -524,13 +528,12 @@ fn partial(
     plan: &Plan,
     fetch: &dyn Fetch,
     staging: &Path,
-    install: &Install,
     limits: Limits,
     progress: &mut dyn FnMut(u64, u64),
     phase: &mut dyn FnMut(Phase),
     cancelled: &AtomicBool,
     idle: Duration,
-) -> Result<Staged, DownloadError> {
+) -> Result<(), DownloadError> {
     let manifest = &update.manifest;
     if plan.index.archive_size != manifest.size || plan.index.archive_sha256 != manifest.sha256 {
         return Err(off("the plan is for another archive"));
@@ -620,7 +623,7 @@ fn partial(
         }
     })?;
     fs::remove_file(&path)?;
-    Ok(install::staged_from(staging, install)?)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -958,6 +961,26 @@ mod tests {
             assert!(pair[0].end < pair[1].start);
         }
         assert_eq!(plan.ranges.last().unwrap().end, size);
+    }
+
+    /// An update unpacked from parts that lacks the running program is
+    /// refused as it is, with no whole download after it: the whole archive
+    /// holds the same files.
+    #[test]
+    fn an_update_without_the_program_is_not_downloaded_again() {
+        let mut f = fixture();
+        let server = f.server(Mode::Honest);
+        let update = f.planned(&server);
+        let Install::Folder { dir, .. } = &f.install else {
+            unreachable!()
+        };
+        f.install = Install::Folder {
+            dir: dir.clone(),
+            exe: "other.exe".into(),
+        };
+        assert!(f.stage_with(&update, &server).is_err());
+        assert!(!server.range_requests.lock().unwrap().is_empty());
+        assert_eq!(*server.whole_downloads.lock().unwrap(), 0);
     }
 
     #[test]

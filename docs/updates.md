@@ -76,8 +76,9 @@ speech code. The screens are in `hearken-app`, behind its `update` feature.
 - **Settings rows**: "Check for updates" (it reads "Install version 1.4.0"
   once the check at start found one), "Update channel" when the game has
   more than one, and "Check for updates at start".
-- **The offer**: the version, its download size and the player's own version, then
-  Download and restart, What's new, Remind me later, and Skip this version.
+- **The offer**: the version, its download size and the player's own
+  version, then Download and restart, What's new, Remind me later, and Skip
+  this version.
   A skipped version is not offered at start again; a later one is, and the
   player can still install the skipped one from Settings.
 - **What's new**: the release notes, a line at a time with Up and Down, or
@@ -228,23 +229,24 @@ player back to a version with a known flaw.
    SHA-256 is checked against the signed one before anything opens it. A
    server that declares another size is refused at once.
 
-   With a file index, the check (off the game loop) first fetches the
-   index, the way the archive is fetched (it can be megabytes for a big
-   game, so a slow line gets as long as it needs, and only a connection
-   that goes quiet gives up), refuses it unless it is the size and SHA-256 the manifest signed
-   and describes that very archive, then looks for each file of 64 KB or
-   more where the install has it (below the archive's top folder, and for
-   a Mac app below the app, as the update is laid out once unpacked). A
-   file is kept only when it is the same size and its SHA-256, computed
-   from the player's copy, is the signed one; the zip's CRC-32 is never
-   trusted. When that saves at least a megabyte, the download fetches only
-   the rest with range requests: every other entry and the zip's central
-   directory, nearby parts in one request, at most 1,000 requests. Nothing
-   of a kept file is fetched, not even its local header, so a run of kept
-   files between two changed ones costs no request; a thousand kept sounds
-   and one changed file is two or three requests, not a thousand. Each answer must be exactly the part asked for
-   (status 206, the right `Content-Range`, no byte more or fewer), and the
-   central directory must match the SHA-256 the index signs.
+   With a file index, the check (off the game loop) first fetches the index,
+   the way the archive is fetched (it can be megabytes for a big game, so a
+   slow line gets as long as it needs, and only a connection that goes quiet
+   gives up), refuses it unless it is the size and SHA-256 the manifest
+   signed and describes that very archive, then looks for each file of 64 KB
+   or more where the install has it (below the archive's top folder, and for
+   a Mac app below the app, as the update is laid out once unpacked). A file
+   is kept only when it is the same size and its SHA-256, computed from the
+   player's copy, is the signed one; the zip's CRC-32 is never trusted. When
+   that saves at least a megabyte, the download fetches only the rest with
+   range requests: every other entry and the zip's central directory, nearby
+   parts in one request, at most 1,000 requests. Nothing of a kept file is
+   fetched, not even its local header, so a run of kept files between two
+   changed ones costs no request; a thousand kept sounds and one changed
+   file is two or three requests, not a thousand. Each answer must be
+   exactly the part asked for (status 206, the right `Content-Range`, no
+   byte more or fewer), and the central directory must match the SHA-256 the
+   index signs.
 
    The parts are written at their places in a file of the archive's
    signed size, the gaps left empty, and that is unpacked by the same code
@@ -254,8 +256,8 @@ player back to a version with a known flaw.
    entry's data starts, is written in as a stand-in that says just its
    length; that start must still be where the index signs it, and the
    entry's name, kind and mode come from the signed central directory.
-   Every entry must be where the index says. A file, downloaded or copied, is
-   cut off one byte past its signed size, so a tampered part cannot
+   Every entry must be where the index says. A file, downloaded or copied,
+   is cut off one byte past its signed size, so a tampered part cannot
    unpack to more than the file it stands for; Escape is heard while a
    file is being written, not only between files. Every file and link
    written must then be the signed size and SHA-256, read back from the
@@ -384,7 +386,9 @@ player back to a version with a known flaw.
   screen says "Found an update. Checking which files you already have.",
   and Escape stops it. The check at start never does this: it only says
   whether there is an update, so a skipped version or a quiet game's
-  check costs no more than the manifest.
+  check costs no more than the manifest. Choosing "Install version 1.4.0"
+  in Settings after it found one runs Check for updates again, so the
+  offer gives the smaller size.
 - **The partial download still takes the archive's size on disk.** It is
   put together in a file of the archive's full size (the gaps are sparse
   where the system allows), then unpacked as a whole one is.

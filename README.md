@@ -283,10 +283,12 @@ cargo install --git https://github.com/orinks-games/hearken hearken-cli
 - `hearken seal-key <game>` shows where a sealing game's key is kept and
   its ID; `--print` shows the key itself, for a CI secret.
 - For a game with `update = true`, `hearken release` also writes a signed
-  update manifest beside the archive (`update-stable-linux-x64.json`);
-  `--channel=beta` publishes on another channel and `--notes=NOTES.md` adds
-  release notes. `hearken update-key <game>` shows the update key, as
-  `seal-key` does. See Updates.
+  update manifest beside the archive (`update-stable-linux-x64.json`), and
+  for a zip a file index (`my-game-1.4.0-windows-x64.index.json`) that lets
+  players download only the files that changed; `--channel=beta`
+  publishes on another channel and `--notes=NOTES.md` adds release notes.
+  `hearken update-key <game>` shows the update key, as `seal-key` does.
+  See Updates.
 
 The command knows no games of its own: a game is its GitHub repository or
 a folder on this computer.
