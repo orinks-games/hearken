@@ -32,6 +32,8 @@ hearken-radio = { path = "crates/hearken-radio" }
 hearken-voice = { path = "crates/hearken-voice" }
 hearken-replay = { path = "crates/hearken-replay" }
 hearken-discord = { path = "crates/hearken-discord" }
+# The engine side turns on `http`; `hearken release` only signs.
+hearken-update = { path = "crates/hearken-update", default-features = false }
 kira = { version = "0.12", default-features = false, features = ["cpal", "symphonia"] }
 # Kira's own versions: hearken-audio opens the device itself.
 cpal = "0.18"
