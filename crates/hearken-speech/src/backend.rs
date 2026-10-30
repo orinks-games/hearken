@@ -317,7 +317,7 @@ impl VoiceRegistry for PrismRegistry {
         // Prism's VoiceOver can hang the main thread for minutes; see
         // `crate::voiceover`.
         #[cfg(target_os = "macos")]
-        if self.name_of(id).as_deref() == Some(crate::voiceover::NAME) {
+        if self.name_of(id).as_deref() == Some(crate::voiceover::REGISTRY_NAME) {
             return Ok(Box::new(crate::voiceover::VoiceOverAnnouncer::open()?));
         }
         let shared = &self.shared;

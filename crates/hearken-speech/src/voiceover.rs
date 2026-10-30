@@ -19,6 +19,10 @@ use objc2::{class, msg_send};
 
 use crate::backend::{SpeechError, VoiceBackend, VoiceFeatures};
 
+/// The name Prism registers its VoiceOver backend under, which this
+/// backend stands in for.
+pub const REGISTRY_NAME: &str = "VoiceOver";
+
 /// The backend's name: the same as Prism's, so selection and the startup
 /// hold for VoiceOver treat it the same.
 pub const NAME: &str = "VoiceOver (macOS)";
