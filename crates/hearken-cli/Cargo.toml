@@ -27,3 +27,5 @@ ureq = { workspace = true, features = ["json"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+# Writes a zip for the release's file index test.
+zip = { version = "2.6", default-features = false, features = ["deflate"] }
