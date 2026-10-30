@@ -245,6 +245,8 @@ mod tests {
             pack: true,
             seal: false,
             seal_id: None,
+            update: false,
+            update_key: None,
             include: Vec::new(),
             rules: None,
             app_name: "Wicket's".into(),

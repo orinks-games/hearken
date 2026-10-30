@@ -14,7 +14,8 @@
 //!   [`Limits::bytes`] in all, counted as they are written, whatever the
 //!   archive's headers claim.
 //!
-//! A `__MACOSX` folder (Finder's resource forks) is skipped.
+//! A `__MACOSX` folder and `._` files (macOS resource forks and extended
+//! attributes) are skipped.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -85,11 +86,16 @@ fn safe_link_target(target: &str) -> bool {
             .all(|part| part != ".." && !part.contains(':'))
 }
 
-/// Whether to skip an entry: Finder's resource-fork folder.
+/// Whether to skip an entry: Finder's resource-fork folder, or an
+/// AppleDouble file (`._name`) that `ditto` writes for a file's extended
+/// attributes. Inside an app those would break its code signature.
 fn skipped(path: &Path) -> bool {
     path.components()
         .next()
         .is_some_and(|c| c.as_os_str() == "__MACOSX")
+        || path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("._"))
 }
 
 /// What one entry is.
@@ -448,11 +454,13 @@ pub(crate) mod tests {
                 ("game-1.0.0/", b""),
                 ("game-1.0.0/game.exe", b"MZ"),
                 ("__MACOSX/._game.exe", b"junk"),
+                ("game-1.0.0/._game.exe", b"junk"),
             ],
         );
         let dest = dir.path().join("out");
         unpack(&archive, &dest).unwrap();
         assert!(!dest.join("__MACOSX").exists());
+        assert!(!dest.join("game-1.0.0/._game.exe").exists());
         assert_eq!(unpacked_root(&dest).unwrap(), dest.join("game-1.0.0"));
         // No wrapper folder: the files are the root.
         let flat = dir.path().join("flat.zip");
