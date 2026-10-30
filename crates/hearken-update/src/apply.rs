@@ -280,7 +280,7 @@ fn backup_dir(staging: &Path, windows: bool) -> PathBuf {
     if windows {
         PathBuf::from(format!("{}\\backup", staging.display()))
     } else {
-        staging.join("backup")
+        PathBuf::from(format!("{}/backup", staging.display()))
     }
 }
 

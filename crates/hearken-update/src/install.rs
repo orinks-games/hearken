@@ -519,7 +519,8 @@ mod tests {
     #[test]
     fn installs_are_found_from_the_program() {
         let dir = tempfile::tempdir().unwrap();
-        let root = fs::canonicalize(dir.path()).unwrap();
+        // Windows canonical paths start `\\?\`, which the install drops.
+        let root = strip_verbatim(fs::canonicalize(dir.path()).unwrap());
         let exe = root.join("my-game");
         fs::write(&exe, b"").unwrap();
         assert_eq!(
