@@ -76,12 +76,17 @@ speech code. The screens are in `hearken-app`, behind its `update` feature.
 - **Settings rows**: "Check for updates" (it reads "Install version 1.4.0"
   once the check at start found one), "Update channel" when the game has
   more than one, and "Check for updates at start".
-- **The offer**: the version, its size and the player's own version, then
+- **The offer**: the version, its download size and the player's own version, then
   Download and restart, What's new, Remind me later, and Skip this version.
   A skipped version is not offered at start again; a later one is, and the
   player can still install the skipped one from Settings.
 - **What's new**: the release notes, a line at a time with Up and Down, or
   all at once with Enter.
+- **Only the files that changed**, for a zip release (Windows and Mac):
+  files the player already has, byte for byte, are kept rather than
+  downloaded, and the offer gives the smaller size ("3 megabytes of
+  changes"). If that does not work out, the whole update downloads
+  instead, and the game says so.
 - **The download**: spoken at 25, 50 and 75 percent; Tab reads progress;
   Escape cancels at once and leaves the game as it was. A transfer that
   goes quiet for a minute stops and says so. Once it is checked and
@@ -108,7 +113,11 @@ writes its own manifest. `hearken release` writes, in `dist/`:
 
 - the archive, `my-game-1.4.0-windows-x64.zip` (or `linux-x64.tar.gz`,
   `macos-arm64.zip`, `macos.zip` for Intel Macs);
-- its signed manifest, `update-stable-windows-x64.json`.
+- for a zip, its file index, `my-game-1.4.0-windows-x64.index.json`: each
+  file in the archive, its size and SHA-256, and where its bytes are, so a
+  player's copy can download only the files that changed;
+- its signed manifest, `update-stable-windows-x64.json`, which signs the
+  index's size and SHA-256 too.
 
 `--channel=beta` publishes on another channel, and `--notes=NOTES.md` puts
 release notes (Markdown) in the manifest.
@@ -117,8 +126,9 @@ release notes (Markdown) in the manifest.
 hearken release --channel=stable --notes=NOTES.md
 ```
 
-Upload both files, on every platform, under the names `hearken release`
-gave them:
+Upload the files, on every platform, under the names `hearken release`
+gave them. The index is optional: without it, or if it cannot be fetched,
+players download the whole archive.
 
 - **GitHub**: as assets of one release. A player's copy reads the
   repository's newest 100 releases, newest first, and takes the first that
@@ -130,11 +140,17 @@ gave them:
   URL may contain `{platform}`, `{channel}` and `{game}` (the package
   name), filled in on each check, so
   `https://example.com/my-game/update-{channel}-{platform}.json` finds
-  `update-stable-linux-x64.json` there. The archive is fetched from the
-  same folder. Overwrite the manifest with each release.
+  `update-stable-linux-x64.json` there. The archive and its index are
+  fetched from the same folder. Overwrite the manifest with each release.
+
+Downloading only the changed files needs a host that answers HTTP range
+requests (asking for part of a file), as GitHub, S3, most CDNs and most
+web servers do. A host that does not still works: the whole archive
+downloads.
 
 A manifest may also name its archive's full HTTPS URL (`url`), to keep the
-archives on another host; `hearken release` leaves it out.
+archives on another host; `hearken release` leaves it out. The index is
+always beside the manifest.
 
 Redirects are followed (GitHub's asset links redirect to its file
 storage), up to five, but each address is checked before anything is sent
@@ -191,6 +207,11 @@ fields:
 | `sha256` | The archive's SHA-256, in lowercase hex. |
 | `notes` | Release notes, as Markdown. |
 | `published` | Optional: when it was released, RFC 3339. |
+| `index` | Optional, for a zip: the file index's name (`file`), size and SHA-256. |
+
+Copies made before `index` existed ignore it, as they ignore any field they
+do not know, and download the whole archive. A manifest without it is a
+whole download for every copy.
 
 `key` only tells a developer which key signed a file; the game ignores it.
 
@@ -206,6 +227,38 @@ player back to a version with a known flaw.
 1. The archive is downloaded, never more than its signed size, and its
    SHA-256 is checked against the signed one before anything opens it. A
    server that declares another size is refused at once.
+
+   With a file index, the check (off the game loop) first fetches the
+   index, refuses it unless it is the size and SHA-256 the manifest signed
+   and describes that very archive, then looks for each file of 64 KB or
+   more where the install has it (below the archive's top folder, and for
+   a Mac app below the app, as the update is laid out once unpacked). A
+   file is kept only when it is the same size and its SHA-256, computed
+   from the player's copy, is the signed one; the zip's CRC-32 is never
+   trusted. When that saves at least a megabyte, the download fetches only
+   the rest with range requests: every other entry, the kept files' local
+   headers, and the zip's central directory, nearby parts in one request,
+   at most 1,000 requests. Each answer must be exactly the part asked for
+   (status 206, the right `Content-Range`, no byte more or fewer), and the
+   central directory must match the SHA-256 the index signs.
+
+   The parts are written at their places in a file of the archive's
+   signed size, the gaps left empty, and that is unpacked by the same code
+   and with the same checks as a whole archive (step 2), except that each
+   kept file is copied from the install instead of read from a gap. Every
+   entry must be where the index says. Every file and link written,
+   downloaded or copied, must then be the signed size and SHA-256, read
+   back from the disk, so the folder holds exactly what a whole download
+   would have unpacked, with the same modes and links.
+
+   Anything off, and the whole archive is downloaded after all, with
+   everything above: a server that ignores ranges (answers 200) or sends
+   another range, a short or long answer, a redirect it cannot follow, a
+   hash that does not match, a kept file that changed, went or became a
+   link since the check, or any other error. Only Escape stops it. A
+   tar.gz (Linux) and an AppImage always download whole. A game's own
+   `Fetch` gets ranges only if it implements `supports_ranges` and
+   `open_range`; one that predates them downloads whole.
 2. It is unpacked into a new folder under the system's temporary folder,
    as untrusted input even though it is signed: no entry may have an
    absolute path, a drive, `..` or `:`, nor on Windows a device name
@@ -305,8 +358,21 @@ player back to a version with a known flaw.
 - **Windows waits by process ID**, polling `tasklist` once a second. If the
   game's ID is taken by another process within that second, the script
   waits for that one too, up to five minutes.
-- **The whole archive downloads every time.** There are no partial or delta
-  updates, and a stopped download starts again from the beginning.
+- **Only whole files are kept.** A file that changed by one byte downloads
+  in full; there are no binary deltas. Files under 64 KB always download,
+  as does everything on Linux (a tar.gz cannot be read in parts). A
+  stopped download starts again from the beginning.
+- **A partial download that fails costs both.** The parts already fetched
+  are thrown away and the whole archive downloads, so the player may get
+  a little more than the archive's size. The offer gives the smaller
+  size.
+- **Finding the kept files reads them.** The check hashes each install
+  file of 64 KB or more that the update has at the same size, which on a
+  big install takes a few seconds of disk work each time an update is
+  found. It runs off the game loop.
+- **The partial download still takes the archive's size on disk.** It is
+  put together in a file of the archive's full size (the gaps are sparse
+  where the system allows), then unpacked as a whole one is.
 - **Extended attributes are dropped** from a Mac app's files when it is
   unpacked. Hearken apps keep nothing there, and their code signature does
   not cover them.

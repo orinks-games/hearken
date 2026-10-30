@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use hearken_update::{DownloadError, Install, Limits, Staged, Update};
+use hearken_update::{DownloadError, Install, Limits, Phase, Staged, Update};
 
 use crate::ctx::Ctx;
 use crate::game::Game;
@@ -26,6 +26,17 @@ pub fn megabytes(bytes: u64) -> String {
         0 => "less than 1 megabyte".to_string(),
         1 => "1 megabyte".to_string(),
         n => format!("{n} megabytes"),
+    }
+}
+
+/// What downloading `update` takes, as spoken: "12 megabytes", or, when
+/// this copy has some of its files already, "3 megabytes of changes".
+pub fn download_size(update: &Update) -> String {
+    let size = megabytes(update.download_size());
+    if update.plan.is_some() {
+        format!("{size} of changes")
+    } else {
+        size
     }
 }
 
@@ -180,7 +191,7 @@ impl<G: Game> Menu for UpdatePromptScreen<G> {
         ctx.say(format!(
             "Update available: {}, {}.{current}",
             ctx.updates.title(&self.update),
-            megabytes(self.update.size())
+            download_size(&self.update)
         ));
         let row = self.current_text(ctx);
         ctx.say_queued(row);
@@ -326,11 +337,15 @@ pub struct UpdateDownloadScreen {
     cancelled: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     outcome: Arc<Mutex<Outcome>>,
-    /// Bytes received so far.
+    /// Bytes received so far, and of how many: fewer than the archive when
+    /// only the changed files download.
     bytes: Arc<AtomicU64>,
+    total: Arc<AtomicU64>,
     phase: Arc<AtomicU8>,
     install: Option<Install>,
     spoken_quarter: u64,
+    /// The total the screen last spoke progress against.
+    seen_total: u64,
     started: bool,
     finished: bool,
     seen_bytes: u64,
@@ -341,7 +356,9 @@ pub struct UpdateDownloadScreen {
 
 impl UpdateDownloadScreen {
     pub fn new(update: Update) -> Self {
+        let size = update.download_size();
         UpdateDownloadScreen {
+            total: Arc::new(AtomicU64::new(size)),
             update,
             cancelled: Arc::new(AtomicBool::new(false)),
             done: Arc::new(AtomicBool::new(false)),
@@ -350,6 +367,7 @@ impl UpdateDownloadScreen {
             phase: Arc::new(AtomicU8::new(PHASE_DOWNLOADING)),
             install: None,
             spoken_quarter: 0,
+            seen_total: size,
             started: false,
             finished: false,
             seen_bytes: 0,
@@ -361,7 +379,7 @@ impl UpdateDownloadScreen {
 
     /// The share downloaded, 0 to 1.
     pub fn progress(&self) -> f64 {
-        let size = self.update.size().max(1);
+        let size = self.total.load(Ordering::SeqCst).max(1);
         (self.bytes.load(Ordering::SeqCst) as f64 / size as f64).min(1.0)
     }
 
@@ -386,11 +404,12 @@ impl UpdateDownloadScreen {
             .running()
             .map_or_else(|| "hearken".to_string(), |r| r.game.clone());
         let update = self.update.clone();
-        let (cancelled, done, outcome, bytes, phase) = (
+        let (cancelled, done, outcome, bytes, total, phase) = (
             self.cancelled.clone(),
             self.done.clone(),
             self.outcome.clone(),
             self.bytes.clone(),
+            self.total.clone(),
             self.phase.clone(),
         );
         let spawned = std::thread::Builder::new()
@@ -402,20 +421,26 @@ impl UpdateDownloadScreen {
                     staging_dir = Some(staging.clone());
                     outcome.lock().unwrap_or_else(|e| e.into_inner()).staging =
                         Some(staging.clone());
-                    let archive = hearken_update::download(
+                    // Only the changed files when it can, else the whole
+                    // archive: the same update staged either way.
+                    let staged = hearken_update::download_and_stage(
                         &update,
                         fetch.as_ref(),
                         &staging,
-                        &mut |done, _| bytes.store(done, Ordering::SeqCst),
-                        &cancelled,
-                    )?;
-                    phase.store(PHASE_UNPACKING, Ordering::SeqCst);
-                    let staged = hearken_update::stage(
-                        &archive,
-                        &staging,
                         &install,
                         Limits::default(),
-                        Some(&cancelled),
+                        &mut |done, of| {
+                            total.store(of, Ordering::SeqCst);
+                            bytes.store(done, Ordering::SeqCst);
+                        },
+                        &mut |now| {
+                            let code = match now {
+                                Phase::Downloading => PHASE_DOWNLOADING,
+                                Phase::Unpacking => PHASE_UNPACKING,
+                            };
+                            phase.store(code, Ordering::SeqCst);
+                        },
+                        &cancelled,
                     )?;
                     if cancelled.load(Ordering::SeqCst) {
                         return Err(DownloadError::Cancelled);
@@ -478,6 +503,12 @@ impl UpdateDownloadScreen {
 
     /// The stall and unpack watchdogs, on this screen's own clock.
     fn watch<G: Game>(&mut self, ctx: &mut Ctx<G>, dt: f64) {
+        if !self.unpacking() && self.unpack_spoken {
+            // Back to downloading: the whole update, after all.
+            self.unpack_spoken = false;
+            self.unpack_s = 0.0;
+            self.idle_s = 0.0;
+        }
         if self.unpacking() {
             if !self.unpack_spoken {
                 self.unpack_spoken = true;
@@ -610,7 +641,7 @@ impl<G: Game> State<G> for UpdateDownloadScreen {
         ctx.say(format!(
             "Downloading {}, {}. The game restarts when it is done. Escape cancels.",
             ctx.updates.title(&self.update),
-            megabytes(self.update.size())
+            download_size(&self.update)
         ));
         self.start(ctx);
     }
@@ -618,6 +649,18 @@ impl<G: Game> State<G> for UpdateDownloadScreen {
     fn update(&mut self, ctx: &mut Ctx<G>, dt: f64) {
         if self.finished {
             return;
+        }
+        let total = self.total.load(Ordering::SeqCst);
+        if total != self.seen_total {
+            // Only the changed files did not work out, and the whole
+            // update downloads instead, from the start.
+            self.seen_total = total;
+            self.spoken_quarter = 0;
+            self.idle_s = 0.0;
+            ctx.say_queued(format!(
+                "Downloading the whole update instead, {}.",
+                megabytes(total)
+            ));
         }
         let quarter = (self.progress() * 4.0) as u64;
         if quarter > self.spoken_quarter && quarter < 4 {

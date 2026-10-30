@@ -337,6 +337,7 @@ impl Updates {
         let running = self.running.clone()?;
         let source = config.source.clone();
         let fetch = self.fetch.clone();
+        let host = self.host.clone();
         let wanted = channel.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
@@ -344,6 +345,16 @@ impl Updates {
             .spawn(move || {
                 let outcome =
                     hearken_update::check(source.as_ref(), fetch.as_ref(), &running, &wanted)
+                        .map(|found| {
+                            // Which files this copy already has, so the
+                            // offer gives the smaller download. Hashing
+                            // them takes a while; it is on this thread.
+                            found.map(|mut update| {
+                                update.plan =
+                                    hearken_update::plan(&update, fetch.as_ref(), &host.install());
+                                update
+                            })
+                        })
                         .map_err(|e| {
                             log::warn!("update check of {}: {e}", source.describe());
                             check_error_line(&e)
