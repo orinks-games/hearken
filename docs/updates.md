@@ -138,10 +138,12 @@ archives on another host; `hearken release` leaves it out.
 
 Redirects are followed (GitHub's asset links redirect to its file
 storage), up to five, but each address is checked before anything is sent
-to it: a redirect to plain HTTP, or to anything but HTTPS or this computer,
-ends the request there. Credentials a custom source sends (an
-`Authorization` or `Cookie` header) are dropped once a redirect leaves the
-server they were meant for.
+to it: a redirect to plain HTTP ends the request there, and so does one
+from a server elsewhere to this computer (`localhost`) or to a private,
+link-local or loopback IP address, such as the player's router. A source on
+this computer, a developer's test server, may redirect within it.
+Credentials a custom source sends (an `Authorization` or `Cookie` header)
+are dropped once a redirect leaves the server they were meant for.
 
 ## Keys
 
@@ -206,7 +208,8 @@ player back to a version with a known flaw.
    server that declares another size is refused at once.
 2. It is unpacked into a new folder under the system's temporary folder,
    as untrusted input even though it is signed: no entry may have an
-   absolute path, a drive, `..` or `:`; only files, folders and links are
+   absolute path, a drive, `..` or `:`, nor on Windows a device name
+   (`CON`, `NUL`, `COM1` and the like) or a trailing dot or space; only files, folders and links are
    allowed, never devices, pipes or hard links; a link must point down from
    where it is, and nothing is written through one; at most 200,000 entries,
    and at most 20 times the archive's size (never less than 32 MB, never
@@ -239,19 +242,19 @@ player back to a version with a known flaw.
      the one it replaces and renamed over it, and what the update added is
      removed. The player is told the update did not finish. Stopped again
      during that, it simply happens again at the next start. A folder that
-     holds such a backup is kept for 30 days rather than one.
-     The `saves` folder of a portable copy is never copied either way. On
-     Windows the script uses
-     robocopy, which refuses `\\?\` paths, so they are written in their
-     plain form; a `%` in a path is doubled for cmd, and `$`, backticks,
-     backslashes and quotes are escaped for sh.
+     holds such a backup is kept for 30 days rather than one. The `saves`
+     folder of a portable copy is never copied either way. On Windows the
+     script uses robocopy, which refuses `\\?\` paths, so they are written
+     in their plain form; a `%` in a path is doubled for cmd, and `$`,
+     backticks, backslashes and quotes are escaped for sh.
    - **A Mac app**: the whole app is swapped. The new app is first copied
      in beside the old one (`My Game.app.update-new`), so a copy that fails
      or is stopped leaves the old app as it was. Then the old app is moved
      aside (`My Game.app.old`), the new one renamed into its place, and the
-     old one removed; if the rename fails, the old app is moved back. An app running from App Translocation (opened straight from a
-     quarantined download) is never swapped: the player is told where the
-     new one is saved instead.
+     old one removed; if the rename fails, the old app is moved back. An
+     app running from App Translocation (opened straight from a quarantined
+     download) is never swapped: the player is told where the new one is
+     saved instead.
    - **An AppImage**: the file itself is swapped, by copying the new one in
      beside it and renaming it over the old one. The mount it runs from is
      never touched. `hearken release` does not make AppImages; a game that
@@ -265,8 +268,13 @@ player back to a version with a known flaw.
   rotation: a new key needs players to download a release by hand.
 - **Freezing.** A host, or anyone between it and the player, can keep
   serving an old manifest, or none, or redirect the game to another HTTPS
-  server that does. The game then offers nothing newer; it
-  never installs anything older. Manifests carry no expiry.
+  server that does. The game then offers nothing newer; it never installs
+  anything older. Manifests carry no expiry.
+- **Redirects are checked by address, not by where a name leads.** A
+  redirect to a name (not an IP address) is followed even when that name
+  resolves to the player's own network. Only a GET is sent, nothing the
+  game reads from it is trusted unless it is signed, and an HTTPS server on
+  the player's network would also need a certificate for that name.
 - **The same version is never offered again.** Rebuilding `1.4.0` and
   publishing it under the same version reaches no one who has `1.4.0`; bump
   the version.

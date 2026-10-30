@@ -5,7 +5,8 @@
 //! had: a slip in a release script, or a stolen key, should not be able to
 //! write outside the folder it is unpacked into. So every entry is checked:
 //!
-//! - its path is relative, with no `..`, no drive or root, and no `:`;
+//! - its path is relative, with no `..`, no drive or root, and no `:`,
+//!   and on Windows no device name (`CON`, `NUL`) or trailing dot or space;
 //! - it is a file, a folder or a symbolic link, never a device, a pipe or a
 //!   hard link;
 //! - a link points down from where it is (no `..`, not absolute), and no
@@ -94,6 +95,7 @@ pub fn safe_path(name: &str) -> Option<PathBuf> {
             ".." => return None,
             // A drive (`C:`) or an alternate data stream (`file:stream`).
             part if part.contains(':') => return None,
+            part if cfg!(windows) && !windows_plain_name(part) => return None,
             part => out.push(part),
         }
     }
@@ -102,6 +104,29 @@ pub fn safe_path(name: &str) -> Option<PathBuf> {
         return None;
     }
     Some(out)
+}
+
+/// Whether Windows would open `part` as the file it names. `CON`, `NUL`,
+/// `COM1` and the like (with any extension) open a device instead, and a
+/// trailing dot or space is dropped, so `a.` would land on `a`. Only
+/// Windows refuses these: a game elsewhere may well ship `aux.ogg`.
+pub fn windows_plain_name(part: &str) -> bool {
+    if part.ends_with(['.', ' ']) {
+        return false;
+    }
+    let stem = part.split('.').next().unwrap_or(part).trim_end();
+    let stem = stem.to_ascii_uppercase();
+    let numbered = (stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem.chars().count() == 4
+        && stem
+            .chars()
+            .nth(3)
+            .is_some_and(|c| c.is_ascii_digit() || matches!(c, '¹' | '²' | '³'));
+    let named = matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    );
+    !(named || numbered)
 }
 
 /// Whether a link's target stays below the link: relative, no `..`.
@@ -437,6 +462,27 @@ pub(crate) mod tests {
             Some(PathBuf::from("game/sounds/a.ogg"))
         );
         assert_eq!(safe_path("dir/"), Some(PathBuf::from("dir")));
+    }
+
+    #[test]
+    fn windows_device_names_are_not_plain_there() {
+        for name in [
+            "CON", "nul", "aux.ogg", "Com1", "lpt9.txt", "COM¹", "conin$", "a.", "a ",
+        ] {
+            assert!(!windows_plain_name(name), "{name:?}");
+        }
+        for name in [
+            "console.ogg",
+            "com10",
+            "lpt",
+            "auxiliary",
+            "a.b",
+            "nul_ref.txt",
+        ] {
+            assert!(windows_plain_name(name), "{name:?}");
+        }
+        // Only Windows refuses them: elsewhere they are ordinary files.
+        assert_eq!(safe_path("game/aux.ogg").is_none(), cfg!(windows));
     }
 
     #[test]

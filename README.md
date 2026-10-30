@@ -614,7 +614,8 @@ What the engine does with it:
 ## Updates
 
 A released game can update itself from wherever its developer publishes:
-GitHub releases, any HTTPS host, or a source the game writes. Turn on `hearken`'s `update` feature, set `update = true` under
+GitHub releases, any HTTPS host, or a source the game writes. Turn on
+`hearken`'s `update` feature, set `update = true` under
 `[package.metadata.hearken]`, and say where updates are:
 
 ```rust

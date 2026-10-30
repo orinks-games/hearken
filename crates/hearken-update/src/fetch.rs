@@ -128,8 +128,9 @@ mod http {
     /// GETs `url` on `agent`, following redirects by hand. ureq would
     /// follow them itself and only show where it landed after it had
     /// already sent the request there; here every hop's address is checked
-    /// before anything is sent to it, so a redirect can never make the game
-    /// reach a plain HTTP server, or a computer on the player's network.
+    /// before anything is sent to it (see [`hop_allowed`]), so a redirect
+    /// can never make the game reach a plain HTTP server, this computer, or
+    /// an address on the player's network written as an IP.
     fn call(
         agent: &ureq::Agent,
         url: &str,
@@ -163,6 +164,9 @@ mod http {
                 .header("location")
                 .and_then(|location| redirect_target(&current, location))
                 .ok_or_else(|| FetchError::Offline("a redirect to no usable address".into()))?;
+            if !hop_allowed(url, &next) {
+                return Err(FetchError::NotAllowed(next));
+            }
             same_origin = same_origin && origin(&current) == origin(&next);
             current = next;
         }
@@ -174,6 +178,54 @@ mod http {
     pub(super) fn redirect_target(from: &str, location: &str) -> Option<String> {
         let base = url::Url::parse(from).ok()?;
         Some(base.join(location.trim()).ok()?.to_string())
+    }
+
+    /// Whether a request that began at `start` may be redirected to
+    /// `next`. Besides [`url_allowed`], a server elsewhere may not send the
+    /// game on to this computer or to a private, link-local or loopback IP
+    /// address: it could otherwise make the game send requests to the
+    /// player's router or a service on their computer. A request that began
+    /// on such an address (a developer's own test server) may stay there.
+    pub(super) fn hop_allowed(start: &str, next: &str) -> bool {
+        url_allowed(next) && (near(start) || !near(next))
+    }
+
+    /// Whether `address`'s host is this computer or an IP address on a private
+    /// network. A name other than `localhost` is not looked up.
+    fn near(address: &str) -> bool {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+        fn near_v4(ip: Ipv4Addr) -> bool {
+            let [a, b, ..] = ip.octets();
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                // Carrier-grade NAT, 100.64.0.0/10.
+                || (a == 100 && (b & 0xc0) == 64)
+        }
+        fn near_v6(ip: Ipv6Addr) -> bool {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                // Unique local (fc00::/7) and link-local (fe80::/10).
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || ip.to_ipv4_mapped().is_some_and(near_v4)
+        }
+        let Ok(parsed) = url::Url::parse(address) else {
+            // Unreadable: treat it as near, so it is never a redirect target.
+            return true;
+        };
+        match parsed.host() {
+            Some(url::Host::Domain(name)) => {
+                let name = name.trim_end_matches('.').to_ascii_lowercase();
+                name == "localhost" || name.ends_with(".localhost")
+            }
+            Some(url::Host::Ipv4(ip)) => near_v4(ip),
+            Some(url::Host::Ipv6(ip)) => near_v6(ip),
+            None => true,
+        }
     }
 
     /// The scheme, host and port of `url`.
@@ -266,6 +318,48 @@ mod tests {
         // anything is sent there.
         let plain = redirect_target(from, "http://192.168.1.1/admin").unwrap();
         assert!(!url_allowed(&plain));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_server_elsewhere_cannot_redirect_to_this_computer_or_its_network() {
+        use super::http::hop_allowed;
+        let from = "https://example.com/u/update.json";
+        for to in [
+            "http://127.0.0.1:8080/x",
+            "http://localhost/x",
+            "https://localhost/x",
+            "https://127.0.0.1/x",
+            "https://0x7f.1/x",
+            "https://10.0.0.1/x",
+            "https://192.168.1.1/admin",
+            "https://172.16.5.4/x",
+            "https://169.254.169.254/latest/meta-data",
+            "https://100.64.0.1/x",
+            "https://[::1]/x",
+            "https://[fd00::1]/x",
+            "https://[fe80::1]/x",
+            "https://[::ffff:192.168.1.1]/x",
+            "https://router.localhost/x",
+        ] {
+            assert!(!hop_allowed(from, to), "{to}");
+        }
+        for to in [
+            "https://cdn.example.net/a.zip",
+            "https://8.8.8.8/a.zip",
+            "https://objects.githubusercontent.com/a.zip",
+        ] {
+            assert!(hop_allowed(from, to), "{to}");
+        }
+        // A developer's own server on this computer may redirect within it.
+        assert!(hop_allowed(
+            "http://127.0.0.1:8080/a.json",
+            "http://127.0.0.1:8080/b.json"
+        ));
+        assert!(hop_allowed(
+            "http://localhost:8080/a.json",
+            "https://cdn.example.net/a.zip"
+        ));
     }
 
     #[test]
