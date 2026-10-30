@@ -241,6 +241,7 @@ pub fn make_staging_dir_in(base: &Path, prefix: &str) -> io::Result<PathBuf> {
             std::process::id(),
             random_suffix()
         ));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         {
