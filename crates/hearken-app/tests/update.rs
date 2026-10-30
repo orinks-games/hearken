@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -36,12 +37,18 @@ impl Game for Patched {
     }
 }
 
-/// Answers GETs from a table.
+/// Answers GETs from a table, and keeps the URLs asked for. Says it asks
+/// for ranges only when `ranges` is set.
 #[derive(Default)]
-struct Table(Mutex<HashMap<String, Vec<u8>>>);
+struct Table(
+    Mutex<HashMap<String, Vec<u8>>>,
+    Mutex<Vec<String>>,
+    AtomicBool,
+);
 
 impl Fetch for Table {
     fn get(&self, url: &str, _: &[(&str, &str)], limit: u64) -> Result<Vec<u8>, FetchError> {
+        self.1.lock().unwrap().push(url.to_string());
         let body = self
             .0
             .lock()
@@ -61,6 +68,10 @@ impl Fetch for Table {
             length: Some(body.len() as u64),
             reader: Box::new(std::io::Cursor::new(body)),
         })
+    }
+
+    fn supports_ranges(&self) -> bool {
+        self.2.load(Ordering::SeqCst)
     }
 }
 
@@ -115,6 +126,7 @@ fn publish(world: &World, signer: &SecretKey, with_program: bool, version: &str)
         sha256: hearken_app::update::download::sha256_file(&sums).unwrap(),
         notes: "## Fixed\n- The map reads the right street.\n- Faster menus.".into(),
         published: None,
+        index: None,
     };
     let signed = manifest::sign(&manifest, signer).unwrap();
     let mut table = world.table.0.lock().unwrap();
@@ -338,6 +350,93 @@ fn the_check_at_start_announces_and_settings_offers_it() {
     assert!(lines
         .iter()
         .any(|l| l.contains("Check for updates at start: on")));
+}
+
+/// A zip release with a file index, as `hearken release` publishes for
+/// Windows and Mac: only its manifest and index, which is all a check reads.
+fn publish_indexed(world: &World) -> String {
+    let index = b"{}".to_vec();
+    let manifest = Manifest {
+        format: FORMAT,
+        game: "patched".into(),
+        version: "1.1.0".into(),
+        channel: "stable".into(),
+        platform: PLATFORM.into(),
+        archive: format!("patched-1.1.0-{PLATFORM}.zip"),
+        url: None,
+        size: 1000,
+        sha256: "0".repeat(64),
+        notes: String::new(),
+        published: None,
+        index: Some(hearken_app::update::IndexRef {
+            file: format!("patched-1.1.0-{PLATFORM}.index.json"),
+            size: index.len() as u64,
+            sha256: "0".repeat(64),
+        }),
+    };
+    let signed = manifest::sign(&manifest, &world.secret).unwrap();
+    let index_url = format!("https://example.test/patched/patched-1.1.0-{PLATFORM}.index.json");
+    let mut table = world.table.0.lock().unwrap();
+    table.insert(
+        format!("https://example.test/patched/update-stable-{PLATFORM}.json"),
+        signed.into_bytes(),
+    );
+    table.insert(index_url.clone(), index);
+    world.table.2.store(true, Ordering::SeqCst);
+    index_url
+}
+
+/// The check at start only says whether there is an update: it never
+/// fetches the file index or hashes the install, so a version the player
+/// skipped, or a quiet game's, costs nothing more. Check for updates does.
+#[test]
+fn only_check_for_updates_looks_for_the_files_the_player_has() {
+    let mut w = world();
+    let index_url = publish_indexed(&w);
+    let settings = w.h.app.ctx.settings.updates.clone();
+    w.h.app.ctx.updates.check_at_start(&settings);
+    frames_until(&mut w.h, "Patched version 1.1.0 is available.");
+    assert!(!w.table.1.lock().unwrap().contains(&index_url));
+
+    w.check();
+    frames_until(&mut w.h, "Update available");
+    assert!(w.table.1.lock().unwrap().contains(&index_url));
+}
+
+/// An update the check at start found, with a file index, is checked
+/// again from Settings' "Install version" row, so its offer and download
+/// take only the files that changed.
+#[test]
+fn installing_from_settings_looks_for_the_files_the_player_has() {
+    let mut w = world();
+    let index_url = publish_indexed(&w);
+    let settings = w.h.app.ctx.settings.updates.clone();
+    w.h.app.ctx.updates.check_at_start(&settings);
+    frames_until(&mut w.h, "Patched version 1.1.0 is available.");
+    assert!(!w.table.1.lock().unwrap().contains(&index_url));
+    w.h.app.ctx.reset_to(SettingsScreen::<Patched>::new());
+    w.h.frame(0.016);
+    for _ in 0..40 {
+        if w.h
+            .spoken()
+            .last()
+            .is_some_and(|l| l.contains("Install version"))
+        {
+            break;
+        }
+        w.h.press(Key::Down);
+        w.h.frame(0.016);
+    }
+    assert!(
+        w.h.spoken()
+            .last()
+            .is_some_and(|l| l.contains("Install version")),
+        "{:?}",
+        w.h.spoken()
+    );
+    w.h.press(Key::Return);
+    frames_until(&mut w.h, "Update available");
+    assert!(w.table.1.lock().unwrap().contains(&index_url));
 }
 
 #[test]

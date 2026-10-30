@@ -200,11 +200,23 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        println!(
-            "Update manifest: dist/{name}\n\
-             Publish it beside the archive, under this name: as assets of the same GitHub \
-             release, or in the folder the game's manifest URL points at."
-        );
+        let index = archive
+            .file_name()
+            .and_then(|n| hearken_update::index::index_name(&n.to_string_lossy()))
+            .filter(|n| dist.join(n).is_file());
+        match index {
+            Some(index) => println!(
+                "Update manifest: dist/{name}\nFile index: dist/{index}\n\
+                 Publish both beside the archive, under these names: as assets of the same \
+                 GitHub release, or in the folder the game's manifest URL points at. The \
+                 index lets players download only the files that changed."
+            ),
+            None => println!(
+                "Update manifest: dist/{name}\n\
+                 Publish it beside the archive, under this name: as assets of the same GitHub \
+                 release, or in the folder the game's manifest URL points at."
+            ),
+        }
     }
     Ok(archive)
 }
@@ -245,6 +257,7 @@ fn write_manifest(
         .len();
     let sha256 = hearken_update::download::sha256_file(archive)
         .map_err(|e| format!("Could not read {name}: {e}"))?;
+    let index = write_index(archive)?;
     let manifest = hearken_update::Manifest {
         format: hearken_update::manifest::FORMAT,
         game: what.game.to_string(),
@@ -257,6 +270,7 @@ fn write_manifest(
         sha256,
         notes: what.notes.to_string(),
         published: Some(utc_now()),
+        index,
     };
     let text = hearken_update::manifest::sign(&manifest, key)
         .map_err(|e| format!("Could not sign the update manifest: {e}"))?;
@@ -266,6 +280,32 @@ fn write_manifest(
     ));
     std::fs::write(&path, text).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
     Ok(path)
+}
+
+/// For a zip, writes its file index beside it (so a player's copy can
+/// download only the files that changed) and returns what the manifest
+/// signs about it. A tar.gz has none.
+fn write_index(archive: &Path) -> Result<Option<hearken_update::IndexRef>, String> {
+    let name = archive
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let Some(file) = hearken_update::index::index_name(&name) else {
+        return Ok(None);
+    };
+    let index = hearken_update::index::build(archive)
+        .map_err(|e| format!("Could not read the files in {name}: {e}"))?;
+    let text = index.to_json();
+    let size = text.len() as u64;
+    if size > hearken_update::index::MAX_INDEX_BYTES {
+        return Err(format!("{name} holds too many files to index."));
+    }
+    let path = archive.with_file_name(&file);
+    std::fs::write(&path, &text).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    let sha256 = hearken_update::download::sha256_file(&path)
+        .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    Ok(Some(hearken_update::IndexRef { file, size, sha256 }))
 }
 
 /// Release notes for the manifest, from a Markdown file.
@@ -593,8 +633,53 @@ mod tests {
         );
         assert_eq!(manifest.notes, "- Faster.");
         assert!(manifest.published.is_some());
+        // A tar.gz cannot be read in parts: no index.
+        assert_eq!(manifest.index, None);
         // The secret never lands in the file.
         assert!(!String::from_utf8(text).unwrap().contains(&key.to_hex()));
+    }
+
+    #[test]
+    fn a_zip_gets_a_signed_file_index_beside_it() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("my-game-1.2.0-windows-x64.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("my-game-1.2.0-windows-x64/my-game.exe", options)
+            .unwrap();
+        zip.write_all(b"MZ").unwrap();
+        zip.finish().unwrap();
+        let key = hearken_update::SecretKey::generate().unwrap();
+        let path = write_manifest(
+            &archive,
+            &ManifestFor {
+                game: "my-game",
+                version: "1.2.0",
+                channel: "stable",
+                platform: "windows-x64",
+                notes: "",
+            },
+            &key,
+        )
+        .unwrap();
+        let manifest =
+            hearken_update::manifest::open(&std::fs::read(&path).unwrap(), &key.public()).unwrap();
+        let signed = manifest.index.expect("an index");
+        assert_eq!(signed.file, "my-game-1.2.0-windows-x64.index.json");
+        let written = dir.path().join(&signed.file);
+        let bytes = std::fs::read(&written).unwrap();
+        assert_eq!(signed.size, bytes.len() as u64);
+        assert_eq!(
+            signed.sha256,
+            hearken_update::download::sha256_file(&written).unwrap()
+        );
+        let index = hearken_update::index::Index::parse(&bytes).unwrap();
+        assert_eq!(index.archive_sha256, manifest.sha256);
+        assert_eq!(
+            index.entries[0].path,
+            "my-game-1.2.0-windows-x64/my-game.exe"
+        );
     }
 
     #[test]

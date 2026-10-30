@@ -243,6 +243,8 @@ mod tests {
         Update {
             manifest,
             archive_url: "https://example.com/g/a.tar.gz".into(),
+            index_url: None,
+            plan: None,
         }
     }
 

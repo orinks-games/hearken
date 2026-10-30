@@ -9,7 +9,9 @@
 //!    copy, is for this game, platform and channel, and is newer than this
 //!    copy. Every source gets the same checks.
 //! 3. [`download`]: fetch the archive it names, no more than its signed
-//!    size, and check its signed SHA-256 before anything opens it.
+//!    size, and check its signed SHA-256 before anything opens it. Or,
+//!    with [`partial`], fetch only the parts of a zip holding files this
+//!    copy does not have yet, each checked against the signed [`index`].
 //! 4. [`install`] and [`extract`]: unpack it as untrusted input, and find
 //!    what replaces the running install.
 //! 5. [`apply`]: a detached script waits for the game to exit, swaps the
@@ -28,10 +30,12 @@ pub mod check;
 pub mod download;
 pub mod extract;
 pub mod fetch;
+pub mod index;
 pub mod install;
 pub mod key;
 pub mod manifest;
 pub mod notes;
+pub mod partial;
 pub mod platform;
 pub mod source;
 pub mod version;
@@ -47,13 +51,14 @@ pub use download::{download, DownloadError, IDLE_TIMEOUT};
 pub use extract::Limits;
 #[cfg(feature = "http")]
 pub use fetch::HttpFetch;
-pub use fetch::{Body, Fetch, FetchError};
+pub use fetch::{Body, Fetch, FetchError, RangeBody};
 pub use install::{
     can_auto_apply, make_staging_dir, stage, stash_for_manual_install, Host, Install, Os, Staged,
 };
 pub use key::{PublicKey, SecretKey};
-pub use manifest::{Manifest, ManifestError};
+pub use manifest::{IndexRef, Manifest, ManifestError};
 pub use notes::flatten_markdown;
+pub use partial::{download_and_stage, plan, plan_until, Phase, Plan};
 pub use source::{Found, GitHubReleases, ManifestUrl, Query, SourceError, UpdateSource};
 pub use version::{spoken_version, Version};
 

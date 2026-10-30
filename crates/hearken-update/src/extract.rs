@@ -18,12 +18,18 @@
 //!
 //! A `__MACOSX` folder and `._` files (macOS resource forks and extended
 //! attributes) are skipped.
+//!
+//! A zip put together from a partial download ([`crate::partial`]) goes
+//! through the same code, entry by entry, with the files the player already
+//! has copied in, and every file checked against the signed index.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::index::IndexEntry;
 use crate::manifest::{archive_kind, ArchiveKind};
 
 /// How much an archive may unpack to.
@@ -142,7 +148,7 @@ fn safe_link_target(target: &str) -> bool {
 /// Whether to skip an entry: Finder's resource-fork folder, or an
 /// AppleDouble file (`._name`) that `ditto` writes for a file's extended
 /// attributes. Inside an app those would break its code signature.
-fn skipped(path: &Path) -> bool {
+pub(crate) fn skipped(path: &Path) -> bool {
     path.components()
         .next()
         .is_some_and(|c| c.as_os_str() == "__MACOSX")
@@ -187,7 +193,16 @@ impl Writer<'_> {
         Ok(())
     }
 
-    fn entry(&mut self, name: &str, kind: Kind, body: &mut dyn Read) -> io::Result<()> {
+    /// Writes one entry. A file's body is read no further than the room
+    /// left under the limits, and no further than `cap` when one is given
+    /// (an entry's signed size): one byte past it is refused at once.
+    fn entry(
+        &mut self,
+        name: &str,
+        kind: Kind,
+        body: &mut dyn Read,
+        cap: Option<u64>,
+    ) -> io::Result<()> {
         if self.cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
             return Err(cancelled_error());
         }
@@ -212,7 +227,11 @@ impl Writer<'_> {
                 }
                 let mut file = fs::File::create(&path)?;
                 let room = self.limits.bytes - self.bytes;
-                let written = io::copy(&mut body.take(room.saturating_add(1)), &mut file)?;
+                let most = cap.map_or(room, |cap| cap.min(room));
+                let written = copy_heeding(body, &mut file, most, self.cancelled)?;
+                if cap.is_some_and(|cap| written > cap) {
+                    return Err(refuse(format!("{name} is larger than its index says")));
+                }
                 if written > room {
                     return Err(refuse("the archive unpacks to more than allowed"));
                 }
@@ -234,6 +253,37 @@ impl Writer<'_> {
             }
         }
     }
+}
+
+/// Copies at most `most` bytes of `body` into `file`, and says how many it
+/// copied; reading one more than `most` is how a caller sees the body is
+/// too long. A cancel is heard between chunks, so one large entry does not
+/// hold it up until it is all written. (`io::copy` would retry the cancel's
+/// `Interrupted` error, so this is its own loop.)
+fn copy_heeding(
+    body: &mut dyn Read,
+    file: &mut fs::File,
+    most: u64,
+    cancelled: Option<&AtomicBool>,
+) -> io::Result<u64> {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut copied = 0u64;
+    let end = most.saturating_add(1);
+    while copied < end {
+        if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            return Err(cancelled_error());
+        }
+        let want = (end - copied).min(buf.len() as u64) as usize;
+        let n = match body.read(&mut buf[..want]) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        file.write_all(&buf[..n])?;
+        copied += n as u64;
+    }
+    Ok(copied)
 }
 
 /// A file's permissions from the archive, without set-id bits or write
@@ -269,6 +319,43 @@ pub fn extract(
     limits: Limits,
     cancelled: Option<&AtomicBool>,
 ) -> io::Result<()> {
+    extract_inner(archive, dest, limits, cancelled, None)
+}
+
+/// A zip put together from parts (see [`crate::partial`]): only some
+/// entries' bytes were downloaded, and the rest are files the player
+/// already has. The zip's central directory, local headers and downloaded
+/// entries are the release's own; what stands in for the rest is never
+/// read.
+pub(crate) struct Assembly<'a> {
+    /// The signed index: one entry for each of the zip's, in order.
+    pub entries: &'a [IndexEntry],
+    /// Entries to copy from the player's install instead, by position.
+    pub reuse: &'a BTreeMap<usize, PathBuf>,
+}
+
+/// Unpacks a zip put together from parts into `dest`, exactly as
+/// [`extract`] would unpack the whole archive: the same entries, checks and
+/// limits. Besides, every entry must be where the signed index says, and
+/// every file and link written, downloaded or copied from the install, must
+/// be the signed size and SHA-256 once it is on disk.
+pub(crate) fn extract_assembled(
+    archive: &Path,
+    dest: &Path,
+    limits: Limits,
+    cancelled: Option<&AtomicBool>,
+    assembly: &Assembly,
+) -> io::Result<()> {
+    extract_inner(archive, dest, limits, cancelled, Some(assembly))
+}
+
+fn extract_inner(
+    archive: &Path,
+    dest: &Path,
+    limits: Limits,
+    cancelled: Option<&AtomicBool>,
+    assembly: Option<&Assembly>,
+) -> io::Result<()> {
     fs::create_dir_all(dest)?;
     let name = archive
         .file_name()
@@ -282,8 +369,8 @@ pub fn extract(
         cancelled,
     };
     match archive_kind(&name) {
-        Some(ArchiveKind::Zip) => extract_zip(archive, &mut writer),
-        Some(ArchiveKind::TarGz) => extract_tar_gz(archive, &mut writer),
+        Some(ArchiveKind::Zip) => extract_zip(archive, &mut writer, assembly),
+        Some(ArchiveKind::TarGz) if assembly.is_none() => extract_tar_gz(archive, &mut writer),
         _ => Err(refuse(format!(
             "{name} is not an archive this updater unpacks"
         ))),
@@ -298,30 +385,80 @@ const S_IFLNK: u32 = 0o120000;
 /// The most a link's target may be.
 const MAX_LINK_BYTES: u64 = 4096;
 
-fn extract_zip(archive: &Path, writer: &mut Writer) -> io::Result<()> {
+fn extract_zip(archive: &Path, writer: &mut Writer, assembly: Option<&Assembly>) -> io::Result<()> {
     let file = fs::File::open(archive)?;
     let mut zip = zip::ZipArchive::new(io::BufReader::new(file)).map_err(io::Error::other)?;
     if zip.len() as u64 > writer.limits.entries {
         return Err(refuse("the archive has too many entries"));
     }
+    if assembly.is_some_and(|a| a.entries.len() != zip.len() || zip.offset() != 0) {
+        return Err(refuse("the archive is not the one its index describes"));
+    }
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(io::Error::other)?;
         let name = entry.name().to_string();
+        let expected = assembly.map(|a| &a.entries[i]);
+        if let Some(expected) = expected {
+            let placed = expected.path == name
+                && expected.header == entry.header_start()
+                && expected.data == entry.data_start()
+                && expected.data.checked_add(entry.compressed_size()) == Some(expected.end);
+            if !placed {
+                return Err(refuse(format!("{name} is not where its index says")));
+            }
+        }
+        let reuse = assembly.and_then(|a| a.reuse.get(&i));
         let mode = entry.unix_mode();
         let kind = match mode.map(|m| m & S_IFMT) {
             _ if entry.is_dir() => Kind::Dir,
             Some(S_IFDIR) => Kind::Dir,
+            Some(S_IFLNK) if reuse.is_some() => {
+                return Err(refuse(format!("{name} is a link, not a file to reuse")))
+            }
             Some(S_IFLNK) => {
                 let mut target = String::new();
                 (&mut entry)
                     .take(MAX_LINK_BYTES)
                     .read_to_string(&mut target)?;
+                if let Some(expected) = expected {
+                    let (size, sha256) = crate::index::hash_reader(target.as_bytes())?;
+                    if size != expected.size || sha256 != expected.sha256 {
+                        return Err(refuse(format!("{name} does not match its index")));
+                    }
+                }
                 Kind::Link(target)
             }
             None | Some(0) | Some(S_IFREG) => Kind::File { mode },
             Some(_) => return Err(refuse(format!("{name} is not a file, folder or link"))),
         };
-        writer.entry(&name, kind, &mut entry)?;
+        let is_file = matches!(kind, Kind::File { .. });
+        match reuse {
+            Some(installed) => {
+                if !is_file {
+                    return Err(refuse(format!("{name} is not a file to reuse")));
+                }
+                drop(entry);
+                // The player's copy, never followed through a link.
+                let meta = fs::symlink_metadata(installed)?;
+                if !meta.is_file() {
+                    return Err(refuse(format!("{} changed", installed.display())));
+                }
+                let mut source = fs::File::open(installed)?;
+                writer.entry(&name, kind, &mut source, expected.map(|e| e.size))?;
+            }
+            None => writer.entry(&name, kind, &mut entry, expected.map(|e| e.size))?,
+        }
+        // What is on disk is what ships: it must be the signed bytes.
+        if let (Some(expected), true) = (expected, is_file) {
+            let Some(rel) = safe_path(&name).filter(|rel| !skipped(rel)) else {
+                continue;
+            };
+            let written = fs::File::open(writer.dest.join(rel))?;
+            let (size, sha256) = crate::index::hash_reader(written)?;
+            if size != expected.size || sha256 != expected.sha256 {
+                return Err(refuse(format!("{name} does not match its index")));
+            }
+        }
     }
     Ok(())
 }
@@ -354,7 +491,7 @@ fn extract_tar_gz(archive: &Path, writer: &mut Writer) -> io::Result<()> {
                 )))
             }
         };
-        writer.entry(&name, kind, &mut entry)?;
+        writer.entry(&name, kind, &mut entry, None)?;
     }
     Ok(())
 }
@@ -686,5 +823,79 @@ pub(crate) mod tests {
         let archive = dir.path().join("a.rar");
         fs::write(&archive, b"x").unwrap();
         assert!(unpack(&archive, &dir.path().join("o")).is_err());
+    }
+
+    fn writer<'a>(dest: &'a Path, cancelled: Option<&'a AtomicBool>) -> Writer<'a> {
+        Writer {
+            dest,
+            limits: Limits::default(),
+            entries: 0,
+            bytes: 0,
+            cancelled,
+        }
+    }
+
+    /// Endless zeros, setting `flag` after `after` bytes.
+    struct Zeros<'a> {
+        read: u64,
+        after: u64,
+        flag: Option<&'a AtomicBool>,
+    }
+
+    impl Read for Zeros<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.read >= self.after {
+                if let Some(flag) = self.flag {
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
+            buf.fill(0);
+            self.read += buf.len() as u64;
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn a_file_is_cut_off_one_byte_past_its_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = writer(dir.path(), None);
+        let mut body = Zeros {
+            read: 0,
+            after: u64::MAX,
+            flag: None,
+        };
+        let err = w
+            .entry("a.bin", Kind::File { mode: None }, &mut body, Some(1000))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+        assert_eq!(fs::metadata(dir.path().join("a.bin")).unwrap().len(), 1001);
+        // At its cap exactly, it is written.
+        let mut w = writer(dir.path(), None);
+        w.entry(
+            "b.bin",
+            Kind::File { mode: None },
+            &mut &[7u8; 1000][..],
+            Some(1000),
+        )
+        .unwrap();
+        assert_eq!(fs::read(dir.path().join("b.bin")).unwrap(), [7u8; 1000]);
+    }
+
+    #[test]
+    fn a_cancel_is_heard_within_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancelled = AtomicBool::new(false);
+        let mut w = writer(dir.path(), Some(&cancelled));
+        let mut body = Zeros {
+            read: 0,
+            after: 1_000_000,
+            flag: Some(&cancelled),
+        };
+        let err = w
+            .entry("a.bin", Kind::File { mode: None }, &mut body, None)
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        let len = fs::metadata(dir.path().join("a.bin")).unwrap().len();
+        assert!(len < 2_000_000, "{len}");
     }
 }
