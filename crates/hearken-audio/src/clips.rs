@@ -172,13 +172,18 @@ impl PackedClips {
     /// `hearken release` with the key it was packed with.
     pub fn beside_game() -> Option<PackedClips> {
         let key = hearken_pack::build_key()?;
-        let dirs = game_dirs(&exe_dir()?);
-        // The first folder that has a pack; a missing one is logged there.
+        PackedClips::in_game_dirs(&exe_dir()?, &key).ok()
+    }
+
+    /// The pack in the first of [`game_dirs`] that has one; a missing pack
+    /// is logged at the first of them.
+    fn in_game_dirs(exe_dir: &Path, key: &[u8; 32]) -> std::io::Result<PackedClips> {
+        let dirs = game_dirs(exe_dir);
         let dir = dirs
             .iter()
             .find(|d| d.join(hearken_pack::FILE_NAME).is_file())
             .unwrap_or(&dirs[0]);
-        PackedClips::in_dir(dir, &key).ok()
+        PackedClips::in_dir(dir, key)
     }
 
     /// The `sounds.pak` in `dir`, logged either way.
@@ -238,7 +243,8 @@ pub struct Discovered {
 }
 
 /// Where a game's sounds come from. A build made by `hearken release` with
-/// a sound pack reads its `sounds.pak` beside the executable and nothing
+/// a sound pack reads its `sounds.pak` beside the executable (in a Mac app,
+/// its `Contents/Resources`) and nothing
 /// else: no `<env_prefix>_SOUNDS`, no loose `sounds` folder, so a player
 /// cannot swap the game's sounds. Every other build reads the folder
 /// `<env_prefix>_SOUNDS` names, else the loose `sounds` folder
@@ -263,7 +269,7 @@ pub fn discover_clips_from(
             notice: None,
         };
     };
-    match exe_dir.map(|dir| PackedClips::in_dir(dir, &key)) {
+    match exe_dir.map(|dir| PackedClips::in_game_dirs(dir, &key)) {
         Some(Ok(packed)) => Discovered {
             clips: Box::new(packed),
             notice: None,
