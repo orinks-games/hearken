@@ -156,6 +156,13 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
         ctx.discord = crate::discord::Discord::start(&config, ctx.settings.discord.enabled);
     }
 
+    // Off the game loop; an agent session never updates the real game.
+    #[cfg(feature = "update")]
+    if !sandboxed {
+        let settings = ctx.settings.updates.clone();
+        ctx.updates.check_at_start(&settings);
+    }
+
     let mut app = App::new(ctx, first());
     #[cfg(feature = "agent-server")]
     if let Some(agent) = agent.as_mut() {

@@ -9,6 +9,8 @@ pub mod pause;
 pub mod settings;
 pub mod text_entry;
 pub mod timed_message;
+#[cfg(feature = "update")]
+pub mod update;
 
 pub use bindings::{BindingDevice, BindingsScreen};
 pub use confirm::{ConfirmOption, ConfirmScreen};
@@ -19,3 +21,5 @@ pub use pause::PauseScreen;
 pub use settings::{SettingsRow, SettingsScreen};
 pub use text_entry::TextEntryScreen;
 pub use timed_message::TimedMessage;
+#[cfg(feature = "update")]
+pub use update::{UpdateCheckScreen, UpdateDownloadScreen, UpdatePromptScreen, WhatsNewScreen};

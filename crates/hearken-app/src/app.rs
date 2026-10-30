@@ -63,6 +63,8 @@ impl<G: Game> App<G> {
         self.ctx.update_commentary(dt);
         #[cfg(feature = "online")]
         self.ctx.update_online();
+        #[cfg(feature = "update")]
+        self.ctx.update_updates();
         self.ctx.speech.poll(dt);
         self.ctx.update_audio();
         self.ctx.update_soundtrack();

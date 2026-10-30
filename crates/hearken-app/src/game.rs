@@ -102,6 +102,16 @@ pub trait Game: Sized + 'static {
         None
     }
 
+    /// Where the game's updates are published, for a released copy to
+    /// update itself: GitHub releases, a manifest URL on any HTTPS host, or
+    /// a source of the game's own. `None` (the default) offers no updates.
+    /// Only a copy `hearken release` built for a game with `update = true`
+    /// in its `Cargo.toml` ever checks; see `docs/updates.md`.
+    #[cfg(feature = "update")]
+    fn updates() -> Option<crate::updates::UpdateConfig> {
+        None
+    }
+
     /// The game's Discord application, for Rich Presence: friends see
     /// "Playing <the application's name>" and what [`crate::State::presence`] or
     /// [`Game::presence`] reports. `None` (the default) keeps Discord out

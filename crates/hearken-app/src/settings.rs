@@ -38,6 +38,9 @@ pub struct Settings<GS> {
     /// Discord status, for a game that offers it.
     #[serde(default, skip_serializing_if = "DiscordSettings::is_default")]
     pub discord: DiscordSettings,
+    /// Updates, for a game that offers them.
+    #[serde(default, skip_serializing_if = "UpdateSettings::is_default")]
+    pub updates: UpdateSettings,
     #[serde(default)]
     pub game: GS,
 }
@@ -57,6 +60,37 @@ impl Default for DiscordSettings {
 }
 
 impl DiscordSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The player's update choices, for a game that updates itself
+/// (`Game::updates`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// The channel the player chose; `None` follows the copy's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// A version the player skipped: the check at start does not offer it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
+    /// Whether the game looks for an update each time it starts.
+    pub check_at_start: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        UpdateSettings {
+            channel: None,
+            skipped: None,
+            check_at_start: true,
+        }
+    }
+}
+
+impl UpdateSettings {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
