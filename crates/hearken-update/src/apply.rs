@@ -13,9 +13,16 @@
 //!
 //! The script waits up to five minutes for the game to exit, and gives up
 //! without touching anything if it never does.
+//!
+//! The script is written inside the staging folder, which only this user
+//! can open (see [`crate::install::make_staging_dir`]), under a random name,
+//! as a new file: on Linux the temporary folder is `/tmp`, shared by every
+//! user, and a script there under a name anyone could guess could be
+//! swapped for theirs, or be a link that makes the game overwrite one of
+//! the player's files. Deleting the staging folder deletes the script.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -44,8 +51,8 @@ if errorlevel 8 robocopy "{backup}" "{dst}" /E /XD saves /R:10 /W:1 >NUL
 :start
 start "" /D "{dst}" "{dst}\{exe}"
 :done
-rmdir /s /q "{staging}"
-del "%~f0"
+rem The script is in the staging folder: one line, so cmd never reads on.
+rmdir /s /q "{staging}" & exit /b
 "#;
 
 const POSIX_FOLDER: &str = r#"#!/bin/sh
@@ -55,7 +62,7 @@ const POSIX_FOLDER: &str = r#"#!/bin/sh
 tries=0
 while kill -0 {pid} 2>/dev/null; do
   tries=$((tries + 1))
-  if [ "$tries" -ge 300 ]; then rm -rf "{staging}"; rm -f "$0"; exit 1; fi
+  if [ "$tries" -ge 300 ]; then rm -rf "{staging}"; exit 1; fi
   sleep 1
 done
 rm -rf "{src}/saves"
@@ -74,7 +81,6 @@ if [ "$ok" = 1 ]; then
 fi
 cd "{dst}" && "./{exe}" >/dev/null 2>&1 &
 rm -rf "{staging}"
-rm -f "$0"
 "#;
 
 const MACOS_BUNDLE: &str = r#"#!/bin/sh
@@ -84,7 +90,7 @@ const MACOS_BUNDLE: &str = r#"#!/bin/sh
 tries=0
 while kill -0 {pid} 2>/dev/null; do
   tries=$((tries + 1))
-  if [ "$tries" -ge 300 ]; then rm -rf "{staging}"; rm -f "$0"; exit 1; fi
+  if [ "$tries" -ge 300 ]; then rm -rf "{staging}"; exit 1; fi
   sleep 1
 done
 if [ -e "{dst}" ]; then
@@ -100,7 +106,6 @@ if [ -e "{dst}" ]; then
 fi
 rm -rf "{staging}"
 open "{dst}"
-rm -f "$0"
 "#;
 
 const APPIMAGE: &str = r#"#!/bin/sh
@@ -110,7 +115,7 @@ const APPIMAGE: &str = r#"#!/bin/sh
 tries=0
 while kill -0 {pid} 2>/dev/null; do
   tries=$((tries + 1))
-  if [ "$tries" -ge 300 ]; then rm -rf "{staging}"; rm -f "$0"; exit 1; fi
+  if [ "$tries" -ge 300 ]; then rm -rf "{staging}"; exit 1; fi
   sleep 1
 done
 if cp "{src}" "{dst}.update-new" && chmod +x "{dst}.update-new"; then
@@ -120,7 +125,6 @@ else
 fi
 rm -rf "{staging}"
 "{dst}" >/dev/null 2>&1 &
-rm -f "$0"
 "#;
 
 /// A path made safe to sit between the double quotes of an apply script.
@@ -222,7 +226,12 @@ pub fn script_text(
     ))
 }
 
-/// Writes the apply script beside the staging folder (which it deletes).
+/// Writes the apply script inside the staging folder (which it deletes).
+///
+/// The file is made new, never opened over something already there, so a
+/// link planted in its place is refused rather than followed. On Unix a
+/// staging folder others can write to is refused too: they could swap the
+/// script before it runs.
 pub fn write_apply_script(
     staged: &Staged,
     install: &Install,
@@ -232,18 +241,47 @@ pub fn write_apply_script(
 ) -> io::Result<PathBuf> {
     let text = script_text(staged, install, staging, pid, os)?;
     let suffix = if os == Os::Windows { "bat" } else { "sh" };
-    let dir = staging.parent().unwrap_or(staging);
-    let script = dir.join(format!("hearken-apply-{pid}.{suffix}"));
     let text = if os == Os::Windows {
         text.replace('\n', "\r\n")
     } else {
         text
     };
-    fs::write(&script, text)?;
+    let meta = fs::symlink_metadata(staging)?;
+    if !meta.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the update's staging folder is not a folder",
+        ));
+    }
     #[cfg(unix)]
-    if os != Os::Windows {
+    {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
+        if meta.permissions().mode() & 0o022 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "other users can write to the update's staging folder",
+            ));
+        }
+    }
+    let script = staging.join(format!(
+        "hearken-apply-{}.{suffix}",
+        crate::install::random_suffix()
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o700);
+    }
+    let mut file = options.open(&script)?;
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all());
+    if let Err(e) = written {
+        drop(file);
+        let _ = fs::remove_file(&script);
+        return Err(e);
     }
     Ok(script)
 }
@@ -367,6 +405,9 @@ mod tests {
             text.contains(r#"start "" /D "C:\Games\100%% Fun" "C:\Games\100%% Fun\my-game.exe""#)
         );
         assert!(!text.contains(r"\\?\"));
+        // The script is inside the staging folder, so the line that
+        // deletes it also ends it.
+        assert!(text.contains(r#"rmdir /s /q "C:\Temp\s" & exit /b"#));
         // The backup comes first, and a failed backup skips the copy.
         let backup = text.find("\"C:\\Temp\\s\\backup\" /E").unwrap();
         let copy = text.find("robocopy \"C:\\Temp\\s\\unpacked").unwrap();
@@ -453,8 +494,7 @@ mod tests {
     #[test]
     fn the_script_is_written_and_handed_to_spawn() {
         let dir = tempfile::tempdir().unwrap();
-        let staging = dir.path().join("staging");
-        fs::create_dir_all(&staging).unwrap();
+        let staging = crate::install::make_staging_dir_in(dir.path(), "my-game").unwrap();
         let host = Host::fake(Os::Linux, &dir.path().join("game/my-game"));
         let mut seen = Vec::new();
         let script = apply_and_restart_with(
@@ -468,7 +508,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(script, dir.path().join("hearken-apply-4242.sh"));
+        assert_eq!(script.parent(), Some(staging.as_path()));
         assert_eq!(seen, ["/bin/sh".to_string(), script.display().to_string()]);
         // A spawn that fails leaves no script behind.
         let err = apply_and_restart_with(
@@ -479,7 +519,83 @@ mod tests {
             &mut |_| Err(io::Error::other("no shell")),
         );
         assert!(err.is_err());
-        assert!(!script.exists());
+        assert_eq!(fs::read_dir(&staging).unwrap().count(), 1);
+    }
+
+    /// Another user on the machine plants links where the script used to
+    /// go (`/tmp/hearken-apply-<pid>.sh`, the pid anyone can see): the
+    /// player's file they point at must never be written, and the script
+    /// must not be somewhere they can swap it.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_never_redirects_the_script() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim.txt");
+        fs::write(&victim, b"IMPORTANT DATA").unwrap();
+        let staging = crate::install::make_staging_dir_in(dir.path(), "my-game").unwrap();
+        for at in [
+            dir.path().join("hearken-apply-4242.sh"),
+            staging.join("hearken-apply-4242.sh"),
+        ] {
+            std::os::unix::fs::symlink(&victim, at).unwrap();
+        }
+        let script = write_apply_script(
+            &Staged::Folder(staging.join("g")),
+            &folder("/games/g", "my-game"),
+            &staging,
+            4242,
+            Os::Linux,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"IMPORTANT DATA");
+        let meta = fs::symlink_metadata(&script).unwrap();
+        assert!(meta.is_file());
+        assert_eq!(meta.permissions().mode() & 0o077, 0);
+        assert_eq!(script.parent(), Some(staging.as_path()));
+        // A second script never lands on the first one's name.
+        let again = write_apply_script(
+            &Staged::Folder(staging.join("g")),
+            &folder("/games/g", "my-game"),
+            &staging,
+            4242,
+            Os::Linux,
+        )
+        .unwrap();
+        assert_ne!(again, script);
+    }
+
+    /// A staging folder other users can write to could have its script
+    /// swapped before it runs, so none is written there.
+    #[cfg(unix)]
+    #[test]
+    fn no_script_goes_in_a_folder_others_can_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        let err = write_apply_script(
+            &Staged::Folder(shared.join("g")),
+            &folder("/games/g", "my-game"),
+            &shared,
+            1,
+            Os::Linux,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read_dir(&shared).unwrap().count(), 0);
+        // Nor in a link to a folder.
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+        assert!(write_apply_script(
+            &Staged::Folder(link.join("g")),
+            &folder("/games/g", "my-game"),
+            &link,
+            1,
+            Os::Linux,
+        )
+        .is_err());
     }
 
     /// The real POSIX script, run against a real folder: the update lands,
@@ -493,7 +609,7 @@ mod tests {
         fs::write(game.join("saves/progress.json"), b"mine").unwrap();
         fs::write(game.join("data.txt"), b"old").unwrap();
         fs::write(game.join("only-old.txt"), b"kept").unwrap();
-        let staging = dir.path().join("staging");
+        let staging = crate::install::make_staging_dir_in(dir.path(), "my-game").unwrap();
         let new = staging.join("unpacked/g");
         fs::create_dir_all(new.join("saves")).unwrap();
         fs::write(new.join("saves/progress.json"), b"theirs").unwrap();
@@ -544,7 +660,7 @@ mod tests {
         fs::create_dir_all(game.join("clash/inside")).unwrap();
         fs::write(game.join("a.txt"), b"old").unwrap();
         fs::write(game.join("my-game"), b"#!/bin/sh\n").unwrap();
-        let staging = dir.path().join("staging");
+        let staging = crate::install::make_staging_dir_in(dir.path(), "my-game").unwrap();
         let new = staging.join("unpacked/g");
         fs::create_dir_all(&new).unwrap();
         fs::write(new.join("a.txt"), b"new").unwrap();

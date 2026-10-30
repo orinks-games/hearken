@@ -357,3 +357,41 @@ fn escape_cancels_a_download() {
     assert!(w.applied.lock().unwrap().is_empty());
     assert!(w.h.app.ctx.running);
 }
+
+/// An update the game cannot install by itself goes to the player's home
+/// folder, and nothing of it is left in the temporary folder.
+#[test]
+fn an_update_installed_by_hand_leaves_no_staging_behind() {
+    let mut w = world();
+    let secret = w.secret.clone();
+    publish(&w, &secret, true, "1.1.0");
+    let home = w.dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut host = Host::fake(Os::Linux, &w.dir.path().join("Patched").join(EXE));
+    host.home = Some(home.clone());
+    w.h.app.ctx.updates.set_host(host);
+    let record = w.applied.clone();
+    w.h.app
+        .ctx
+        .updates
+        .set_apply(Arc::new(move |staged, _install, staging, _host| {
+            record
+                .lock()
+                .unwrap()
+                .push((staged.clone(), staging.to_path_buf()));
+            Err(std::io::Error::other("no shell"))
+        }));
+    w.check();
+    frames_until(&mut w.h, "Update available");
+    w.h.clear();
+    w.h.press(Key::Return);
+    frames_until(&mut w.h, "could not install itself");
+    let applied = w.applied.lock().unwrap().clone();
+    let [(_, staging)] = applied.as_slice() else {
+        panic!("not applied: {applied:?}");
+    };
+    let saved = home.join(format!("patched-1.1.0-{PLATFORM}"));
+    assert_eq!(std::fs::read(saved.join(EXE)).unwrap(), b"hi");
+    assert!(!staging.exists(), "{} was left behind", staging.display());
+    assert!(w.h.app.ctx.running, "the game stays open");
+}

@@ -424,6 +424,12 @@ impl UpdateDownloadScreen {
                 })();
                 let mut out = outcome.lock().unwrap_or_else(|e| e.into_inner());
                 match result {
+                    // Canceled after all: nothing will install it.
+                    Ok(_) if cancelled.load(Ordering::SeqCst) => {
+                        if let Some(staging) = &staging_dir {
+                            let _ = std::fs::remove_dir_all(staging);
+                        }
+                    }
                     Ok(staged) => out.staged = Some(staged),
                     Err(e) => {
                         // Nothing will use half an update: never leave it
@@ -446,11 +452,24 @@ impl UpdateDownloadScreen {
         }
     }
 
+    /// Tells the worker to stop, and removes an update it already finished:
+    /// set under the same lock the worker stores into, so whichever comes
+    /// second removes it.
+    fn cancel(&mut self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        let mut out = self.outcome();
+        if out.staged.take().is_some() {
+            if let Some(staging) = out.staging.take() {
+                let _ = std::fs::remove_dir_all(staging);
+            }
+        }
+    }
+
     /// Leaves on a stalled or stuck worker, saying why and what to do. The
     /// worker is told to stop, and tidies up when it next wakes.
     fn abandon<G: Game>(&mut self, ctx: &mut Ctx<G>, reason: &str) {
         log::warn!("update abandoned: {reason}");
-        self.cancelled.store(true, Ordering::SeqCst);
+        self.cancel();
         self.finished = true;
         ctx.play_ui(UiSound::Error);
         ctx.say(unchanged_line(ctx, reason));
@@ -489,6 +508,7 @@ impl UpdateDownloadScreen {
     fn finish<G: Game>(&mut self, ctx: &mut Ctx<G>) {
         self.finished = true;
         if self.cancelled.load(Ordering::SeqCst) {
+            self.cancel();
             ctx.pop_quiet();
             return;
         }
@@ -510,6 +530,7 @@ impl UpdateDownloadScreen {
             // somewhere findable and the player told where.
             let dest = hearken_update::stash_for_manual_install(
                 &staged,
+                &staging,
                 ctx.updates.host().home.as_deref(),
             );
             ctx.say(format!(
@@ -526,6 +547,7 @@ impl UpdateDownloadScreen {
             log::warn!("could not start the update's apply script: {e}");
             let dest = hearken_update::stash_for_manual_install(
                 &staged,
+                &staging,
                 ctx.updates.host().home.as_deref(),
             );
             ctx.play_ui(UiSound::Error);
@@ -617,7 +639,7 @@ impl<G: Game> State<G> for UpdateDownloadScreen {
             Some(Key::Escape) => {
                 // Leave now, whatever the worker is doing; it stops and
                 // tidies up when it next wakes.
-                self.cancelled.store(true, Ordering::SeqCst);
+                self.cancel();
                 self.finished = true;
                 ctx.play_ui(UiSound::Back);
                 ctx.pop_with("Update canceled.");

@@ -201,14 +201,23 @@ player back to a version with a known flaw.
    as untrusted input even though it is signed: no entry may have an
    absolute path, a drive, `..` or `:`; only files, folders and links are
    allowed, never devices, pipes or hard links; a link must point down from
-   where it is, and nothing is written through one; at most 200,000 entries
-   and 32 GB, counted as they are written. `__MACOSX` and `._` files from
-   macOS are skipped. The update must hold the running program under the
-   same name, or it is refused.
-3. A small script is written beside that folder and started detached. It
-   waits for the game's process to exit (up to five minutes, then gives up
-   without touching anything), swaps the update in, starts the game again
-   and deletes itself.
+   where it is, and nothing is written through one; at most 200,000 entries,
+   and at most 20 times the archive's size (never less than 32 MB, never
+   more than 32 GB), counted as they are written. `__MACOSX` and `._` files
+   from macOS are skipped. The update must hold the running program under
+   the same name, or it is refused.
+
+   The folder gets a random name and is made new (never one that is
+   already there), and on Linux and macOS only the player's own user can
+   open it (mode 0700): on Linux the temporary folder is `/tmp`, which every
+   user on the machine shares. Folders left there by an update that never
+   finished (the game was killed part-way) are removed a day later, the
+   next time the game downloads an update.
+3. A small script is written inside that folder, under a random name, as a
+   new file that cannot be a link someone planted, and is started detached.
+   It waits for the game's process to exit (up to five minutes, then gives
+   up without touching anything), swaps the update in, starts the game
+   again and deletes the folder, itself with it.
 
    - **A folder install** (Windows, Linux): the install is copied to a
      backup first, and if that fails, nothing is touched. The update is then
@@ -259,3 +268,18 @@ player back to a version with a known flaw.
   not cover them.
 - **Links in an update must point down** (no `..`). A Mac framework's usual
   links do; anything else is refused.
+- **Free space is not checked first.** Unpacking can use up to 20 times
+  the archive's size in the temporary folder before it is stopped. A disk
+  that fills up stops the unpack with an error, the folder is removed, and
+  the game is unchanged.
+- **An update installed by hand** (the game cannot write to its own folder,
+  or a Mac app runs translocated) is moved to the player's home folder and
+  the temporary folder is cleared. If it cannot be moved there (no home
+  folder, something of the same name already there, or an archive with no
+  single top folder), it stays in the temporary folder, where the player is
+  told to find it, and is removed a day later.
+- **Anyone who can act as the player, or as an administrator, can change
+  the game.** The updater keeps other users on the machine out of the
+  update (see above), but a program running as the player can replace the
+  install, the apply script or the temporary folder directly, with or
+  without an update. That is outside what an updater can defend.

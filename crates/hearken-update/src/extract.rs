@@ -12,7 +12,8 @@
 //!   entry is written through a link, so nothing reaches outside;
 //! - there are at most [`Limits::entries`] of them, and at most
 //!   [`Limits::bytes`] in all, counted as they are written, whatever the
-//!   archive's headers claim.
+//!   archive's headers claim. [`crate::install::stage`] also holds the
+//!   bytes to [`MAX_UNPACK_RATIO`] times the archive's size.
 //!
 //! A `__MACOSX` folder and `._` files (macOS resource forks and extended
 //! attributes) are skipped.
@@ -36,6 +37,33 @@ impl Default for Limits {
         Limits {
             entries: 200_000,
             bytes: 32 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
+/// How many times its own size an archive may unpack to. Game files
+/// (sound, code, data) rarely shrink more than four times; a far smaller
+/// archive that unpacks huge is a bomb, and would fill the temporary folder.
+pub const MAX_UNPACK_RATIO: u64 = 20;
+
+/// What any archive may unpack to, however small it is.
+pub const MIN_UNPACK_BYTES: u64 = 32 * 1024 * 1024;
+
+impl Limits {
+    /// The default limits, with the bytes held to [`MAX_UNPACK_RATIO`]
+    /// times an archive of `size` bytes (never under [`MIN_UNPACK_BYTES`]).
+    pub fn for_archive(size: u64) -> Limits {
+        Limits::default().at_most(Limits {
+            entries: u64::MAX,
+            bytes: size.saturating_mul(MAX_UNPACK_RATIO).max(MIN_UNPACK_BYTES),
+        })
+    }
+
+    /// The tighter of `self` and `other`, limit by limit.
+    pub fn at_most(self, other: Limits) -> Limits {
+        Limits {
+            entries: self.entries.min(other.entries),
+            bytes: self.bytes.min(other.bytes),
         }
     }
 }
@@ -337,7 +365,7 @@ pub(crate) mod tests {
         builder.into_inner().unwrap().finish().unwrap();
     }
 
-    fn file_header(size: u64, mode: u32) -> tar::Header {
+    pub fn file_header(size: u64, mode: u32) -> tar::Header {
         let mut header = tar::Header::new_gnu();
         header.set_size(size);
         header.set_mode(mode);
@@ -575,6 +603,19 @@ pub(crate) mod tests {
             bytes: 1000,
         };
         assert!(extract(&tar, &dir.path().join("o3"), few, None).is_err());
+    }
+
+    #[test]
+    fn the_unpack_limit_follows_the_archive_size() {
+        assert_eq!(Limits::for_archive(0).bytes, MIN_UNPACK_BYTES);
+        assert_eq!(Limits::for_archive(1000).bytes, MIN_UNPACK_BYTES);
+        assert_eq!(
+            Limits::for_archive(100 * 1024 * 1024).bytes,
+            2000 * 1024 * 1024
+        );
+        // Never above the default, however big the archive.
+        assert_eq!(Limits::for_archive(u64::MAX).bytes, Limits::default().bytes);
+        assert_eq!(Limits::for_archive(1).entries, Limits::default().entries);
     }
 
     #[test]

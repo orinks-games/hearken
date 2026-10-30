@@ -13,7 +13,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::extract::{self, Limits};
 use crate::manifest::{archive_kind, ArchiveKind};
@@ -190,25 +190,107 @@ pub fn in_cargo_target(exe: &Path) -> bool {
         .any(|dir| dir.join("CACHEDIR.TAG").is_file() && dir.join(".rustc_info.json").is_file())
 }
 
-/// A new, empty folder under the system's temporary folder.
+/// Staging folders older than this are left from an update that never
+/// finished (the game was killed, or the player installed it by hand), and
+/// are removed when the next one is made.
+pub const STALE_STAGING: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A new, empty folder under the system's temporary folder, that only this
+/// user can open. On Linux that folder is `/tmp`, shared by every user: the
+/// folder's name is random, it is made with `create_dir` (which never
+/// follows or reuses what is there), and its mode is 0700, so no one else
+/// can read the update or plant anything in it. Old staging folders of the
+/// same `prefix` are removed on the way (see [`STALE_STAGING`]).
 pub fn make_staging_dir(prefix: &str) -> io::Result<PathBuf> {
     let base = std::env::temp_dir();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    for attempt in 0..100u32 {
+    let dir = make_staging_dir_in(&base, prefix)?;
+    sweep_stale_staging(&base, prefix, &dir, STALE_STAGING);
+    Ok(dir)
+}
+
+fn staging_name_start(prefix: &str) -> String {
+    format!("{prefix}-update-")
+}
+
+/// Sixteen random hex digits, for a name no one else can guess.
+pub(crate) fn random_suffix() -> String {
+    let mut bytes = [0u8; 8];
+    if getrandom::fill(&mut bytes).is_err() {
+        // Still unique; only harder to guess with the random source.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        bytes = (nanos as u64).to_le_bytes();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// [`make_staging_dir`] under `base`, without the sweep.
+pub fn make_staging_dir_in(base: &Path, prefix: &str) -> io::Result<PathBuf> {
+    for _ in 0..100u32 {
         let dir = base.join(format!(
-            "{prefix}-update-{}-{nanos}-{attempt}",
-            std::process::id()
+            "{}{}-{}",
+            staging_name_start(prefix),
+            std::process::id(),
+            random_suffix()
         ));
-        match fs::create_dir(&dir) {
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&dir) {
             Ok(()) => return Ok(dir),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
     }
     Err(io::Error::other("could not make a folder for the update"))
+}
+
+/// Removes staging folders of `prefix` under `base` not changed for
+/// `older_than`, except `keep`. Only real folders are removed, never a
+/// link, and on Unix only ones owned by the same user as `keep`, since
+/// `/tmp` holds other users' files too. Failures are ignored.
+pub fn sweep_stale_staging(base: &Path, prefix: &str, keep: &Path, older_than: Duration) {
+    let start = staging_name_start(prefix);
+    let Ok(mine) = fs::symlink_metadata(keep) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path == keep || !entry.file_name().to_string_lossy().starts_with(&start) {
+            continue;
+        }
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if meta.uid() != mine.uid() {
+                continue;
+            }
+        }
+        let _ = &mine;
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age >= older_than);
+        if old {
+            log::info!("removing an old update folder, {}", path.display());
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
 }
 
 fn missing(what: String) -> io::Error {
@@ -224,7 +306,9 @@ fn file_name(path: &Path) -> String {
 /// Unpacks the downloaded `archive` into `staging` and finds what replaces
 /// `install`. The archive is deleted once unpacked. The update must hold the
 /// running program under the same name, or it is refused: an archive
-/// without it could only leave the player with no game.
+/// without it could only leave the player with no game. However loose
+/// `limits` is, the archive may unpack to no more than
+/// [`Limits::for_archive`] of its size.
 pub fn stage(
     archive: &Path,
     staging: &Path,
@@ -240,6 +324,7 @@ pub fn stage(
         }
         return Ok(Staged::AppImage(archive.to_path_buf()));
     }
+    let limits = limits.at_most(Limits::for_archive(fs::metadata(archive)?.len()));
     let unpacked = staging.join("unpacked");
     extract::extract(archive, &unpacked, limits, cancelled)?;
     match fs::remove_file(archive) {
@@ -322,27 +407,75 @@ pub fn can_auto_apply(staged: &Staged, install: &Install) -> bool {
     }
 }
 
-/// Moves an update the player must install by hand somewhere they can find
-/// it again: an AppImage or an app bundle to the home folder, since the
-/// staging folder is under the system's temporary folder. A folder update
-/// stays where it was unpacked. Returns where it is.
-pub fn stash_for_manual_install(staged: &Staged, home: Option<&Path>) -> PathBuf {
+/// Moves an update the player must install by hand to their home folder,
+/// where they can find it again, and removes the rest of `staging` (the
+/// system's temporary folder is no place to keep it). Returns where the
+/// update is.
+///
+/// It stays in `staging` when there is no home folder, when something of
+/// its name is already there (it may be the player's own copy), when it
+/// cannot be moved, or when it has no name of its own (an archive without
+/// one top folder). [`make_staging_dir`] removes such a folder a day later.
+pub fn stash_for_manual_install(staged: &Staged, staging: &Path, home: Option<&Path>) -> PathBuf {
     let from = staged.path();
-    let Some(home) = home.filter(|_| !matches!(staged, Staged::Folder(_))) else {
-        return from.to_path_buf();
+    let unnamed = from == staging.join("unpacked") || from == staging;
+    let dest = match home {
+        Some(home) if !unnamed => home.join(file_name(from)),
+        _ => return from.to_path_buf(),
     };
-    let dest = home.join(file_name(from));
-    // Never replace what is already there: it may be the player's own copy.
     if fs::symlink_metadata(&dest).is_ok() {
         return from.to_path_buf();
     }
-    let moved = fs::rename(from, &dest).or_else(|_| match staged {
-        Staged::AppImage(_) => fs::copy(from, &dest).and_then(|_| fs::remove_file(from)),
-        _ => Err(io::Error::other("cannot move a bundle across disks")),
+    let moved = fs::rename(from, &dest).or_else(|_| {
+        // Another disk: copy, and take back a half-made copy.
+        let copied = copy_tree(from, &dest);
+        if copied.is_err() {
+            let _ = remove_any(&dest);
+        }
+        copied
     });
     match moved {
-        Ok(()) => dest,
-        Err(_) => from.to_path_buf(),
+        Ok(()) => {
+            if !dest.starts_with(staging) {
+                let _ = fs::remove_dir_all(staging);
+            }
+            dest
+        }
+        Err(e) => {
+            log::warn!("could not move the update to {}: {e}", dest.display());
+            from.to_path_buf()
+        }
+    }
+}
+
+fn remove_any(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Copies a file, or a folder and everything in it, to `to`, which must not
+/// exist. Links are copied as links, never followed.
+fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    let meta = fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(fs::read_link(from)?, to);
+        #[cfg(not(unix))]
+        return Err(io::Error::other("cannot copy a link"));
+    }
+    if meta.is_dir() {
+        fs::create_dir(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        fs::set_permissions(to, meta.permissions())
+    } else {
+        fs::copy(from, to).map(|_| ())
     }
 }
 
@@ -517,7 +650,7 @@ mod tests {
         assert!(can_auto_apply(&staged, &install));
         let home = dir.path().join("home");
         fs::create_dir_all(&home).unwrap();
-        let parked = stash_for_manual_install(&staged, Some(&home));
+        let parked = stash_for_manual_install(&staged, dir.path(), Some(&home));
         assert_eq!(parked, home.join("My_Game-1.1.0-x86_64.AppImage"));
         assert!(parked.is_file() && !download.exists());
     }
@@ -526,15 +659,130 @@ mod tests {
     fn stashing_never_replaces_the_players_copy() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
-        let app = dir.path().join("staging/My Game.app");
+        let staging = dir.path().join("staging");
+        let app = staging.join("unpacked/g/My Game.app");
         fs::create_dir_all(&app).unwrap();
         fs::create_dir_all(home.join("My Game.app")).unwrap();
         let staged = Staged::Bundle(app.clone());
-        assert_eq!(stash_for_manual_install(&staged, Some(&home)), app);
-        let folder = Staged::Folder(dir.path().join("staging"));
         assert_eq!(
-            stash_for_manual_install(&folder, Some(&home)),
-            dir.path().join("staging")
+            stash_for_manual_install(&staged, &staging, Some(&home)),
+            app
         );
+        assert!(app.is_dir());
+        // An update with no name of its own stays where it is.
+        let folder = Staged::Folder(staging.join("unpacked"));
+        assert_eq!(
+            stash_for_manual_install(&folder, &staging, Some(&home)),
+            staging.join("unpacked")
+        );
+        assert!(staging.is_dir());
+    }
+
+    /// A folder update the player installs by hand goes to their home
+    /// folder, and the staging folder goes: nothing is left in the
+    /// temporary folder.
+    #[test]
+    fn a_stashed_folder_update_leaves_no_staging_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let staging = dir.path().join("staging");
+        let root = staging.join("unpacked/my-game-1.1.0-linux-x64");
+        fs::create_dir_all(root.join("data")).unwrap();
+        fs::write(root.join("my-game"), b"ELF").unwrap();
+        fs::write(root.join("data/a.txt"), b"a").unwrap();
+        let dest = stash_for_manual_install(&Staged::Folder(root.clone()), &staging, Some(&home));
+        assert_eq!(dest, home.join("my-game-1.1.0-linux-x64"));
+        assert_eq!(fs::read(dest.join("data/a.txt")).unwrap(), b"a");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn a_tree_copies_across_with_its_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        fs::create_dir_all(from.join("sub")).unwrap();
+        fs::write(from.join("sub/f"), b"f").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("sub/f", from.join("link")).unwrap();
+        let to = dir.path().join("to");
+        copy_tree(&from, &to).unwrap();
+        assert_eq!(fs::read(to.join("sub/f")).unwrap(), b"f");
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_link(to.join("link")).unwrap(),
+            PathBuf::from("sub/f")
+        );
+    }
+
+    /// On Linux the staging folder is in `/tmp`, which every user shares:
+    /// it must be new, unguessable, and closed to everyone else.
+    #[test]
+    fn staging_folders_are_private_and_unguessable() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = make_staging_dir_in(dir.path(), "my-game").unwrap();
+        let b = make_staging_dir_in(dir.path(), "my-game").unwrap();
+        assert_ne!(a, b);
+        let name = file_name(&a);
+        assert!(name.starts_with("my-game-update-"), "{name}");
+        let random = name.rsplit('-').next().unwrap();
+        assert_eq!(random.len(), 16, "{name}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{mode:o}");
+        }
+    }
+
+    #[test]
+    fn old_staging_folders_are_swept_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let keep = make_staging_dir_in(base, "my-game").unwrap();
+        let old = make_staging_dir_in(base, "my-game").unwrap();
+        fs::write(old.join("archive.zip"), b"zip").unwrap();
+        let other_game = make_staging_dir_in(base, "other-game").unwrap();
+        let file = base.join("my-game-update-file");
+        fs::write(&file, b"not a folder").unwrap();
+        let outside = base.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("precious"), b"mine").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, base.join("my-game-update-link")).unwrap();
+        // Nothing is old enough yet.
+        sweep_stale_staging(base, "my-game", &keep, STALE_STAGING);
+        assert!(old.is_dir());
+        sweep_stale_staging(base, "my-game", &keep, Duration::ZERO);
+        assert!(!old.exists());
+        assert!(keep.is_dir() && other_game.is_dir() && file.is_file());
+        assert_eq!(fs::read(outside.join("precious")).unwrap(), b"mine");
+    }
+
+    /// A small archive that unpacks huge is stopped at a multiple of its
+    /// size, not at the default limit, so it cannot fill the disk.
+    #[test]
+    fn a_compression_bomb_is_stopped_near_its_own_size() {
+        use crate::extract::tests::{file_header, tar_gz};
+        use crate::extract::MIN_UNPACK_BYTES;
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("my-game-1.1.0-linux-x64.tar.gz");
+        let size = MIN_UNPACK_BYTES + 1024 * 1024;
+        tar_gz(&archive, |b| {
+            b.append_data(
+                &mut file_header(size, 0o644),
+                "my-game-1.1.0-linux-x64/zeros",
+                io::Read::take(io::repeat(0), size),
+            )
+            .unwrap();
+        });
+        assert!(fs::metadata(&archive).unwrap().len() * 20 < MIN_UNPACK_BYTES);
+        let install = Install::Folder {
+            dir: dir.path().join("game"),
+            exe: "my-game".into(),
+        };
+        let staging = dir.path().join("staging");
+        let err = stage(&archive, &staging, &install, Limits::default(), None).unwrap_err();
+        assert!(err.to_string().contains("more than allowed"), "{err}");
     }
 }
