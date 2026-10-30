@@ -19,6 +19,28 @@ use hearken_update::{
 type Files = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 /// Paths answered with a redirect to the address given.
 type Redirects = Arc<Mutex<HashMap<String, String>>>;
+/// Each request's path, and the range it asked for when it was answered as
+/// one.
+type Requests = Arc<Mutex<Vec<(String, Option<(u64, u64)>)>>>;
+
+/// `bytes=first-last`.
+fn parse_range(value: &str) -> Option<(u64, u64)> {
+    let (first, last) = value.strip_prefix("bytes=")?.split_once('-')?;
+    Some((first.parse().ok()?, last.parse().ok()?))
+}
+
+static REQUESTS: std::sync::OnceLock<Mutex<HashMap<String, Requests>>> = std::sync::OnceLock::new();
+
+/// The requests the server at `base` was sent.
+fn requests(base: &str) -> Requests {
+    REQUESTS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap()
+        .entry(base.to_string())
+        .or_default()
+        .clone()
+}
 
 /// Serves `files` by path until the test ends; anything else is a 404.
 fn serve() -> (String, Files) {
@@ -33,11 +55,13 @@ fn serve_with_redirects() -> (String, Files, Redirects) {
     let redirects: Redirects = Arc::default();
     let served = files.clone();
     let moved = redirects.clone();
+    let log = requests(&base);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let files = served.clone();
             let redirects = moved.clone();
+            let requests = log.clone();
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
@@ -45,10 +69,16 @@ fn serve_with_redirects() -> (String, Files, Redirects) {
                     return;
                 }
                 let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let mut range = None;
                 loop {
                     let mut header = String::new();
                     if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
                         break;
+                    }
+                    if let Some((name, value)) = header.split_once(':') {
+                        if name.eq_ignore_ascii_case("range") {
+                            range = parse_range(value.trim());
+                        }
                     }
                 }
                 if let Some(to) = redirects.lock().unwrap().get(&path).cloned() {
@@ -59,12 +89,25 @@ fn serve_with_redirects() -> (String, Files, Redirects) {
                     return;
                 }
                 let body = files.lock().unwrap().get(&path).cloned();
-                let (status, body) = match body {
-                    Some(body) => ("200 OK", body),
-                    None => ("404 Not Found", b"not found".to_vec()),
+                // Paths starting /ranged/ answer ranges; the rest ignore
+                // them, as many servers do.
+                let ranged = path.starts_with("/ranged/");
+                requests
+                    .lock()
+                    .unwrap()
+                    .push((path.clone(), range.filter(|_| ranged)));
+                let (status, body, extra) = match (body, range) {
+                    (Some(body), Some((first, last))) if ranged => {
+                        let total = body.len();
+                        let part = body[first as usize..=last as usize].to_vec();
+                        let extra = format!("Content-Range: bytes {first}-{last}/{total}\r\n");
+                        ("206 Partial Content", part, extra)
+                    }
+                    (Some(body), _) => ("200 OK", body, String::new()),
+                    (None, _) => ("404 Not Found", b"not found".to_vec(), String::new()),
                 };
                 let head = format!(
-                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = stream.write_all(head.as_bytes());
@@ -107,6 +150,7 @@ fn manifest_for(archive: &[u8], name: &str) -> Manifest {
         sha256: sha256_hex(archive),
         notes: "- Faster menus.".into(),
         published: None,
+        index: None,
     }
 }
 
@@ -378,4 +422,126 @@ fn a_redirect_to_plain_http_sends_nothing_there() {
         0,
         "a request reached {leak}"
     );
+}
+
+/// A zip release with a file index, over real HTTP: a server that answers
+/// ranges sends only what the player lacks; one that ignores them sends
+/// the whole archive; both leave the same update staged.
+#[test]
+fn only_the_changed_files_are_downloaded_over_http() {
+    use hearken_update::{download_and_stage, plan, Phase};
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let secret = SecretKey::generate().unwrap();
+    let name = "my-game-1.1.0-windows-x64.zip";
+    let path = dir.path().join(name);
+    // Two megabytes that do not compress, the same as the player's.
+    let mut x: u32 = 1;
+    let big: Vec<u8> = (0..2_000_000)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 24) as u8
+        })
+        .collect();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("my-game-1.1.0-windows-x64/my-game.exe", options)
+        .unwrap();
+    zip.write_all(b"MZ new").unwrap();
+    zip.start_file("my-game-1.1.0-windows-x64/sounds.pak", options)
+        .unwrap();
+    zip.write_all(&big).unwrap();
+    zip.finish().unwrap();
+    let archive = std::fs::read(&path).unwrap();
+    let index = hearken_update::index::build(&path).unwrap().to_json();
+    let index_name = hearken_update::index::index_name(name).unwrap();
+    let mut manifest = manifest_for(&archive, name);
+    manifest.platform = "windows-x64".into();
+    manifest.index = Some(hearken_update::IndexRef {
+        file: index_name.clone(),
+        size: index.len() as u64,
+        sha256: sha256_hex(index.as_bytes()),
+    });
+    let signed = manifest::sign(&manifest, &secret).unwrap();
+    let game = dir.path().join("game");
+    std::fs::create_dir_all(&game).unwrap();
+    std::fs::write(game.join("my-game.exe"), b"MZ old").unwrap();
+    std::fs::write(game.join("sounds.pak"), &big).unwrap();
+    let install = Install::Folder {
+        dir: game.clone(),
+        exe: "my-game.exe".into(),
+    };
+    let mut running = running(&secret);
+    running.platform = "windows-x64".into();
+    for folder in ["ranged", "whole"] {
+        let (base, files) = serve();
+        {
+            let mut files = files.lock().unwrap();
+            files.insert(
+                format!("/{folder}/update-stable-windows-x64.json"),
+                signed.clone().into_bytes(),
+            );
+            files.insert(format!("/{folder}/{name}"), archive.clone());
+            files.insert(
+                format!("/{folder}/{index_name}"),
+                index.clone().into_bytes(),
+            );
+        }
+        let source = ManifestUrl::new(&format!(
+            "{base}/{folder}/update-{{channel}}-{{platform}}.json"
+        ))
+        .unwrap();
+        let fetch = HttpFetch::default();
+        let mut update = check(&source, &fetch, &running, "stable").unwrap().unwrap();
+        update.plan = plan(&update, &fetch, &install);
+        assert!(update.plan.is_some(), "{folder}");
+        assert!(
+            update.download_size() < 100_000,
+            "{}",
+            update.download_size()
+        );
+        let staging = dir.path().join(format!("staging-{folder}"));
+        std::fs::create_dir_all(&staging).unwrap();
+        let mut phases = Vec::new();
+        let staged = download_and_stage(
+            &update,
+            &fetch,
+            &staging,
+            &install,
+            Limits::default(),
+            &mut |_, _| {},
+            &mut |p| phases.push(p),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(staged.path().join("my-game.exe")).unwrap(),
+            b"MZ new"
+        );
+        assert_eq!(
+            std::fs::read(staged.path().join("sounds.pak")).unwrap(),
+            big
+        );
+        let log = requests(&base).lock().unwrap().clone();
+        let archive_path = format!("/{folder}/{name}");
+        let asked: Vec<_> = log.iter().filter(|(p, _)| *p == archive_path).collect();
+        if folder == "ranged" {
+            assert!(
+                !asked.is_empty() && asked.iter().all(|(_, r)| r.is_some()),
+                "{log:?}"
+            );
+            assert_eq!(phases, [Phase::Downloading, Phase::Unpacking]);
+        } else {
+            // The range was ignored: the whole archive, once.
+            assert_eq!(
+                asked.iter().filter(|(_, r)| r.is_none()).count(),
+                2,
+                "{log:?}"
+            );
+            assert_eq!(
+                phases,
+                [Phase::Downloading, Phase::Downloading, Phase::Unpacking]
+            );
+        }
+    }
 }

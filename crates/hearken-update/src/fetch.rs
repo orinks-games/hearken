@@ -36,6 +36,20 @@ pub struct Body {
     pub reader: Box<dyn Read + Send>,
 }
 
+/// The answer to a request for part of a file, as the server gave it. The
+/// updater checks all of it ([`crate::partial`]); anything but exactly the
+/// part asked for means the whole file is downloaded instead.
+pub struct RangeBody {
+    /// The status: 206 for the part asked for. A server that ignores the
+    /// range answers 200 with the whole file.
+    pub status: u16,
+    /// The `Content-Range` header, as sent: `bytes 100-199/5000`.
+    pub content_range: Option<String>,
+    /// The declared length, when the server gave one.
+    pub length: Option<u64>,
+    pub reader: Box<dyn Read + Send>,
+}
+
 /// GET requests.
 pub trait Fetch: Send + Sync {
     /// The whole body of `url`, refusing more than `limit` bytes.
@@ -44,6 +58,26 @@ pub trait Fetch: Send + Sync {
     /// `url`'s body as a stream, for a download too big to hold. The reader
     /// should fail a read that waits too long rather than block for good.
     fn open(&self, url: &str) -> Result<Body, FetchError>;
+
+    /// Whether [`Fetch::open_range`] asks servers for parts of files. Off
+    /// unless a `Fetch` says so, so one written before ranges existed is
+    /// never offered a smaller download it cannot make.
+    fn supports_ranges(&self) -> bool {
+        false
+    }
+
+    /// Part of `url`, the bytes in `range` (end exclusive), as a stream,
+    /// with what the server said about it; `Ok(None)` when this `Fetch`
+    /// does not ask for parts. Like [`Fetch::open`], a read should fail
+    /// rather than wait for good.
+    fn open_range(
+        &self,
+        url: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<RangeBody>, FetchError> {
+        let _ = (url, range);
+        Ok(None)
+    }
 }
 
 /// Whether the updater fetches `url`: HTTPS anywhere, or plain HTTP to this
@@ -85,7 +119,7 @@ pub use http::HttpFetch;
 mod http {
     use std::time::Duration;
 
-    use super::{read_limited, url_allowed, Body, Fetch, FetchError};
+    use super::{read_limited, url_allowed, Body, Fetch, FetchError, RangeBody};
 
     /// How long a small request may take in all.
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -266,6 +300,37 @@ mod http {
                 length,
                 reader: Box::new(response.into_reader()),
             })
+        }
+
+        fn supports_ranges(&self) -> bool {
+            true
+        }
+
+        fn open_range(
+            &self,
+            url: &str,
+            range: std::ops::Range<u64>,
+        ) -> Result<Option<RangeBody>, FetchError> {
+            if range.is_empty() {
+                return Err(FetchError::Offline("an empty range".into()));
+            }
+            let wanted = format!("bytes={}-{}", range.start, range.end - 1);
+            // The bytes as stored: a range of a compressed answer would be
+            // a range of other bytes.
+            let response = call(
+                &self.download,
+                url,
+                &[("Range", &wanted), ("Accept-Encoding", "identity")],
+            )?;
+            let length = response
+                .header("content-length")
+                .and_then(|v| v.trim().parse::<u64>().ok());
+            Ok(Some(RangeBody {
+                status: response.status(),
+                content_range: response.header("content-range").map(str::to_string),
+                length,
+                reader: Box::new(response.into_reader()),
+            }))
         }
     }
 }

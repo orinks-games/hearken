@@ -66,6 +66,23 @@ pub struct Manifest {
     /// When the release was made, as the developer wrote it (RFC 3339).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published: Option<String>,
+    /// The archive's file index, for a zip: lets a copy download only the
+    /// files that changed. Copies that predate it ignore it, as serde
+    /// ignores any field it does not know, and download the whole archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<IndexRef>,
+}
+
+/// Where a release's file index is (see [`crate::index`]), and what it must
+/// be: published beside the manifest, under `file`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexRef {
+    /// The index's file name.
+    pub file: String,
+    /// Its size in bytes.
+    pub size: u64,
+    /// Its SHA-256, as 64 lowercase hex digits.
+    pub sha256: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -178,6 +195,17 @@ impl Manifest {
         if self.notes.len() > MAX_NOTES_BYTES {
             return bad("notes");
         }
+        if let Some(index) = &self.index {
+            if !is_file_name(&index.file)
+                || index.file == self.archive
+                || index.size == 0
+                || index.size > crate::index::MAX_INDEX_BYTES
+                || from_hex::<32>(&index.sha256).is_none()
+                || index.sha256.chars().any(|c| c.is_uppercase())
+            {
+                return bad("index");
+            }
+        }
         Ok(())
     }
 
@@ -289,6 +317,7 @@ pub(crate) mod tests {
             sha256: "ab".repeat(32),
             notes: "## Fixed\n- The menu no longer skips a row.".into(),
             published: Some("2026-10-30T02:00:00Z".into()),
+            index: None,
         }
     }
 
@@ -392,6 +421,27 @@ pub(crate) mod tests {
             |m| m.sha256 = "AB".repeat(32),
             |m| m.sha256 = "ab".repeat(31),
             |m| m.notes = "x".repeat(MAX_NOTES_BYTES + 1),
+            |m| {
+                m.index = Some(IndexRef {
+                    file: "../i.json".into(),
+                    size: 1,
+                    sha256: "ab".repeat(32),
+                })
+            },
+            |m| {
+                m.index = Some(IndexRef {
+                    file: "i.json".into(),
+                    size: 0,
+                    sha256: "ab".repeat(32),
+                })
+            },
+            |m| {
+                m.index = Some(IndexRef {
+                    file: "i.json".into(),
+                    size: 1,
+                    sha256: "AB".repeat(32),
+                })
+            },
             |m| m.format = 2,
         ];
         for (i, change) in cases.into_iter().enumerate() {
@@ -414,6 +464,38 @@ pub(crate) mod tests {
                 "case {i}: {opened:?}"
             );
         }
+    }
+
+    /// A copy that predates the index reads a manifest that has one: serde
+    /// skips fields it does not know. Here an older copy is a struct
+    /// without the field.
+    #[test]
+    fn the_index_field_is_optional_both_ways() {
+        #[derive(Deserialize)]
+        struct Older {
+            game: String,
+            size: u64,
+        }
+        let mut manifest = sample();
+        manifest.index = Some(IndexRef {
+            file: "my-game-1.4.0-windows-x64.index.json".into(),
+            size: 900,
+            sha256: "cd".repeat(32),
+        });
+        let secret = SecretKey::generate().unwrap();
+        let text = sign(&manifest, &secret).unwrap();
+        let envelope: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let older: Older = serde_json::from_str(envelope["signed"].as_str().unwrap()).unwrap();
+        assert_eq!((older.game.as_str(), older.size), ("my-game", 1234));
+        assert_eq!(open(text.as_bytes(), &secret.public()), Ok(manifest));
+        // A manifest written before the index opens with none.
+        let signed = serde_json::to_string(&sample()).unwrap();
+        assert!(!signed.contains("index"));
+        let plain = sign(&sample(), &secret).unwrap();
+        assert_eq!(
+            open(plain.as_bytes(), &secret.public()).unwrap().index,
+            None
+        );
     }
 
     #[test]

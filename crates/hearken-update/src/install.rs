@@ -337,12 +337,22 @@ pub fn stage(
         return Ok(Staged::AppImage(archive.to_path_buf()));
     }
     let limits = limits.at_most(Limits::for_archive(fs::metadata(archive)?.len()));
-    let unpacked = staging.join("unpacked");
+    let unpacked = staging.join(UNPACKED);
     extract::extract(archive, &unpacked, limits, cancelled)?;
     match fs::remove_file(archive) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
+    staged_from(staging, install)
+}
+
+/// The folder under a staging folder that an update is unpacked into.
+pub(crate) const UNPACKED: &str = "unpacked";
+
+/// What replaces `install`, from the update unpacked in `staging`. The
+/// update must hold the running program under the same name.
+pub(crate) fn staged_from(staging: &Path, install: &Install) -> io::Result<Staged> {
+    let unpacked = staging.join(UNPACKED);
     let root = extract::unpacked_root(&unpacked)?;
     match install {
         Install::Bundle { app, exe } => {
@@ -367,7 +377,7 @@ pub fn stage(
 }
 
 /// The app bundle in `root`: the one named `name`, else the only one.
-fn find_bundle(root: &Path, name: &str) -> io::Result<PathBuf> {
+pub(crate) fn find_bundle(root: &Path, name: &str) -> io::Result<PathBuf> {
     if root.extension().is_some_and(|e| e == "app") {
         return Ok(root.to_path_buf());
     }

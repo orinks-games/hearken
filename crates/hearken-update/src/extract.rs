@@ -18,12 +18,18 @@
 //!
 //! A `__MACOSX` folder and `._` files (macOS resource forks and extended
 //! attributes) are skipped.
+//!
+//! A zip put together from a partial download ([`crate::partial`]) goes
+//! through the same code, entry by entry, with the files the player already
+//! has copied in, and every file checked against the signed index.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::index::IndexEntry;
 use crate::manifest::{archive_kind, ArchiveKind};
 
 /// How much an archive may unpack to.
@@ -142,7 +148,7 @@ fn safe_link_target(target: &str) -> bool {
 /// Whether to skip an entry: Finder's resource-fork folder, or an
 /// AppleDouble file (`._name`) that `ditto` writes for a file's extended
 /// attributes. Inside an app those would break its code signature.
-fn skipped(path: &Path) -> bool {
+pub(crate) fn skipped(path: &Path) -> bool {
     path.components()
         .next()
         .is_some_and(|c| c.as_os_str() == "__MACOSX")
@@ -269,6 +275,43 @@ pub fn extract(
     limits: Limits,
     cancelled: Option<&AtomicBool>,
 ) -> io::Result<()> {
+    extract_inner(archive, dest, limits, cancelled, None)
+}
+
+/// A zip put together from parts (see [`crate::partial`]): only some
+/// entries' bytes were downloaded, and the rest are files the player
+/// already has. The zip's central directory, local headers and downloaded
+/// entries are the release's own; what stands in for the rest is never
+/// read.
+pub(crate) struct Assembly<'a> {
+    /// The signed index: one entry for each of the zip's, in order.
+    pub entries: &'a [IndexEntry],
+    /// Entries to copy from the player's install instead, by position.
+    pub reuse: &'a BTreeMap<usize, PathBuf>,
+}
+
+/// Unpacks a zip put together from parts into `dest`, exactly as
+/// [`extract`] would unpack the whole archive: the same entries, checks and
+/// limits. Besides, every entry must be where the signed index says, and
+/// every file and link written, downloaded or copied from the install, must
+/// be the signed size and SHA-256 once it is on disk.
+pub(crate) fn extract_assembled(
+    archive: &Path,
+    dest: &Path,
+    limits: Limits,
+    cancelled: Option<&AtomicBool>,
+    assembly: &Assembly,
+) -> io::Result<()> {
+    extract_inner(archive, dest, limits, cancelled, Some(assembly))
+}
+
+fn extract_inner(
+    archive: &Path,
+    dest: &Path,
+    limits: Limits,
+    cancelled: Option<&AtomicBool>,
+    assembly: Option<&Assembly>,
+) -> io::Result<()> {
     fs::create_dir_all(dest)?;
     let name = archive
         .file_name()
@@ -282,8 +325,8 @@ pub fn extract(
         cancelled,
     };
     match archive_kind(&name) {
-        Some(ArchiveKind::Zip) => extract_zip(archive, &mut writer),
-        Some(ArchiveKind::TarGz) => extract_tar_gz(archive, &mut writer),
+        Some(ArchiveKind::Zip) => extract_zip(archive, &mut writer, assembly),
+        Some(ArchiveKind::TarGz) if assembly.is_none() => extract_tar_gz(archive, &mut writer),
         _ => Err(refuse(format!(
             "{name} is not an archive this updater unpacks"
         ))),
@@ -298,30 +341,80 @@ const S_IFLNK: u32 = 0o120000;
 /// The most a link's target may be.
 const MAX_LINK_BYTES: u64 = 4096;
 
-fn extract_zip(archive: &Path, writer: &mut Writer) -> io::Result<()> {
+fn extract_zip(archive: &Path, writer: &mut Writer, assembly: Option<&Assembly>) -> io::Result<()> {
     let file = fs::File::open(archive)?;
     let mut zip = zip::ZipArchive::new(io::BufReader::new(file)).map_err(io::Error::other)?;
     if zip.len() as u64 > writer.limits.entries {
         return Err(refuse("the archive has too many entries"));
     }
+    if assembly.is_some_and(|a| a.entries.len() != zip.len() || zip.offset() != 0) {
+        return Err(refuse("the archive is not the one its index describes"));
+    }
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(io::Error::other)?;
         let name = entry.name().to_string();
+        let expected = assembly.map(|a| &a.entries[i]);
+        if let Some(expected) = expected {
+            let placed = expected.path == name
+                && expected.header == entry.header_start()
+                && expected.data == entry.data_start()
+                && expected.data.checked_add(entry.compressed_size()) == Some(expected.end);
+            if !placed {
+                return Err(refuse(format!("{name} is not where its index says")));
+            }
+        }
+        let reuse = assembly.and_then(|a| a.reuse.get(&i));
         let mode = entry.unix_mode();
         let kind = match mode.map(|m| m & S_IFMT) {
             _ if entry.is_dir() => Kind::Dir,
             Some(S_IFDIR) => Kind::Dir,
+            Some(S_IFLNK) if reuse.is_some() => {
+                return Err(refuse(format!("{name} is a link, not a file to reuse")))
+            }
             Some(S_IFLNK) => {
                 let mut target = String::new();
                 (&mut entry)
                     .take(MAX_LINK_BYTES)
                     .read_to_string(&mut target)?;
+                if let Some(expected) = expected {
+                    let (size, sha256) = crate::index::hash_reader(target.as_bytes())?;
+                    if size != expected.size || sha256 != expected.sha256 {
+                        return Err(refuse(format!("{name} does not match its index")));
+                    }
+                }
                 Kind::Link(target)
             }
             None | Some(0) | Some(S_IFREG) => Kind::File { mode },
             Some(_) => return Err(refuse(format!("{name} is not a file, folder or link"))),
         };
-        writer.entry(&name, kind, &mut entry)?;
+        let is_file = matches!(kind, Kind::File { .. });
+        match reuse {
+            Some(installed) => {
+                if !is_file {
+                    return Err(refuse(format!("{name} is not a file to reuse")));
+                }
+                drop(entry);
+                // The player's copy, never followed through a link.
+                let meta = fs::symlink_metadata(installed)?;
+                if !meta.is_file() {
+                    return Err(refuse(format!("{} changed", installed.display())));
+                }
+                let mut source = fs::File::open(installed)?;
+                writer.entry(&name, kind, &mut source)?;
+            }
+            None => writer.entry(&name, kind, &mut entry)?,
+        }
+        // What is on disk is what ships: it must be the signed bytes.
+        if let (Some(expected), true) = (expected, is_file) {
+            let Some(rel) = safe_path(&name).filter(|rel| !skipped(rel)) else {
+                continue;
+            };
+            let written = fs::File::open(writer.dest.join(rel))?;
+            let (size, sha256) = crate::index::hash_reader(written)?;
+            if size != expected.size || sha256 != expected.sha256 {
+                return Err(refuse(format!("{name} does not match its index")));
+            }
+        }
     }
     Ok(())
 }

@@ -40,6 +40,12 @@ impl Running {
 pub struct Update {
     pub manifest: Manifest,
     pub archive_url: String,
+    /// Where the archive's file index is, when the manifest names one.
+    pub index_url: Option<String>,
+    /// The files this copy already has, so it downloads only the rest: set
+    /// by [`crate::partial::plan`] after the check. `None` downloads the
+    /// whole archive.
+    pub plan: Option<crate::partial::Plan>,
 }
 
 impl Update {
@@ -50,6 +56,14 @@ impl Update {
     /// The archive's size in bytes, as signed.
     pub fn size(&self) -> u64 {
         self.manifest.size
+    }
+
+    /// The bytes downloading it takes: less than [`Update::size`] when this
+    /// copy has some of its files already.
+    pub fn download_size(&self) -> u64 {
+        self.plan
+            .as_ref()
+            .map_or(self.manifest.size, |plan| plan.download_size())
     }
 }
 
@@ -160,9 +174,17 @@ pub fn check(
             .file_url(&manifest.archive)
             .ok_or_else(|| Refusal::NoArchive(manifest.archive.clone()))?,
     };
+    // Beside the manifest, like the archive (on GitHub, an asset of the
+    // same release). A missing index only means a whole download.
+    let index_url = manifest
+        .index
+        .as_ref()
+        .and_then(|index| found.file_url(&index.file));
     Ok(Some(Update {
         manifest,
         archive_url,
+        index_url,
+        plan: None,
     }))
 }
 
@@ -207,6 +229,29 @@ mod tests {
             update.archive_url,
             "https://example.com/g/my-game-1.4.0-linux-x64.tar.gz"
         );
+        assert_eq!(update.index_url, None);
+        assert_eq!(update.download_size(), update.size());
+    }
+
+    #[test]
+    fn a_signed_index_is_found_beside_the_manifest() {
+        let secret = SecretKey::generate().unwrap();
+        let mut manifest = sample();
+        manifest.archive = "my-game-1.4.0-windows-x64.zip".into();
+        manifest.index = Some(crate::manifest::IndexRef {
+            file: "my-game-1.4.0-windows-x64.index.json".into(),
+            size: 10,
+            sha256: "ab".repeat(32),
+        });
+        let fetch = serving(&manifest, &secret);
+        let update = check(&source(), &fetch, &running(&secret, "1.3.2"), "stable")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            update.index_url.as_deref(),
+            Some("https://example.com/g/my-game-1.4.0-windows-x64.index.json")
+        );
+        assert_eq!(update.plan, None);
     }
 
     #[test]

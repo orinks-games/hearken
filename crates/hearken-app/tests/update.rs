@@ -115,6 +115,7 @@ fn publish(world: &World, signer: &SecretKey, with_program: bool, version: &str)
         sha256: hearken_app::update::download::sha256_file(&sums).unwrap(),
         notes: "## Fixed\n- The map reads the right street.\n- Faster menus.".into(),
         published: None,
+        index: None,
     };
     let signed = manifest::sign(&manifest, signer).unwrap();
     let mut table = world.table.0.lock().unwrap();
