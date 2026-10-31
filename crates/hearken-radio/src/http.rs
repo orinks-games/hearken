@@ -32,7 +32,27 @@ pub(crate) fn open(
     shared: &Arc<Shared>,
     opts: &StreamOptions,
 ) -> Result<Response, Fault> {
-    let mut response = call(url, opts)?;
+    open_with(url, shared, opts, false)
+}
+
+/// Calls `url` as [`open`] does, offering to take the reply gzipped; a
+/// gzipped reply's body reads as the text it holds. Only for text: a
+/// station's audio is never offered compression.
+pub(crate) fn open_gzip(
+    url: &str,
+    shared: &Arc<Shared>,
+    opts: &StreamOptions,
+) -> Result<Response, Fault> {
+    open_with(url, shared, opts, true)
+}
+
+fn open_with(
+    url: &str,
+    shared: &Arc<Shared>,
+    opts: &StreamOptions,
+    gzip: bool,
+) -> Result<Response, Fault> {
+    let mut response = call(url, opts, gzip)?;
     response.body = Box::new(UntilClosed {
         body: response.body,
         shared: shared.clone(),
@@ -57,7 +77,7 @@ impl Read for UntilClosed {
     }
 }
 
-fn call(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
+fn call(url: &str, opts: &StreamOptions, gzip: bool) -> Result<Response, Fault> {
     let url = Url::parse(url).map_err(|_| bad_url())?;
     let mut agent = ureq::AgentBuilder::new();
     if let Some(tls) = platform_tls() {
@@ -69,17 +89,27 @@ fn call(url: &str, opts: &StreamOptions) -> Result<Response, Fault> {
         .redirects(10)
         .user_agent(&opts.user_agent)
         .build();
-    match agent
-        .request_url("GET", &url)
-        .set("Icy-MetaData", "1")
-        .call()
-    {
-        Ok(response) => Ok(Response {
-            url: Url::parse(response.get_url()).unwrap_or(url),
-            content_type: response.header("content-type").map(str::to_owned),
-            icy_metaint: metaint(response.header("icy-metaint")),
-            body: response.into_reader(),
-        }),
+    let mut request = agent.request_url("GET", &url).set("Icy-MetaData", "1");
+    if gzip {
+        request = request.set("Accept-Encoding", "gzip");
+    }
+    match request.call() {
+        Ok(response) => {
+            let gzipped = gzip
+                && response
+                    .header("content-encoding")
+                    .is_some_and(|coding| coding.trim().eq_ignore_ascii_case("gzip"));
+            Ok(Response {
+                url: Url::parse(response.get_url()).unwrap_or(url),
+                content_type: response.header("content-type").map(str::to_owned),
+                icy_metaint: metaint(response.header("icy-metaint")),
+                body: if gzipped {
+                    Box::new(flate2::read::GzDecoder::new(response.into_reader()))
+                } else {
+                    response.into_reader()
+                },
+            })
+        }
         Err(ureq::Error::Status(code, _)) => Err(status(code)),
         Err(ureq::Error::Transport(error)) => {
             // Where it went wrong: a redirect may have led to an old server.

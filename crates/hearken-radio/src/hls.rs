@@ -19,7 +19,7 @@ use crate::decode::{self, closed, no_audio};
 use crate::http::{self, bad_url};
 use crate::stream::{Fault, RawTitle, Shared, StreamOptions};
 use crate::title;
-use crate::worker::{read_up_to, MAX_PLAYLIST};
+use crate::worker::read_up_to;
 
 /// Segments back from the live edge to start: the cushion that keeps a
 /// late segment from being heard.
@@ -31,6 +31,11 @@ const MAX_SEGMENT: u64 = 16 << 20;
 
 /// The shortest wait between re-reads of a playlist.
 const MIN_REFRESH: Duration = Duration::from_millis(500);
+
+/// The most of an HLS playlist worth reading. A live window hours long is
+/// several MiB: YouTube's four-hour window lists about 2,900 segments in
+/// 3.7 MB. Cut short, its list ends hours behind live, mid-line.
+pub(crate) const MAX_PLAYLIST: u64 = 16 << 20;
 
 /// Codecs that make a variant video.
 const VIDEO_CODECS: [&str; 5] = ["avc1", "hvc1", "hev1", "vp09", "av01"];
@@ -97,7 +102,7 @@ impl HlsReader {
         if let Playlist::MasterPlaylist(master) = &playlist {
             let variant = audio_uri(master).ok_or_else(no_audio)?;
             let variant = url.join(variant).map_err(|_| bad_url())?;
-            let (at, text) = fetch(&variant, MAX_PLAYLIST, shared, opts)?;
+            let (at, text) = fetch_playlist(&variant, shared, opts)?;
             (url, playlist) = (at, parse(&text)?);
         }
         let mut reader = HlsReader {
@@ -171,7 +176,7 @@ impl HlsReader {
             if self.ended {
                 return Ok(false);
             }
-            let fetched = fetch(&self.url, MAX_PLAYLIST, &self.shared, &self.opts);
+            let fetched = fetch_playlist(&self.url, &self.shared, &self.opts);
             let (url, text) = fetched.map_err(retry)?;
             self.url = url;
             self.enqueue(&media(parse(&text).map_err(retry)?)?);
@@ -350,6 +355,19 @@ fn fetch(
 ) -> Result<(Url, Vec<u8>), Fault> {
     let mut response = http::open(url.as_str(), shared, opts)?;
     let bytes = read_up_to(&mut response.body, limit)?;
+    Ok((response.url, bytes))
+}
+
+/// A playlist, asked for gzipped: it is re-read every segment or so, and a
+/// long live window's text shrinks many times over. The limit counts the
+/// text, not what came over the wire.
+fn fetch_playlist(
+    url: &Url,
+    shared: &Arc<Shared>,
+    opts: &StreamOptions,
+) -> Result<(Url, Vec<u8>), Fault> {
+    let mut response = http::open_gzip(url.as_str(), shared, opts)?;
+    let bytes = read_up_to(&mut response.body, MAX_PLAYLIST)?;
     Ok((response.url, bytes))
 }
 

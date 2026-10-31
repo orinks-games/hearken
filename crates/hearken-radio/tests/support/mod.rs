@@ -35,6 +35,9 @@ pub enum Reply {
     IcyV1(Vec<u8>),
     /// Status and `Location`, no body, then close.
     Redirect(u16, String),
+    /// 200 and the body, gzipped with `Content-Encoding` when the request
+    /// offers to take gzip, plain when it does not; then close.
+    Gzip(&'static str, Vec<u8>),
 }
 
 /// How many body bytes go out at a time, and how often: 32 KiB/s, four
@@ -175,6 +178,26 @@ fn serve(socket: TcpStream, log: &Log, route: &dyn Fn(&str) -> Reply) -> io::Res
         Reply::IcyV1(body) => {
             write!(out, "ICY 200 OK\r\ncontent-type: audio/mpeg\r\n\r\n")?;
             paced(out, &body, None, None, PACE.1, &sent)
+        }
+        Reply::Gzip(content_type, body) => {
+            let offered = head.to_ascii_lowercase().contains("accept-encoding: gzip");
+            let (coding, body) = if offered {
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(&body)?;
+                ("Content-Encoding: gzip\r\n", encoder.finish()?)
+            } else {
+                ("", body)
+            };
+            write!(
+                out,
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{coding}\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )?;
+            out.write_all(&body)?;
+            sent(body.len());
+            Ok(())
         }
         Reply::Redirect(status, location) => write!(
             out,

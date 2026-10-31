@@ -15,6 +15,8 @@ authors.workspace = true
 fdk-aac = ["dep:symphonia-adapter-fdk-aac"]
 
 [dependencies]
+# Gzipped HLS playlists: a long live window's text re-read every segment.
+flate2 = "1"
 hearken-audio.workspace = true
 icy-metadata.workspace = true
 log.workspace = true
