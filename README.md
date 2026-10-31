@@ -335,6 +335,38 @@ Copy `template/` to start, or set a game up by hand:
 `practice.rs`, and a synthesized engine voice in `sound.rs`.
 `template/tests/walkthrough.rs` plays through the game in tests.
 
+### Let others build and play your game
+
+Put the game on GitHub and anyone can play it from source with one line,
+after the four steps in [Getting started](#getting-started):
+
+```sh
+hearken play your-name/your-game
+```
+
+Your repository needs nothing special for this. `hearken play` finds the
+program that depends on `hearken` in your workspace, so a game made from
+the template, or a single crate with one program, works as it is. Add a
+`[package.metadata.hearken]` table (see
+[Play and release](#play-and-release-with-the-hearken-command)) only when
+your workspace has more than one such program, such as the game and an
+editor, to say which one is the game, or to set what a release holds.
+
+A README for your game can stay short:
+
+````markdown
+## Build from source
+
+Follow Getting started in Hearken's README
+(https://github.com/orinks-games/hearken#getting-started) to install the
+tools and the hearken command, then run:
+
+    hearken play your-name/your-game
+````
+
+Players without Rust can run the same command with `--download` once you
+publish a release made with `hearken release`.
+
 ### Environment overrides
 
 Each game's `ENV_PREFIX` names a set of environment variables, so two games
