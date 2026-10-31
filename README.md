@@ -104,28 +104,132 @@ Some of what that gives a game:
 
 ## Getting started
 
+Building a Hearken game from source takes four steps, the same on Windows,
+macOS and Linux: install the tools below, install the `hearken` command,
+let it check your computer, and play. The first build of any game takes a
+while (Prism, SDL2 and the Opus decoder are compiled from C and C++
+source); later builds are quick.
+
+### 1. Install the tools
+
+Every platform needs [Git](https://git-scm.com/downloads), Rust installed
+through [rustup](https://rustup.rs), and CMake 3.24 or newer. Install Rust
+through rustup even if your system offers another way: rustup reads each
+game's `rust-toolchain.toml` and fetches the compiler that game pins,
+on its first build.
+
+**macOS**, in Terminal:
+
+1. Install Apple's compilers (Git comes with them), and follow the dialog
+   it opens:
+
+   ```sh
+   xcode-select --install
+   ```
+
+2. Install CMake. With [Homebrew](https://brew.sh), run
+   `brew install cmake`; without it, use the macOS installer from
+   [cmake.org](https://cmake.org/download/), then run
+   `sudo "/Applications/CMake.app/Contents/bin/cmake-gui" --install` so
+   Terminal finds it. Do not install Homebrew's `sdl2`: games build their
+   own.
+3. Install Rust, accepting the defaults, then open a new Terminal window:
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+**Windows**, in PowerShell:
+
+1. Install Git, CMake and the Visual Studio Build Tools with the C++ tools
+   and the C++ ATL component (Prism's speech backends need ATL):
+
+   ```powershell
+   winget install Git.Git
+   winget install Kitware.CMake
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.ATL --includeRecommended"
+   ```
+
+   The CMake inside Visual Studio is too old for Prism, so install CMake
+   on its own as above. If you already have Visual Studio, add
+   "Desktop development with C++" and "C++ ATL for latest build tools" from
+   the Visual Studio Installer instead.
+2. Install Rust with `rustup-init.exe` from [rustup.rs](https://rustup.rs),
+   then open a new PowerShell window.
+
+**Linux**: GCC 13 or newer (on Ubuntu 22.04, `gcc-13` and `g++-13` beside
+the system GCC work; `hearken play` picks them up), and the development
+files for ALSA, Speech Dispatcher and SDL2's window and sound backends.
+Prism will not build without a Linux speech backend. On Debian and Ubuntu:
+
+```sh
+sudo apt install git cmake pkg-config build-essential libasound2-dev \
+  libpulse-dev libspeechd-dev libx11-dev libxext-dev libxrandr-dev \
+  libxcursor-dev libxi-dev libxss-dev libxkbcommon-dev libwayland-dev \
+  wayland-protocols libdecor-0-dev libegl1-mesa-dev libgl1-mesa-dev \
+  libdbus-1-dev libudev-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Fedora and Arch have the same libraries under their own names
+(`alsa-lib-devel` and `speech-dispatcher-devel` on Fedora).
+`.github/actions/linux-deps/action.yml` lists every package CI installs.
+
+### 2. Install the hearken command
+
+```sh
+cargo install --locked --git https://github.com/orinks-games/hearken hearken-cli
+```
+
+This puts `hearken` in Cargo's `bin` folder, which rustup already added to
+your path. Run the same command with `--force` to update it.
+
+### 3. Check your computer
+
+```sh
+hearken doctor
+```
+
+It checks each tool above, says "ok" or "missing" for each, and for
+anything missing gives the command that installs it on your system. Run it
+again until everything is ok.
+
+### 4. Play a game from source
+
+Turn your screen reader on. `hearken play` takes a game's GitHub
+repository, clones it into your home folder (`~/Freight-Fate` here) the
+first time, pulls the latest source each time after, builds it and starts
+it:
+
+```sh
+hearken play orinks-games/Freight-Fate
+```
+
+Inside a game's own folder, `hearken play` alone builds and starts the
+copy you are in, changes and all. Each game's README has its own build
+notes, such as Freight Fate's
+[Run from source](https://github.com/orinks-games/Freight-Fate#run-from-source).
+A private game's repository needs your git credentials, as any `git clone`
+of it does: ask its owner for access, then sign Git in to GitHub (the
+[GitHub CLI](https://cli.github.com)'s `gh auth login` does it).
+
+`cargo` works too, without the `hearken` command: in a game's folder,
+`cargo run --release -p <the game's package>`.
+
 ### Build the template game
 
 The repository includes Hello Hearken (`template/`), the smallest complete
 game: a title menu, settings, help, and a practice room with a beacon that
 circles you and an engine you can rev.
 
-1. Install Rust with [rustup](https://rustup.rs). `rust-toolchain.toml`
-   picks the compiler version.
-2. Install CMake 3.24 or newer and a C++23 compiler (Visual Studio 2022 on
-   Windows). Prism, SDL2 and libopus, the Opus decoder, are compiled from
-   source the first time you build. To skip Prism's build, set
-   `PRISM_LIB_DIR` to a folder holding a prebuilt Prism library.
-3. On Linux, install the development files for ALSA (`libasound2-dev` on
-   Debian and Ubuntu), Speech Dispatcher (`libspeechd-dev`), and SDL2's
-   desktop backends. Prism will not build without at least one Linux speech
-   backend. `.github/actions/linux-deps/action.yml` lists every package CI
-   installs on Ubuntu.
-4. Turn your screen reader on, then run:
+```sh
+git clone https://github.com/orinks-games/hearken
+cd hearken
+cargo run -p hello-hearken
+```
 
-   ```sh
-   cargo run -p hello-hearken
-   ```
+To skip Prism's build, set `PRISM_LIB_DIR` to a folder holding a prebuilt
+Prism library.
 
 ### Make your own game
 
@@ -248,9 +352,8 @@ on one machine never share them. For a prefix of `MY_GAME`:
 
 ### Play and release with the hearken command
 
-```sh
-cargo install --git https://github.com/orinks-games/hearken hearken-cli
-```
+[Getting started](#getting-started) installs the command. Besides
+`hearken doctor`:
 
 - `hearken play <game>` starts a game. With Rust installed it pulls the
   latest source and builds a developer build, agent server included.
@@ -294,8 +397,8 @@ The command knows no games of its own: a game is its GitHub repository or
 a folder on this computer.
 
 ```sh
-hearken play orinks-games/freight-fate        # or https://github.com/orinks-games/freight-fate
-hearken play orinks-games/freight-fate --download
+hearken play orinks-games/Freight-Fate        # or https://github.com/orinks-games/Freight-Fate
+hearken play orinks-games/Freight-Fate --download
 hearken release ../my-game
 ```
 
@@ -306,7 +409,8 @@ folder, one folder per release, and starts the release's only program, or
 the one named like the repository. Inside a game's own folder the name can
 be left out; `hearken play` then builds the work in progress as it is. The
 game's `Cargo.toml` says which package is the game and what a release
-holds:
+holds; a workspace without a `[package.metadata.hearken]` table plays its
+one program that depends on `hearken`:
 
 ```toml
 [package.metadata.hearken]
