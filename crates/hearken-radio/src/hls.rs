@@ -199,8 +199,13 @@ impl HlsReader {
             Some(range) => slice(bytes, range),
             None => bytes,
         };
+        // Packed audio (raw ADTS, MP3 or AC-3) opens every segment with an
+        // ID3 timestamp tag, which the decoder would read as a broken frame.
+        // YouTube's audio-only streams are packed AAC named `seg.ts`.
+        let packed = bytes.starts_with(b"ID3");
+        let bytes = if packed { without_id3(bytes) } else { bytes };
         // Every MPEG-TS packet starts with 0x47.
-        let ts = bytes.first() == Some(&0x47) || url.path().ends_with(".ts");
+        let ts = !packed && (bytes.first() == Some(&0x47) || url.path().ends_with(".ts"));
         // ponytail: a codec change at #EXT-X-DISCONTINUITY is not re-probed;
         // restart the pump there if a station is heard doing it.
         if segment.discontinuity {
@@ -371,6 +376,25 @@ fn fetch_playlist(
     Ok((response.url, bytes))
 }
 
+/// `bytes` past the ID3v2 tags at its start. A tag's size is four
+/// seven-bit bytes after its version and flags, and a footer (flag bit 4)
+/// adds ten more. A tag that runs past the end leaves nothing.
+fn without_id3(mut bytes: Vec<u8>) -> Vec<u8> {
+    let mut start = 0;
+    while let Some(head) = bytes
+        .get(start..start + 10)
+        .filter(|h| h.starts_with(b"ID3"))
+    {
+        let size = head[6..10]
+            .iter()
+            .fold(0usize, |size, &byte| size << 7 | usize::from(byte & 0x7f));
+        let footer = if head[5] & 0x10 != 0 { 10 } else { 0 };
+        start = (start + 10 + size + footer).min(bytes.len());
+    }
+    bytes.drain(..start);
+    bytes
+}
+
 /// The audio elementary stream in an MPEG-TS segment: the one on packet id
 /// `audio`, or on the first that starts an audio packet, which `audio` then
 /// keeps. Audio streams may share a PES stream id, so only the packet id
@@ -464,6 +488,46 @@ mod tests {
         // A lagging CDN edge: its newest segment is the one before `last`.
         let playlist = six(10);
         assert_eq!(newer(&playlist, Some(16)).count(), 0);
+    }
+
+    /// An ID3v2.4 tag holding one 8-byte PRIV frame, as packed audio
+    /// segments open with: 10-byte header, 10-byte frame header, the owner
+    /// string and its NUL, then the timestamp.
+    fn id3_timestamp() -> Vec<u8> {
+        let owner = b"com.apple.streaming.transportStreamTimestamp\0";
+        let frame_size = owner.len() + 8;
+        let mut frame = b"PRIV".to_vec();
+        frame.extend((frame_size as u32).to_be_bytes());
+        frame.extend([0, 0]);
+        frame.extend(owner);
+        frame.extend([0, 0, 0, 0, 0, 0x01, 0x5f, 0x90]);
+        let size = frame.len();
+        let mut tag = b"ID3\x04\x00\x00".to_vec();
+        tag.extend([
+            (size >> 21) as u8 & 0x7f,
+            (size >> 14) as u8 & 0x7f,
+            (size >> 7) as u8 & 0x7f,
+            size as u8 & 0x7f,
+        ]);
+        tag.extend(frame);
+        tag
+    }
+
+    #[test]
+    fn a_packed_audio_segment_loses_its_id3_tag() {
+        let adts = [0xff, 0xf1, 0x50, 0x80, 0x01, 0x02];
+        let mut segment = id3_timestamp();
+        segment.extend(adts);
+        assert_eq!(without_id3(segment), adts);
+        // Two tags in a row, and a tag that claims more than there is.
+        let mut twice = id3_timestamp();
+        twice.extend(id3_timestamp());
+        twice.extend(adts);
+        assert_eq!(without_id3(twice), adts);
+        let mut cut = id3_timestamp();
+        cut.truncate(15);
+        assert!(without_id3(cut).is_empty());
+        assert_eq!(without_id3(adts.to_vec()), adts);
     }
 
     #[test]

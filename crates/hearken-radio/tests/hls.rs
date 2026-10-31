@@ -124,6 +124,32 @@ fn dvr_window(n: u64) -> Vec<u8> {
     text.into_bytes()
 }
 
+/// Four packed-audio segments from `n`, each named `seg.ts` in a folder of
+/// its own, as YouTube's audio-only streams name them.
+fn packed_window(n: u64) -> Vec<u8> {
+    let mut text = format!("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:{n}\n");
+    for sequence in n..n + 4 {
+        text += &format!("#EXTINF:1.0,\npacked/sq/{sequence}/seg.ts\n");
+    }
+    text.into_bytes()
+}
+
+/// The ADTS tone behind an ID3v2.4 tag holding one PRIV timestamp frame,
+/// the way packed audio opens every segment.
+fn packed_segment() -> Vec<u8> {
+    let owner = b"com.apple.streaming.transportStreamTimestamp\0";
+    let mut frame = b"PRIV".to_vec();
+    frame.extend(((owner.len() + 8) as u32).to_be_bytes());
+    frame.extend([0, 0]);
+    frame.extend(owner);
+    frame.extend([0, 0, 0, 0, 0, 0x01, 0x5f, 0x90]);
+    let mut tag = b"ID3\x04\x00\x00\x00\x00\x00".to_vec();
+    tag.push(frame.len() as u8);
+    tag.extend(frame);
+    tag.extend(ADTS);
+    tag
+}
+
 /// `/live.m3u8` (ADTS) and `/ts.m3u8` (MPEG-TS) are live windows that move
 /// on one segment for every whole second the server has been up.
 fn station() -> TestServer {
@@ -134,6 +160,8 @@ fn station() -> TestServer {
         match path {
             "/live.m3u8" => playlist(window(n, "aac")),
             "/dvr.m3u8" => Reply::Gzip(M3U8, dvr_window(n)),
+            "/packed.m3u8" => playlist(packed_window(n)),
+            _ if path.starts_with("/packed/") => Reply::Body(200, "video/mp2t", packed_segment()),
             _ if path.starts_with("/dvr") => Reply::Body(200, "video/mp2t", TS.to_vec()),
             "/ts.m3u8" => playlist(window(n, "ts")),
             "/master.m3u8" => playlist(MASTER.into()),
@@ -198,6 +226,17 @@ fn a_live_window_hours_long_starts_at_its_live_edge() {
         .map(|n| hits_from(&server, n))
         .sum();
     assert!(edge > 0, "no segment from the live edge was fetched");
+}
+
+#[test]
+fn packed_audio_named_like_ts_plays() {
+    // YouTube's audio-only streams: ID3-tagged ADTS in segments named
+    // `seg.ts`, which the reader demuxed as MPEG-TS and found empty.
+    let server = station();
+    let stream = Stream::open(&server.url("/packed.m3u8"));
+    wait_for("Playing", Duration::from_secs(5), || playing(&stream));
+    let level = rms(&drain(&stream));
+    assert!(level > 0.1, "rms {level}");
 }
 
 #[test]
