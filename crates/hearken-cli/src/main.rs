@@ -13,6 +13,7 @@
 //! by a folder on this computer; nothing about any game is built in. Inside
 //! a game's own workspace the name can be left out.
 
+mod doctor;
 mod macos_app;
 mod macos_sign;
 mod project;
@@ -30,6 +31,7 @@ const USAGE: &str = "Usage: hearken play [game] [--download | --source]
        hearken release [game] [--channel=NAME] [--notes=FILE]
        hearken seal-key [game] [--print]
        hearken update-key [game] [--print]
+       hearken doctor
 
 play       starts a game. With Rust installed it builds the latest source as a
            developer build; otherwise it downloads the latest release.
@@ -42,6 +44,8 @@ seal-key   shows where a game's seal key is kept and its ID; --print shows
            the key itself, for a CI secret.
 update-key shows where a game's update key is kept and its public half;
            --print shows the secret, for a CI secret.
+doctor     checks that this computer has what building a game from source
+           needs, and says how to get what is missing.
 
 A game is its GitHub repository, as owner/name or its URL, or a folder on
 this computer. Inside a game's own folder it can be left out.";
@@ -106,6 +110,11 @@ fn main() -> ExitCode {
         }
         (Some("update-key"), 0 | 1, Ok(game)) if matches!(flags[..], [] | ["--print"]) => {
             show_update_key(game, !flags.is_empty())
+        }
+        (Some("doctor"), 0, _) if flags.is_empty() => doctor::run(),
+        (Some("--version" | "-V"), 0, _) => {
+            println!("hearken {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
         }
         _ => Err(USAGE.to_string()),
     };
