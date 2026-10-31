@@ -98,7 +98,13 @@ fn open_station(url: &str, shared: &Arc<Shared>, opts: &StreamOptions) -> Result
     if let Kind::Audio(extension) = kind {
         return Err(listen(body, response.icy_metaint, extension, shared, opts));
     }
-    let text = read_up_to(&mut body, MAX_PLAYLIST)?;
+    // A live window hours long lists thousands of segments.
+    let limit = if kind == Kind::Hls {
+        hls::MAX_PLAYLIST
+    } else {
+        MAX_PLAYLIST
+    };
+    let text = read_up_to(&mut body, limit)?;
     let text = String::from_utf8_lossy(&text);
     if kind == Kind::Hls {
         return Err(hls::play(response.url.as_str(), &text, shared, opts));

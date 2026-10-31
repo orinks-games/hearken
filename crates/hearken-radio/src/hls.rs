@@ -19,7 +19,7 @@ use crate::decode::{self, closed, no_audio};
 use crate::http::{self, bad_url};
 use crate::stream::{Fault, RawTitle, Shared, StreamOptions};
 use crate::title;
-use crate::worker::{read_up_to, MAX_PLAYLIST};
+use crate::worker::read_up_to;
 
 /// Segments back from the live edge to start: the cushion that keeps a
 /// late segment from being heard.
@@ -31,6 +31,11 @@ const MAX_SEGMENT: u64 = 16 << 20;
 
 /// The shortest wait between re-reads of a playlist.
 const MIN_REFRESH: Duration = Duration::from_millis(500);
+
+/// The most of an HLS playlist worth reading. A live window hours long is
+/// several MiB: YouTube's four-hour window lists about 2,900 segments in
+/// 3.7 MB. Cut short, its list ends hours behind live, mid-line.
+pub(crate) const MAX_PLAYLIST: u64 = 16 << 20;
 
 /// Codecs that make a variant video.
 const VIDEO_CODECS: [&str; 5] = ["avc1", "hvc1", "hev1", "vp09", "av01"];
@@ -97,7 +102,7 @@ impl HlsReader {
         if let Playlist::MasterPlaylist(master) = &playlist {
             let variant = audio_uri(master).ok_or_else(no_audio)?;
             let variant = url.join(variant).map_err(|_| bad_url())?;
-            let (at, text) = fetch(&variant, MAX_PLAYLIST, shared, opts)?;
+            let (at, text) = fetch_playlist(&variant, shared, opts)?;
             (url, playlist) = (at, parse(&text)?);
         }
         let mut reader = HlsReader {
@@ -171,7 +176,7 @@ impl HlsReader {
             if self.ended {
                 return Ok(false);
             }
-            let fetched = fetch(&self.url, MAX_PLAYLIST, &self.shared, &self.opts);
+            let fetched = fetch_playlist(&self.url, &self.shared, &self.opts);
             let (url, text) = fetched.map_err(retry)?;
             self.url = url;
             self.enqueue(&media(parse(&text).map_err(retry)?)?);
@@ -194,8 +199,13 @@ impl HlsReader {
             Some(range) => slice(bytes, range),
             None => bytes,
         };
+        // Packed audio (raw ADTS, MP3 or AC-3) opens every segment with an
+        // ID3 timestamp tag, which the decoder would read as a broken frame.
+        // YouTube's audio-only streams are packed AAC named `seg.ts`.
+        let packed = bytes.starts_with(b"ID3");
+        let bytes = if packed { without_id3(bytes) } else { bytes };
         // Every MPEG-TS packet starts with 0x47.
-        let ts = bytes.first() == Some(&0x47) || url.path().ends_with(".ts");
+        let ts = !packed && (bytes.first() == Some(&0x47) || url.path().ends_with(".ts"));
         // ponytail: a codec change at #EXT-X-DISCONTINUITY is not re-probed;
         // restart the pump there if a station is heard doing it.
         if segment.discontinuity {
@@ -353,6 +363,38 @@ fn fetch(
     Ok((response.url, bytes))
 }
 
+/// A playlist, asked for gzipped: it is re-read every segment or so, and a
+/// long live window's text shrinks many times over. The limit counts the
+/// text, not what came over the wire.
+fn fetch_playlist(
+    url: &Url,
+    shared: &Arc<Shared>,
+    opts: &StreamOptions,
+) -> Result<(Url, Vec<u8>), Fault> {
+    let mut response = http::open_gzip(url.as_str(), shared, opts)?;
+    let bytes = read_up_to(&mut response.body, MAX_PLAYLIST)?;
+    Ok((response.url, bytes))
+}
+
+/// `bytes` past the ID3v2 tags at its start. A tag's size is four
+/// seven-bit bytes after its version and flags, and a footer (flag bit 4)
+/// adds ten more. A tag that runs past the end leaves nothing.
+fn without_id3(mut bytes: Vec<u8>) -> Vec<u8> {
+    let mut start = 0;
+    while let Some(head) = bytes
+        .get(start..start + 10)
+        .filter(|h| h.starts_with(b"ID3"))
+    {
+        let size = head[6..10]
+            .iter()
+            .fold(0usize, |size, &byte| size << 7 | usize::from(byte & 0x7f));
+        let footer = if head[5] & 0x10 != 0 { 10 } else { 0 };
+        start = (start + 10 + size + footer).min(bytes.len());
+    }
+    bytes.drain(..start);
+    bytes
+}
+
 /// The audio elementary stream in an MPEG-TS segment: the one on packet id
 /// `audio`, or on the first that starts an audio packet, which `audio` then
 /// keeps. Audio streams may share a PES stream id, so only the packet id
@@ -446,6 +488,46 @@ mod tests {
         // A lagging CDN edge: its newest segment is the one before `last`.
         let playlist = six(10);
         assert_eq!(newer(&playlist, Some(16)).count(), 0);
+    }
+
+    /// An ID3v2.4 tag holding one 8-byte PRIV frame, as packed audio
+    /// segments open with: 10-byte header, 10-byte frame header, the owner
+    /// string and its NUL, then the timestamp.
+    fn id3_timestamp() -> Vec<u8> {
+        let owner = b"com.apple.streaming.transportStreamTimestamp\0";
+        let frame_size = owner.len() + 8;
+        let mut frame = b"PRIV".to_vec();
+        frame.extend((frame_size as u32).to_be_bytes());
+        frame.extend([0, 0]);
+        frame.extend(owner);
+        frame.extend([0, 0, 0, 0, 0, 0x01, 0x5f, 0x90]);
+        let size = frame.len();
+        let mut tag = b"ID3\x04\x00\x00".to_vec();
+        tag.extend([
+            (size >> 21) as u8 & 0x7f,
+            (size >> 14) as u8 & 0x7f,
+            (size >> 7) as u8 & 0x7f,
+            size as u8 & 0x7f,
+        ]);
+        tag.extend(frame);
+        tag
+    }
+
+    #[test]
+    fn a_packed_audio_segment_loses_its_id3_tag() {
+        let adts = [0xff, 0xf1, 0x50, 0x80, 0x01, 0x02];
+        let mut segment = id3_timestamp();
+        segment.extend(adts);
+        assert_eq!(without_id3(segment), adts);
+        // Two tags in a row, and a tag that claims more than there is.
+        let mut twice = id3_timestamp();
+        twice.extend(id3_timestamp());
+        twice.extend(adts);
+        assert_eq!(without_id3(twice), adts);
+        let mut cut = id3_timestamp();
+        cut.truncate(15);
+        assert!(without_id3(cut).is_empty());
+        assert_eq!(without_id3(adts.to_vec()), adts);
     }
 
     #[test]
