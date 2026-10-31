@@ -352,16 +352,22 @@ the template, or a single crate with one program, works as it is. Add a
 your workspace has more than one such program, such as the game and an
 editor, to say which one is the game, or to set what a release holds.
 
-A README for your game can stay short:
+`hearken play` is one way among several, not a requirement: a game builds
+with plain Cargo too, and a game can ship its own build scripts. Offer
+whichever ways suit your players. A README for your game can stay short:
 
 ````markdown
 ## Build from source
 
-Follow Getting started in Hearken's README
-(https://github.com/orinks-games/hearken#getting-started) to install the
-tools and the hearken command, then run:
+Install the tools in Getting started in Hearken's README
+(https://github.com/orinks-games/hearken#getting-started). Then either
+install the hearken command and run:
 
     hearken play your-name/your-game
+
+or clone this repository and, in its folder, run:
+
+    cargo run --release
 ````
 
 Players without Rust can run the same command with `--download` once you
