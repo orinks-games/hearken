@@ -249,4 +249,11 @@ fn speech_voice_steps_through_the_built_in_voices_and_back_to_automatic() {
     h.press(Key::Left);
     assert!(!h.app.ctx.settings.speech.self_voicing);
     assert_eq!(h.spoken(), ["US female.", "automatic."]);
+
+    // Chosen outright, the built-in voice's rate moves a percent at a time.
+    h.press(Key::Right);
+    h.press(Key::Up);
+    h.clear();
+    h.press(Key::Right);
+    assert_eq!(h.app.ctx.settings.speech.rate, 0.51);
 }

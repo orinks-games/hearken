@@ -12,6 +12,8 @@ use crate::sound::UiSound;
 
 /// A speech-rate step: five percent of the voice's range.
 const RATE_STEP: f64 = 0.05;
+/// The built-in voice's speech-rate step: one percent.
+const BUILTIN_RATE_STEP: f64 = 0.01;
 /// A volume step: five percent, the whole range a Left or Right press moves.
 const VOLUME_STEP: i32 = 5;
 
@@ -232,7 +234,14 @@ impl<G: Game> Menu for SettingsScreen<G> {
                 }))
                 .help("Left and Right change how fast the game speaks.")
                 .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| {
-                    let next = ctx.settings.speech.rate + f64::from(delta) * RATE_STEP;
+                    // The built-in voice takes fine steps: its rate is
+                    // the player's to tune, where a screen reader's is not.
+                    let step = if builtin_in_use(ctx) {
+                        BUILTIN_RATE_STEP
+                    } else {
+                        RATE_STEP
+                    };
+                    let next = ctx.settings.speech.rate + f64::from(delta) * step;
                     // Rounded to whole percent so repeated steps never drift.
                     ctx.settings.speech.rate = ((next * 100.0).round() / 100.0).clamp(0.0, 1.0);
                     ctx.apply_speech_settings();

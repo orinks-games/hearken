@@ -237,7 +237,9 @@ fn render_loop(shared: &Shared, rx: &mpsc::Receiver<Job>, sr: f64) {
 }
 
 /// The output stream, on a thread of its own that holds it (a cpal stream
-/// may not move between threads on every platform).
+/// may not move between threads on every platform). Passing stream errors
+/// are logged and ignored, as the game's own audio does; a lost device is
+/// reopened every second until one answers.
 mod output {
     use super::*;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -248,11 +250,38 @@ mod output {
         let spawned = std::thread::Builder::new()
             .name("builtin-voice-output".into())
             .spawn(move || {
-                let Some(stream) = build(&shared, &tx) else {
+                let lost = Arc::new(AtomicBool::new(false));
+                let Some((mut stream, rate)) = build(&shared, &lost) else {
+                    let _ = tx.send(None);
                     return;
                 };
+                let _ = tx.send(Some(rate));
                 while !shared.quit.load(Ordering::Acquire) {
                     std::thread::park_timeout(Duration::from_millis(250));
+                    if !lost.swap(false, Ordering::AcqRel) {
+                        continue;
+                    }
+                    drop(stream);
+                    shared.output_ok.store(false, Ordering::Release);
+                    // Back at the rate the renderer was started with, or
+                    // not at all: a voice an octave off is worse than none
+                    // for the second it takes the next check to come round.
+                    loop {
+                        if shared.quit.load(Ordering::Acquire) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_secs(1));
+                        match build(&shared, &lost) {
+                            Some((again, r)) if (r - rate).abs() < 0.5 => {
+                                stream = again;
+                                break;
+                            }
+                            Some(_) => log::warn!(
+                                "Built-in voice: the new sound device runs at another rate"
+                            ),
+                            None => {}
+                        }
+                    }
                 }
                 drop(stream);
             });
@@ -262,26 +291,22 @@ mod output {
         rx.recv_timeout(Duration::from_secs(5)).ok().flatten()
     }
 
-    fn build(shared: &Arc<Shared>, tx: &mpsc::Sender<Option<f64>>) -> Option<cpal::Stream> {
-        let fail = |what: &str| {
-            log::warn!("Built-in voice: {what}");
-            let _ = tx.send(None);
-        };
+    fn build(shared: &Arc<Shared>, lost: &Arc<AtomicBool>) -> Option<(cpal::Stream, f64)> {
         let Some(device) = cpal::default_host().default_output_device() else {
-            fail("no sound device");
+            log::warn!("Built-in voice: no sound device");
             return None;
         };
         let config = match device.default_output_config() {
             Ok(config) => config.config(),
             Err(err) => {
-                fail(&format!("no output format: {err}"));
+                log::warn!("Built-in voice: no output format: {err}");
                 return None;
             }
         };
         let channels = usize::from(config.channels.max(1));
         let sample_rate = f64::from(config.sample_rate);
         let callback_shared = Arc::clone(shared);
-        let error_shared = Arc::clone(shared);
+        let lost = Arc::clone(lost);
         let built = device.build_output_stream(
             config,
             move |data: &mut [f32], _| {
@@ -292,23 +317,25 @@ mod output {
                     frame.fill(s);
                 }
             },
-            move |err| {
-                log::warn!("Built-in voice output failed: {err}");
-                error_shared.output_ok.store(false, Ordering::Release);
+            move |err| match err.kind() {
+                cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated => {
+                    log::warn!("Built-in voice: the sound device went away ({err})");
+                    lost.store(true, Ordering::Release);
+                }
+                _ => log::debug!("Built-in voice: stream error ({err})"),
             },
             None,
         );
         let stream = match built.and_then(|stream| stream.play().map(|()| stream)) {
             Ok(stream) => stream,
             Err(err) => {
-                fail(&format!("could not open the sound device: {err}"));
+                log::warn!("Built-in voice: could not open the sound device: {err}");
                 return None;
             }
         };
         shared.output_ok.store(true, Ordering::Release);
         log::info!("Built-in voice ready ({sample_rate} Hz)");
-        let _ = tx.send(Some(sample_rate));
-        Some(stream)
+        Some((stream, sample_rate))
     }
 }
 
