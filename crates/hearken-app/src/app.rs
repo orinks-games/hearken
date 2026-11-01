@@ -137,6 +137,12 @@ impl<G: Game> App<G> {
     /// The keys that work on every screen, else the top screen.
     fn dispatch(&mut self, event: &InputEvent) {
         match event.pressed() {
+            // Modifier state is already recorded by admit(). A modifier alone
+            // is not a command: forwarding it makes games announce an invalid
+            // control while the player is assembling a shortcut.
+            Some(Key::LCtrl | Key::RCtrl | Key::LShift | Key::RShift | Key::LAlt | Key::RAlt) => {
+                return
+            }
             // F2 silences speech everywhere, so no screen can hold it.
             Some(Key::F2) => {
                 self.ctx.stop_speech();

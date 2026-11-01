@@ -92,3 +92,54 @@ fn scrolling_reaches_long_text_and_caption_history() {
         format!("{:?}", r.painter.batches[2].vertices)
     );
 }
+
+#[test]
+fn tall_windows_keep_game_art_visible() {
+    let mut scene = Scene::default();
+    scene.circle(500., 300., 50., [255, 0, 255]);
+    let mut renderer = Renderer::default();
+    for size in [(960, 900), (960, 1200), (1280, 800)] {
+        renderer.build(&scene, size, true);
+        assert!(
+            renderer
+                .painter
+                .batches
+                .iter()
+                .flat_map(|b| &b.vertices)
+                .any(|v| v.color.r == 255 && v.color.g == 0 && v.color.b == 255),
+            "game art disappeared at {size:?}"
+        );
+    }
+}
+
+#[test]
+fn modifier_presses_do_not_reach_game_commands() {
+    struct Commands;
+    impl State<TestGame> for Commands {
+        fn name(&self) -> &'static str {
+            "commands"
+        }
+        fn help(&self, _: &Ctx<TestGame>) -> String {
+            String::new()
+        }
+        fn handle_input(&mut self, ctx: &mut Ctx<TestGame>, event: &hearken_app::InputEvent) {
+            if event.pressed().is_some() {
+                ctx.say("Command received");
+            }
+        }
+    }
+    let mut h = Headless::new(TestData::default(), Commands);
+    for key in [
+        hearken_app::Key::LCtrl,
+        hearken_app::Key::RCtrl,
+        hearken_app::Key::LShift,
+        hearken_app::Key::RShift,
+        hearken_app::Key::LAlt,
+        hearken_app::Key::RAlt,
+    ] {
+        h.press(key);
+    }
+    assert!(h.spoken().is_empty());
+    h.press(hearken_app::Key::Right);
+    assert_eq!(h.spoken(), ["Command received"]);
+}

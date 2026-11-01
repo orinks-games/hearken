@@ -83,7 +83,8 @@ impl Renderer {
         if !scene.enabled {
             return true;
         }
-        let scale = (h / 720.).clamp(0.75, 2.5);
+        // Limit height-based scaling by width so tall windows retain the scene.
+        let scale = (h.min(w * 0.75) / 720.).clamp(0.75, 2.5);
         let text_scale = scale * f32::from(scene.text_percent.clamp(100, 200)) / 100.;
         let margin = 24. * scale;
         let caption_h = 110. * text_scale;
