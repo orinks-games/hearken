@@ -1451,12 +1451,11 @@ impl<G: Game> SoundtrackScreen<G> {
         false
     }
 
-    /// How many listed tracks the menu can play, and how many are listed.
     fn counts(&self, ctx: &Ctx<G>) -> (usize, usize) {
         let listed = ctx.soundtrack.listed(self.album.as_deref());
         let unlocked = listed
             .iter()
-            .filter(|t| ctx.soundtrack.is_playable(&t.id))
+            .filter(|t| ctx.soundtrack.is_unlocked(&t.id))
             .count();
         (unlocked, listed.len())
     }
@@ -1724,8 +1723,13 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
     fn build_items(&mut self, ctx: &mut Ctx<G>) -> Vec<MenuItem<Self, G>> {
         ctx.load_soundtrack();
         let mut items = Vec::new();
-        let (unlocked, _) = self.counts(ctx);
-        if unlocked > 1 {
+        let playable = ctx
+            .soundtrack
+            .listed(self.album.as_deref())
+            .iter()
+            .filter(|t| ctx.soundtrack.is_playable(&t.id))
+            .count();
+        if playable > 1 {
             items.push(
                 MenuItem::new("Play all, shuffled", |s: &mut Self, ctx: &mut Ctx<G>| {
                     let mut ids: Vec<String> = ctx
