@@ -43,6 +43,8 @@ pub struct UpdateConfig {
     /// Whether an update found at start is announced. Off, the game reads
     /// `ctx.updates.available()` and offers it its own way.
     pub announce: bool,
+    /// Open the usual update check and offer when startup finds an update.
+    pub prompt_at_start: bool,
 }
 
 impl UpdateConfig {
@@ -55,6 +57,7 @@ impl UpdateConfig {
             manual: None,
             check_at_start: true,
             announce: true,
+            prompt_at_start: false,
         }
     }
 
@@ -97,6 +100,13 @@ impl UpdateConfig {
     /// `ctx.updates.available()` holds itself.
     pub fn quiet(mut self) -> UpdateConfig {
         self.announce = false;
+        self
+    }
+
+    /// Offer startup updates directly, with the same choices and download
+    /// planning as Check for updates. Quiet mode suppresses this too.
+    pub fn prompt_at_start(mut self) -> UpdateConfig {
+        self.prompt_at_start = true;
         self
     }
 
@@ -213,6 +223,7 @@ pub struct Updates {
     fetch: Arc<dyn Fetch>,
     apply: ApplyFn,
     background: Option<Checker>,
+    pending_prompt: bool,
     found: Option<Update>,
 }
 
@@ -255,6 +266,7 @@ impl Updates {
                 hearken_update::apply_and_restart(staged, install, staging, host).map(|_| ())
             }),
             background: None,
+            pending_prompt: false,
             found: None,
         }
     }
@@ -355,6 +367,21 @@ impl Updates {
         self.start_check(channel, true)
     }
 
+    /// A foreground check takes over, so the background result cannot
+    /// open a second offer over the player's update screen.
+    pub(crate) fn cancel_background(&mut self) {
+        self.background = None;
+        self.pending_prompt = false;
+    }
+
+    pub(crate) fn take_prompt(&mut self) -> bool {
+        std::mem::take(&mut self.pending_prompt)
+    }
+
+    pub(crate) fn prompts_at_start(&self) -> bool {
+        self.config.as_ref().is_some_and(|c| c.prompt_at_start)
+    }
+
     /// A check that only tells whether there is an update, without
     /// fetching its file index or hashing the install: what the check at
     /// start runs, since installing goes through a check of its own.
@@ -431,6 +458,7 @@ impl Updates {
         match outcome {
             Ok(Some(update)) if settings.skipped.as_deref() != Some(update.version()) => {
                 self.found = Some(update.clone());
+                self.pending_prompt = self.announces() && self.prompts_at_start();
                 Some(update)
             }
             _ => None,
@@ -446,6 +474,7 @@ impl Updates {
     /// Forgets the update the check at start found.
     pub fn forget(&mut self) {
         self.found = None;
+        self.pending_prompt = false;
     }
 
     /// Whether the check at start found an update the game should announce.

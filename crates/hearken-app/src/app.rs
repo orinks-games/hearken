@@ -64,7 +64,8 @@ impl<G: Game> App<G> {
         #[cfg(feature = "online")]
         self.ctx.update_online();
         #[cfg(feature = "update")]
-        self.ctx.update_updates();
+        self.ctx
+            .update_updates(self.states.last().is_some_and(|s| s.allows_update_prompt()));
         self.ctx.speech.poll(dt);
         self.ctx.update_audio();
         self.ctx.update_soundtrack();

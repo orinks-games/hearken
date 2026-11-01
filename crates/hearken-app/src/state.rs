@@ -8,6 +8,11 @@ use crate::input::InputEvent;
 pub trait State<G: Game> {
     /// A stable identifier for logs and tests.
     fn name(&self) -> &'static str;
+    /// Whether an automatic update offer may cover this screen. Opt in
+    /// only on a safe home/title menu, never during play or another modal.
+    fn allows_update_prompt(&self) -> bool {
+        false
+    }
     /// Pushed onto the stack.
     fn enter(&mut self, _ctx: &mut Ctx<G>) {}
     /// Popped or replaced.

@@ -42,7 +42,14 @@ speech code. The screens are in `hearken-app`, behind its `update` feature.
    - `.manual("example.com slash my-game")`: where to get an update by hand,
      spoken when one cannot install itself. GitHub sources say their
      releases page unless told otherwise.
-   - `.quiet()`: check at start without announcing. The game reads
+   - `.prompt_at_start()`: when startup finds an update, open the normal
+     check and offer automatically, including download planning and the
+     Download and restart, What's new, Remind me later and Skip choices.
+     Skipped versions and disabled startup checks still stay quiet.
+     Mark the home/title screen with `allows_update_prompt() -> true` on
+     its `State` or `Menu` implementation. Offers wait while another screen
+     is open. Automatic offers initially select Remind me later.
+   - `.quiet()`: check at start without announcing or opening a prompt. The game reads
      `ctx.updates.available()` and offers it its own way, for instance by
      pushing `UpdatePromptScreen::new(update)` from its title screen.
    - `.no_check_at_start()`: only check when the player asks.
