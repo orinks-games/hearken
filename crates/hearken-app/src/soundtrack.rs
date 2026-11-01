@@ -492,6 +492,9 @@ pub struct Track {
     pub secret: bool,
     /// Unlocked from the start.
     pub open: bool,
+    /// Playable from the soundtrack menu before it is heard in play, and
+    /// heard once played there ([`Track::heard_in_menu`]).
+    pub menu_hears: bool,
     /// Sound keys that unlock it the first time one starts.
     pub unlocked_by: Vec<String>,
     pub piece: Piece,
@@ -510,6 +513,7 @@ impl Track {
             album: String::new(),
             secret: false,
             open: false,
+            menu_hears: false,
             unlocked_by: Vec::new(),
             piece,
             variation: Variation::GENTLE,
@@ -569,6 +573,15 @@ impl Track {
 
     pub fn open(mut self) -> Track {
         self.open = true;
+        self
+    }
+
+    /// Listed by title and playable from the soundtrack menu before it is
+    /// heard in play, for music a player may never be there for, such as a
+    /// piece that plays only after midnight. It counts as heard, for an
+    /// album's export, once it plays in the menu or in play.
+    pub fn heard_in_menu(mut self) -> Track {
+        self.menu_hears = true;
         self
     }
 
@@ -1119,6 +1132,12 @@ impl Soundtrack {
         self.listening
     }
 
+    /// Whether the soundtrack menu can play `id`: unlocked, or
+    /// [`Track::heard_in_menu`].
+    pub fn is_playable(&self, id: &str) -> bool {
+        self.is_unlocked(id) || self.track(id).is_some_and(|t| t.menu_hears)
+    }
+
     /// The titles of tracks unlocked since the last call, for the game to
     /// announce when it suits it (on a results screen, say).
     pub fn take_new(&mut self) -> Vec<String> {
@@ -1301,8 +1320,9 @@ impl<G: Game> Ctx<G> {
 /// track, then Back. Enter plays an unlocked track, or stops the one
 /// playing; on a locked track it reads the hint. Whatever the music slot
 /// was playing is paused while the screen is open and goes on from the
-/// same place after. Nothing played here unlocks a track, and playback
-/// stops when another screen covers this one.
+/// same place after. Nothing played here unlocks a track but a
+/// [`Track::heard_in_menu`] one, and playback stops when another screen
+/// covers this one.
 pub struct SoundtrackScreen<G: Game> {
     core: MenuCore<Self, G>,
     album: Option<String>,
@@ -1396,7 +1416,8 @@ impl<G: Game> SoundtrackScreen<G> {
         let Some(track) = ctx.soundtrack.track(id).cloned() else {
             return false;
         };
-        if !ctx.track_unlocked(id) {
+        ctx.load_soundtrack();
+        if !ctx.soundtrack.is_playable(id) {
             return false;
         }
         let mut p = track.perform_as_heard();
@@ -1404,6 +1425,10 @@ impl<G: Game> SoundtrackScreen<G> {
         if !p.update(&mut ctx.audio, 0.0) {
             p.stop(&mut ctx.audio);
             return false;
+        }
+        // Heard here, it counts as heard; it is no news to announce.
+        if ctx.unlock_track(id) {
+            ctx.soundtrack.new.retain(|t| *t != track.title);
         }
         self.playing = Some((track.id, p));
         true
@@ -1426,11 +1451,12 @@ impl<G: Game> SoundtrackScreen<G> {
         false
     }
 
+    /// How many listed tracks the menu can play, and how many are listed.
     fn counts(&self, ctx: &Ctx<G>) -> (usize, usize) {
         let listed = ctx.soundtrack.listed(self.album.as_deref());
         let unlocked = listed
             .iter()
-            .filter(|t| ctx.soundtrack.is_unlocked(&t.id))
+            .filter(|t| ctx.soundtrack.is_playable(&t.id))
             .count();
         (unlocked, listed.len())
     }
@@ -1501,12 +1527,11 @@ impl<G: Game> SoundtrackScreen<G> {
             .into_iter()
             .cloned()
             .collect();
-        let base = ctx
-            .soundtrack
-            .export_dir
-            .clone()
-            .unwrap_or_else(|| export::base(&ctx.paths.data_dir));
-        let dir = export::folder(&base, G::TITLE, album);
+        let dir = match (ctx.soundtrack.export_dir.clone(), export::portable_music()) {
+            (Some(base), _) => export::folder(&base, G::TITLE, album),
+            (None, Some(music)) => export::album_folder(&music, album),
+            (None, None) => export::folder(&export::base(&ctx.paths.data_dir), G::TITLE, album),
+        };
         let n = tracks.len();
         let tracks_word = if n == 1 { "track" } else { "tracks" };
         ctx.say(format!(
@@ -1581,7 +1606,7 @@ impl<G: Game> SoundtrackScreen<G> {
             let mut line = format!(
                 "Exported {} {tracks_word} to {}.",
                 e.written,
-                e.dir.display()
+                export::spoken_folder(&e.dir)
             );
             if e.failed > 0 {
                 line.push_str(&format!(" {} could not be written.", e.failed));
@@ -1619,17 +1644,20 @@ impl<G: Game> SoundtrackScreen<G> {
                 let Some(t) = ctx.soundtrack.track(&label_id) else {
                     return String::new();
                 };
-                if !ctx.soundtrack.is_unlocked(&label_id) {
+                if !ctx.soundtrack.is_playable(&label_id) {
                     return "Locked track".to_string();
                 }
                 if s.playing() == Some(label_id.as_str()) {
                     format!("{}, playing", t.title)
+                } else if !ctx.soundtrack.is_unlocked(&label_id) {
+                    format!("{}, not heard yet", t.title)
                 } else {
                     t.title.clone()
                 }
             }),
             move |s: &mut Self, ctx: &mut Ctx<G>| {
-                if !ctx.track_unlocked(&id) {
+                ctx.load_soundtrack();
+                if !ctx.soundtrack.is_playable(&id) {
                     let hint = ctx
                         .soundtrack
                         .track(&id)
@@ -1656,6 +1684,12 @@ impl<G: Game> SoundtrackScreen<G> {
             move |_s: &Self, ctx: &Ctx<G>| match ctx.soundtrack.track(&help_id) {
                 Some(t) if ctx.soundtrack.is_unlocked(&help_id) && !t.about.is_empty() => {
                     t.about.clone()
+                }
+                Some(t) if ctx.soundtrack.is_playable(&help_id) => {
+                    let about = crate::text::end_sentence(&t.about);
+                    format!("Not heard yet: Enter plays it. {about}")
+                        .trim_end()
+                        .to_string()
                 }
                 Some(t) if !ctx.soundtrack.is_unlocked(&help_id) && !t.hint.is_empty() => {
                     format!("Locked. {}", t.hint)
@@ -1698,7 +1732,7 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
                         .soundtrack
                         .listed(s.album.as_deref())
                         .iter()
-                        .filter(|t| ctx.soundtrack.is_unlocked(&t.id))
+                        .filter(|t| ctx.soundtrack.is_playable(&t.id))
                         .map(|t| t.id.clone())
                         .collect();
                     Variety::fresh().shuffle(&mut ids);
@@ -1862,11 +1896,50 @@ pub mod export {
     /// Where an album goes: `<base>/<game>/<album>`, or `<base>/<game>` for
     /// a game whose tracks have no album.
     pub fn folder(base: &Path, game: &str, album: &str) -> PathBuf {
-        let dir = base.join(file_name(game));
+        album_folder(&base.join(file_name(game)), album)
+    }
+
+    /// `<base>/<album>`, or `base` itself for tracks with no album.
+    pub fn album_folder(base: &Path, album: &str) -> PathBuf {
         if album.is_empty() {
-            dir
+            base.to_path_buf()
         } else {
-            dir.join(file_name(album))
+            base.join(file_name(album))
+        }
+    }
+
+    /// The folder a portable copy exports to: `Music` beside the
+    /// executable, as its saves are, so it leaves nothing in the player's
+    /// own folders. `None` for an installed copy.
+    pub fn portable_music() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        portable_music_in(exe.parent()?)
+    }
+
+    /// [`portable_music`] for an executable in `exe_dir`.
+    pub fn portable_music_in(exe_dir: &Path) -> Option<PathBuf> {
+        exe_dir
+            .join(crate::paths::PORTABLE_MARKER)
+            .is_file()
+            .then(|| exe_dir.join("Music"))
+    }
+
+    /// `dir` as said when an export is done: from the game's own folder for
+    /// a portable copy ("Music/Lake, in the game's folder"), else in full.
+    pub fn spoken_folder(dir: &Path) -> String {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(Path::to_path_buf));
+        spoken_folder_in(dir, exe_dir.as_deref())
+    }
+
+    /// [`spoken_folder`] for an executable in `exe_dir`.
+    pub fn spoken_folder_in(dir: &Path, exe_dir: Option<&Path>) -> String {
+        match exe_dir.and_then(|e| dir.strip_prefix(e).ok()) {
+            Some(rel) if !rel.as_os_str().is_empty() => {
+                format!("{}, in the game's folder", rel.display())
+            }
+            _ => dir.display().to_string(),
         }
     }
 
