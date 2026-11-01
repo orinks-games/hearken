@@ -218,11 +218,18 @@ impl<G: Game> Ctx<G> {
     /// Collects the check at start, and announces an update it found. Once
     /// a frame.
     #[cfg(feature = "update")]
-    pub(crate) fn update_updates(&mut self) {
-        let Some(update) = self.updates.poll_background(&self.settings.updates) else {
-            return;
-        };
+    pub(crate) fn update_updates(&mut self, safe_to_prompt: bool) {
+        let update = self.updates.poll_background(&self.settings.updates);
         if self.updates.announces() {
+            if self.updates.prompts_at_start() {
+                if safe_to_prompt && !self.has_pending() && self.updates.take_prompt() {
+                    self.push(crate::screens::UpdateCheckScreen::at_start());
+                }
+                return;
+            }
+            let Some(update) = update else {
+                return;
+            };
             let title = self.updates.title(&update);
             self.say_queued(format!(
                 "{title} is available. To install it, choose Check for updates in Settings."

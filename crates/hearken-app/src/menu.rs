@@ -203,6 +203,11 @@ pub trait Menu: Sized + 'static {
 
     // -- State hooks ----------------------------------------------------------
 
+    /// Opt in only for a home/title menu where startup offers are safe.
+    fn allows_update_prompt(&self) -> bool {
+        false
+    }
+
     fn enter(&mut self, ctx: &mut Ctx<Self::Game>) {
         menu_enter(self, ctx);
     }
@@ -487,6 +492,9 @@ fn letter_of(key: Key) -> Option<char> {
 }
 
 impl<M: Menu> State<M::Game> for M {
+    fn allows_update_prompt(&self) -> bool {
+        Menu::allows_update_prompt(self)
+    }
     fn name(&self) -> &'static str {
         Menu::name(self)
     }

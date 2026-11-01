@@ -15,6 +15,29 @@ use hearken_app::{Game, Headless, Key, NoAction, NoCategory, UpdateConfig};
 
 struct Patched;
 
+struct Home;
+impl hearken_app::State<Patched> for Home {
+    fn name(&self) -> &'static str {
+        "home"
+    }
+    fn allows_update_prompt(&self) -> bool {
+        true
+    }
+    fn help(&self, _: &hearken_app::Ctx<Patched>) -> String {
+        "Home".into()
+    }
+}
+
+struct Playing;
+impl hearken_app::State<Patched> for Playing {
+    fn name(&self) -> &'static str {
+        "playing"
+    }
+    fn help(&self, _: &hearken_app::Ctx<Patched>) -> String {
+        "Playing".into()
+    }
+}
+
 impl Game for Patched {
     const TITLE: &'static str = "Patched";
     const DATA_DIR: &'static str = "HearkenPatchedTest";
@@ -141,6 +164,10 @@ fn publish(world: &World, signer: &SecretKey, with_program: bool, version: &str)
 /// its Settings screen. (Its first screen enters before the test can make
 /// it a released copy, so the check screen is pushed after.)
 fn world() -> World {
+    world_with_config(Patched::updates().unwrap())
+}
+
+fn world_with_config(config: UpdateConfig) -> World {
     let dir = tempfile::tempdir().unwrap();
     let install = dir.path().join("Patched");
     std::fs::create_dir_all(&install).unwrap();
@@ -149,6 +176,11 @@ fn world() -> World {
     let table = Arc::new(Table::default());
     let applied: Arc<Mutex<Vec<(Staged, PathBuf)>>> = Arc::default();
     let mut h = Headless::<Patched>::new((), SettingsScreen::<Patched>::new());
+    if config.prompt_at_start {
+        h.app.ctx.reset_to(Home);
+        h.frame(0.016);
+    }
+    h.app.ctx.updates = hearken_app::updates::Updates::new(Some(config));
     let updates = &mut h.app.ctx.updates;
     updates.set_fetch(table.clone());
     updates.set_running(Some(Running {
@@ -350,6 +382,135 @@ fn the_check_at_start_announces_and_settings_offers_it() {
     assert!(lines
         .iter()
         .any(|l| l.contains("Check for updates at start: on")));
+}
+
+#[test]
+fn startup_can_offer_the_update_directly_and_later_dismisses_it_once() {
+    let mut w = world_with_config(Patched::updates().unwrap().prompt_at_start());
+    let secret = w.secret.clone();
+    publish(&w, &secret, true, "1.1.0");
+    let settings = w.h.app.ctx.settings.updates.clone();
+    w.h.app.ctx.updates.check_at_start(&settings);
+    frames_until(&mut w.h, "Update available");
+    let lines = w.h.app.top_lines().join(" ");
+    for choice in [
+        "Download and restart",
+        "What's new",
+        "Remind me later",
+        "Skip this version",
+    ] {
+        assert!(lines.contains(choice), "{lines}");
+    }
+    assert!(!w
+        .h
+        .spoken()
+        .iter()
+        .any(|s| s.contains("choose Check for updates in Settings")));
+    assert!(w.h.spoken().last().unwrap().contains("Remind me later"));
+    w.h.press(Key::Return);
+    w.h.clear();
+    for _ in 0..20 {
+        w.h.frame(0.016);
+    }
+    assert!(!w.h.app.top_lines().join(" ").contains("Update available"));
+    assert!(w.applied.lock().unwrap().is_empty());
+}
+
+#[test]
+fn startup_prompt_respects_quiet_disabled_and_skipped_settings() {
+    for mode in ["quiet", "disabled", "skipped"] {
+        let mut config = Patched::updates().unwrap().prompt_at_start();
+        if mode == "quiet" {
+            config = config.quiet();
+        }
+        let mut w = world_with_config(config);
+        let secret = w.secret.clone();
+        publish(&w, &secret, true, "1.1.0");
+        if mode == "disabled" {
+            w.h.app.ctx.settings.updates.check_at_start = false;
+        }
+        if mode == "skipped" {
+            w.h.app.ctx.settings.updates.skipped = Some("1.1.0".into());
+        }
+        let settings = w.h.app.ctx.settings.updates.clone();
+        w.h.app.ctx.updates.check_at_start(&settings);
+        w.h.clear();
+        for _ in 0..50 {
+            w.h.frame(0.016);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !w.h.spoken().iter().any(|s| s.contains("Update available")),
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+fn startup_prompt_plans_the_download_like_a_manual_check() {
+    let mut w = world_with_config(Patched::updates().unwrap().prompt_at_start());
+    let index_url = publish_indexed(&w);
+    let settings = w.h.app.ctx.settings.updates.clone();
+    w.h.app.ctx.updates.check_at_start(&settings);
+    frames_until(&mut w.h, "Update available");
+    assert!(w.table.1.lock().unwrap().contains(&index_url));
+    assert!(w.applied.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_manual_check_takes_over_without_a_second_startup_prompt() {
+    let mut w = world_with_config(Patched::updates().unwrap().prompt_at_start());
+    let secret = w.secret.clone();
+    publish(&w, &secret, true, "1.1.0");
+    let settings = w.h.app.ctx.settings.updates.clone();
+    w.h.app.ctx.updates.check_at_start(&settings);
+    w.check();
+    frames_until(&mut w.h, "Update available");
+    w.h.press(Key::Escape);
+    for _ in 0..50 {
+        w.h.frame(0.016);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!w.h.app.top_lines().join(" ").contains("Update available"));
+    let offers =
+        w.h.spoken()
+            .iter()
+            .filter(|s| s.contains("Update available:"))
+            .count();
+    assert_eq!(offers, 1);
+}
+
+#[test]
+fn a_late_startup_offer_waits_for_home_and_ignores_held_enter() {
+    let mut w = world_with_config(Patched::updates().unwrap().prompt_at_start());
+    let secret = w.secret.clone();
+    publish(&w, &secret, true, "1.1.0");
+    w.h.app.ctx.push(Playing);
+    let settings = w.h.app.ctx.settings.updates.clone();
+    w.h.app.ctx.updates.check_at_start(&settings);
+    for _ in 0..50 {
+        w.h.frame(0.016);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(w.h.app.ctx.updates.available().is_some());
+    assert!(!w.h.spoken().iter().any(|s| s.contains("Update available")));
+    w.h.app.ctx.pop();
+    frames_until(&mut w.h, "Checking for updates.");
+    let mut held = hearken_app::InputEvent::key(Key::Return);
+    if let hearken_app::InputEvent::KeyDown { repeat, .. } = &mut held {
+        *repeat = true;
+    }
+    w.h.app.step(vec![held], 0.016);
+    frames_until(&mut w.h, "Update available");
+    let mut held = hearken_app::InputEvent::key(Key::Return);
+    if let hearken_app::InputEvent::KeyDown { repeat, .. } = &mut held {
+        *repeat = true;
+    }
+    w.h.app.step(vec![held], 0.016);
+    assert!(w.h.app.top_lines().join(" ").contains("Update available"));
+    assert!(w.applied.lock().unwrap().is_empty());
+    w.h.press(Key::Return);
+    assert!(!w.h.app.top_lines().join(" ").contains("Update available"));
 }
 
 /// A zip release with a file index, as `hearken release` publishes for

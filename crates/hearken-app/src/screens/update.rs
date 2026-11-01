@@ -42,6 +42,7 @@ pub fn download_size(update: &Update) -> String {
 
 /// Checks for an update when the player asks, from Settings.
 pub struct UpdateCheckScreen {
+    automatic: bool,
     checker: Option<Checker>,
     message: String,
     /// Whether it said it is finding which files the player already has.
@@ -54,6 +55,7 @@ const PLANNING_LINE: &str = "Found an update. Checking which files you already h
 impl UpdateCheckScreen {
     pub fn new() -> Self {
         UpdateCheckScreen {
+            automatic: false,
             checker: None,
             message: String::new(),
             planning: false,
@@ -67,6 +69,14 @@ impl UpdateCheckScreen {
             PLANNING_LINE
         } else {
             "Checking for updates."
+        }
+    }
+
+    /// An automatic offer defaults to postponing, not installing.
+    pub(crate) fn at_start() -> Self {
+        Self {
+            automatic: true,
+            ..Self::new()
         }
     }
 }
@@ -89,6 +99,7 @@ impl<G: Game> State<G> for UpdateCheckScreen {
             return;
         }
         if self.checker.is_none() {
+            ctx.updates.cancel_background();
             let channel = ctx.updates.channel(&ctx.settings.updates);
             self.checker = ctx.updates.check(&channel);
             ctx.say("Checking for updates.");
@@ -108,7 +119,9 @@ impl<G: Game> State<G> for UpdateCheckScreen {
         };
         match outcome {
             Ok(Some(update)) => {
-                ctx.replace(UpdatePromptScreen::<G>::new(update));
+                let mut prompt = UpdatePromptScreen::<G>::new(update);
+                prompt.automatic = self.automatic;
+                ctx.replace(prompt);
                 return;
             }
             Ok(None) => {
@@ -127,6 +140,9 @@ impl<G: Game> State<G> for UpdateCheckScreen {
     }
 
     fn handle_input(&mut self, ctx: &mut Ctx<G>, event: &InputEvent) {
+        if self.automatic && event.is_repeat() {
+            return;
+        }
         if matches!(
             event.pressed(),
             Some(Key::Escape | Key::Return | Key::KpEnter)
@@ -157,6 +173,7 @@ impl<G: Game> State<G> for UpdateCheckScreen {
 
 /// Offers an update that was found.
 pub struct UpdatePromptScreen<G: Game> {
+    automatic: bool,
     menu: MenuCore<Self, G>,
     pub update: Update,
 }
@@ -164,6 +181,7 @@ pub struct UpdatePromptScreen<G: Game> {
 impl<G: Game> UpdatePromptScreen<G> {
     pub fn new(update: Update) -> Self {
         UpdatePromptScreen {
+            automatic: false,
             menu: MenuCore::new("Update available").with_intro_help(
                 "Download and restart installs the update now. What's new reads the changes. \
                  Skip this version stops offering it.",
@@ -186,6 +204,22 @@ impl<G: Game> UpdatePromptScreen<G> {
 
 impl<G: Game> Menu for UpdatePromptScreen<G> {
     type Game = G;
+
+    fn enter(&mut self, ctx: &mut Ctx<G>) {
+        self.refresh(ctx, false);
+        ctx.play_ui(UiSound::Open);
+        if self.automatic {
+            self.menu.index = 2;
+        }
+        self.announce(ctx);
+    }
+
+    fn handle_input(&mut self, ctx: &mut Ctx<G>, event: &InputEvent) {
+        if self.automatic && event.is_repeat() {
+            return;
+        }
+        crate::menu::menu_input(self, ctx, event);
+    }
 
     fn name(&self) -> &'static str {
         "update_prompt"
