@@ -9,6 +9,10 @@ pub const FRAME_SECONDS: f64 = 1.0 / 60.0;
 pub trait Shell {
     fn poll(&mut self) -> Vec<InputEvent>;
     fn render(&mut self, lines: &[String]);
+    /// Compatibility default for shells that only capture text.
+    fn render_scene(&mut self, scene: &crate::visuals::Scene) {
+        self.render(&scene.lines);
+    }
     /// Sleep out the rest of the frame and return the seconds since the
     /// previous call.
     fn frame(&mut self) -> f64;

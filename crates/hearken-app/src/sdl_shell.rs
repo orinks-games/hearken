@@ -21,6 +21,11 @@ pub struct SdlShell {
     canvas: WindowCanvas,
     pump: EventPump,
     last: Instant,
+    redraw: bool,
+    #[cfg(feature = "visuals")]
+    display: crate::visuals::Renderer,
+    #[cfg(feature = "visuals")]
+    atlas: Option<sdl2::render::Texture>,
 }
 
 impl SdlShell {
@@ -33,28 +38,130 @@ impl SdlShell {
     pub fn new(title: &str) -> Result<Self, String> {
         let sdl = sdl2::init()?;
         let video = sdl.video()?;
-        let window = video
-            .window(title, 640, 360)
+        let mut window = video
+            .window(title, 1280, 800)
+            .resizable()
+            .allow_highdpi()
             .position_centered()
             .build()
             .map_err(|e| e.to_string())?;
-        let canvas = window.into_canvas().build().map_err(|e| e.to_string())?;
+        window
+            .set_minimum_size(960, 640)
+            .map_err(|e| e.to_string())?;
+        let builder = window.into_canvas();
+        let builder = if video.current_video_driver() == "dummy" {
+            builder.software()
+        } else {
+            builder
+        };
+        let canvas = builder.build().map_err(|e| e.to_string())?;
+        #[cfg(feature = "visuals")]
+        let atlas = make_atlas(&canvas);
+        video.text_input().start();
         let pump = sdl.event_pump()?;
         Ok(SdlShell {
             sdl,
             canvas,
             pump,
             last: Instant::now(),
+            redraw: true,
+            #[cfg(feature = "visuals")]
+            display: crate::visuals::Renderer::default(),
+            #[cfg(feature = "visuals")]
+            atlas,
         })
     }
 }
 
 impl Shell for SdlShell {
     fn poll(&mut self) -> Vec<InputEvent> {
-        translate_events(self.pump.poll_iter().collect())
+        #[allow(unused_mut)]
+        let mut events: Vec<_> = self.pump.poll_iter().collect();
+        #[cfg(feature = "visuals")]
+        events.retain(|event| {
+            if let Event::KeyDown {
+                keycode: Some(key),
+                keymod,
+                ..
+            } = event
+            {
+                if keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
+                    && matches!(*key, Keycode::PageUp | Keycode::PageDown)
+                {
+                    self.display.scroll(
+                        if *key == Keycode::PageUp { -3 } else { 3 },
+                        keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD),
+                    );
+                    self.redraw = true;
+                    return false;
+                }
+            }
+            true
+        });
+        self.redraw |= events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Window {
+                    win_event: WindowEvent::Exposed
+                        | WindowEvent::Restored
+                        | WindowEvent::Shown
+                        | WindowEvent::SizeChanged(_, _),
+                    ..
+                } | Event::RenderTargetsReset { .. }
+                    | Event::RenderDeviceReset { .. }
+            )
+        });
+        #[cfg(feature = "visuals")]
+        if events.iter().any(|e| {
+            matches!(
+                e,
+                Event::RenderDeviceReset { .. } | Event::RenderTargetsReset { .. }
+            )
+        }) {
+            if events
+                .iter()
+                .any(|e| matches!(e, Event::RenderDeviceReset { .. }))
+            {
+                self.atlas = make_atlas(&self.canvas);
+            }
+            // SDL invalidates texture contents on a reset; resend all glyphs.
+            self.display.text.atlas.mark_all();
+        }
+        translate_events(events)
     }
 
-    fn render(&mut self, _lines: &[String]) {
+    fn render(&mut self, lines: &[String]) {
+        self.render_scene(&crate::visuals::Scene::from_lines(lines.to_vec()));
+    }
+
+    fn render_scene(&mut self, _scene: &crate::visuals::Scene) {
+        #[cfg(feature = "visuals")]
+        {
+            if self.canvas.window().is_minimized() {
+                self.redraw = true;
+                return;
+            }
+            let size = self.canvas.output_size().unwrap_or((1280, 800));
+            if self.atlas.is_none() {
+                return;
+            }
+            if !self
+                .display
+                .build(_scene, size, std::mem::take(&mut self.redraw))
+            {
+                return;
+            }
+            if let Err(error) = self.display.draw(
+                &mut self.canvas,
+                self.atlas.as_mut().expect("atlas checked"),
+            ) {
+                log::warn!("visual display: {error}");
+                self.atlas = None;
+            } else {
+                self.canvas.present();
+                return;
+            }
+        }
         self.canvas.set_draw_color(Color::RGB(12, 24, 16));
         self.canvas.clear();
         self.canvas.present();
@@ -70,6 +177,21 @@ impl Shell for SdlShell {
         let dt = now.duration_since(self.last).as_secs_f64();
         self.last = now;
         dt.min(0.25)
+    }
+}
+
+#[cfg(feature = "visuals")]
+fn make_atlas(canvas: &WindowCanvas) -> Option<sdl2::render::Texture> {
+    match canvas.texture_creator().create_texture_streaming(
+        sdl2::pixels::PixelFormatEnum::RGBA32,
+        crate::visuals::text::ATLAS_SIZE,
+        crate::visuals::text::ATLAS_SIZE,
+    ) {
+        Ok(texture) => Some(texture),
+        Err(error) => {
+            log::warn!("visual display unavailable: {error}");
+            None
+        }
     }
 }
 

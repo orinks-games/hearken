@@ -137,6 +137,12 @@ impl<G: Game> App<G> {
     /// The keys that work on every screen, else the top screen.
     fn dispatch(&mut self, event: &InputEvent) {
         match event.pressed() {
+            // Modifier state is already recorded by admit(). A modifier alone
+            // is not a command: forwarding it makes games announce an invalid
+            // control while the player is assembling a shortcut.
+            Some(Key::LCtrl | Key::RCtrl | Key::LShift | Key::RShift | Key::LAlt | Key::RAlt) => {
+                return
+            }
             // F2 silences speech everywhere, so no screen can hold it.
             Some(Key::F2) => {
                 self.ctx.stop_speech();
@@ -199,8 +205,7 @@ impl<G: Game> App<G> {
             let dt = shell.frame();
             let dt = before(self, &mut events, dt);
             self.step(events, dt);
-            let lines = self.top_lines();
-            shell.render(&lines);
+            shell.render_scene(&self.visual_scene());
         }
         G::on_exit(&mut self.ctx);
         self.ctx.controller.shutdown();
@@ -219,6 +224,21 @@ impl<G: Game> App<G> {
         self.ctx.speech.shutdown_pumping(&mut || {
             let _ = shell.poll();
         });
+    }
+
+    /// Capture only the active screen: covered screens cannot leak information.
+    pub fn visual_scene(&self) -> crate::visuals::Scene {
+        let mut scene = self
+            .states
+            .last()
+            .map(|s| s.visuals(&self.ctx))
+            .unwrap_or_default();
+        scene.caption = self.ctx.transcript.last().cloned().unwrap_or_default();
+        scene.captions = self.ctx.transcript.clone();
+        scene.enabled = self.ctx.settings.display.enabled;
+        scene.high_contrast = self.ctx.settings.display.high_contrast;
+        scene.text_percent = self.ctx.settings.display.text_percent.clamp(100, 200);
+        scene
     }
 
     pub fn top_name(&self) -> &'static str {
