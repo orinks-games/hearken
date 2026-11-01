@@ -110,13 +110,17 @@ impl Project {
 
     fn from_metadata(meta: &Value, package: Option<&str>) -> Result<Project, String> {
         let packages = meta["packages"].as_array().cloned().unwrap_or_default();
-        let found: Vec<&Value> = packages
+        let mut found: Vec<&Value> = packages
             .iter()
             .filter(|p| match package {
                 Some(name) => p["name"] == name,
                 None => p["metadata"]["hearken"].is_object(),
             })
             .collect();
+        if found.is_empty() && package.is_none() {
+            // No table: the one program in the workspace built on Hearken.
+            found = packages.iter().filter(|p| is_hearken_program(p)).collect();
+        }
         let pkg = match (found.as_slice(), package) {
             ([one], _) => *one,
             ([], Some(name)) => return Err(format!("This workspace has no package {name}.")),
@@ -290,14 +294,31 @@ impl Project {
         println!("Building {}...", self.package);
         let built = Command::new("cargo")
             .args(self.build_args(dev))
+            .envs(crate::doctor::build_env())
             .envs(env.iter().copied())
             .current_dir(&self.dir)
             .status()
             .is_ok_and(|s| s.success());
-        built
-            .then_some(())
-            .ok_or_else(|| format!("{} did not build.", self.package))
+        built.then_some(()).ok_or_else(|| {
+            format!(
+                "{} did not build. hearken doctor checks that this computer has what a \
+                     build needs.",
+                self.package
+            )
+        })
     }
+}
+
+/// Whether `pkg` has a program and depends on `hearken` itself.
+fn is_hearken_program(pkg: &Value) -> bool {
+    let has = |list: &str, test: &dyn Fn(&Value) -> bool| {
+        pkg[list].as_array().is_some_and(|l| l.iter().any(test))
+    };
+    has("targets", &|t| {
+        t["kind"]
+            .as_array()
+            .is_some_and(|k| k.contains(&"bin".into()))
+    }) && has("dependencies", &|d| d["name"] == "hearken")
 }
 
 /// The rules crate `name`, which must be a workspace package with a
@@ -344,6 +365,30 @@ mod tests {
                   "targets": [{ "kind": ["bin"], "name": "parlor" }] }
             ]
         })
+    }
+
+    #[test]
+    fn without_a_table_finds_the_one_program_built_on_hearken() {
+        let meta = serde_json::json!({
+            "workspace_root": "/games/trucks",
+            "packages": [
+                { "name": "tools", "version": "0.1.0", "features": {}, "metadata": null,
+                  "dependencies": [{ "name": "hearken-update" }],
+                  "targets": [{ "kind": ["bin"], "name": "tools" }] },
+                { "name": "trucks-core", "version": "0.1.0", "features": {}, "metadata": null,
+                  "dependencies": [{ "name": "hearken" }],
+                  "targets": [{ "kind": ["lib"], "name": "trucks_core" }] },
+                { "name": "trucks", "version": "1.9.0", "features": {}, "metadata": null,
+                  "dependencies": [{ "name": "hearken" }],
+                  "targets": [{ "kind": ["bin"], "name": "trucksgame" }] }
+            ]
+        });
+        let p = Project::from_metadata(&meta, None).unwrap();
+        assert_eq!(
+            (p.package.as_str(), p.bin.as_str()),
+            ("trucks", "trucksgame")
+        );
+        assert!(!p.portable && !p.pack && !p.seal);
     }
 
     #[test]
