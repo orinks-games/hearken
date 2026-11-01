@@ -904,16 +904,32 @@ fn a_clip_starts_from_an_offset_decoded_whole_or_streamed() {
                 f64::from(seconds) + 0.5,
             )
             .expect("play");
+        // A stream's decoder may not have its first block ready yet on a
+        // slow machine, so render until the clip sounds. Started from the
+        // top it would be silent for `seconds`; the offset must make it
+        // sound in under half that.
         let mut heard = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while heard.len() < 2_048 && std::time::Instant::now() < deadline {
+        let sounds = |f: &Frame| (f.left - 0.5).abs() < 1e-3;
+        let start = loop {
+            if let Some(i) = heard.iter().position(sounds) {
+                if heard.len() >= i + 512 {
+                    break Some(i);
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                break None;
+            }
             heard.extend(r.render(1_024));
             std::thread::sleep(Duration::from_millis(2));
-        }
-        // A stream may hand over a few frames of its prefill first.
-        let sounding = heard.iter().skip(1_024).take(512);
+        };
+        let start = start.unwrap_or_else(|| panic!("{seconds} s clip never sounded"));
         assert!(
-            sounding.clone().all(|f| (f.left - 0.5).abs() < 1e-3),
+            (start as f64) < f64::from(seconds) * f64::from(RATE) / 2.0,
+            "{seconds} s clip took {start} frames to sound"
+        );
+        assert!(
+            heard[start..start + 512].iter().all(sounds),
             "{seconds} s clip, started in its second half, is sounding"
         );
         assert_eq!(

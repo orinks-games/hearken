@@ -11,8 +11,15 @@ authors.workspace = true
 links = "hearken_speech"
 build = "build.rs"
 
+[features]
+# The built-in voice (genny's formant synth through the sound device), for
+# players with no screen reader or speech engine. See `builtin`.
+genny-voice = ["dep:hearken-genny", "dep:cpal"]
+
 [dependencies]
 prismer.workspace = true
+hearken-genny = { workspace = true, optional = true }
+cpal = { workspace = true, optional = true }
 log.workspace = true
 serde.workspace = true
 

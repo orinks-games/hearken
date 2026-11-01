@@ -696,7 +696,12 @@ fn apply_speech_settings_records_the_voice_actually_bound() {
     apply_speech_settings(&mut s, &mut settings);
     assert_eq!(settings.event_backend, "AVSpeech");
     assert_eq!(ctx.voice("AVSpeech").unwrap().state().rate, Some(0.8));
-    assert_eq!(s.config().voice, None);
+    // No installed voice chosen: only the built-in voice's own name is
+    // pushed, which no other backend has.
+    assert_eq!(
+        s.config().voice.as_deref(),
+        hearken_speech::builtin_voices().first().copied()
+    );
 
     settings.separate_event_voice = false;
     apply_speech_settings(&mut s, &mut settings);

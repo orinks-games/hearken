@@ -1222,6 +1222,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hearken-genny"
+version = "0.1.0"
+
+[[package]]
 name = "hearken-pack"
 version = "0.1.0"
 dependencies = [
@@ -1280,6 +1284,8 @@ dependencies = [
 name = "hearken-speech"
 version = "0.1.0"
 dependencies = [
+ "cpal",
+ "hearken-genny",
  "log",
  "objc2",
  "prismer",

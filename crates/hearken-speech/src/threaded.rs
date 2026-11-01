@@ -109,6 +109,7 @@ enum Command {
         voice: Option<String>,
     },
     SelectEventBackend(Option<String>),
+    SelectMainBackend(Option<String>),
     SetBrailleOnly(bool),
     Preview {
         setting: String,
@@ -313,6 +314,7 @@ type ConfigureArgs = (Option<f64>, Option<f64>, Option<f64>, Option<String>);
 /// worker in the order `apply_speech_settings` sends them.
 #[derive(Default)]
 struct Replay {
+    main_pref: Option<Option<String>>,
     event_pref: Option<Option<String>>,
     configure: Option<ConfigureArgs>,
     braille_only: Option<bool>,
@@ -556,6 +558,10 @@ impl ThreadedSpeech {
                                 call!(inner.select_event_backend(name.as_deref()));
                                 call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
                             }
+                            Command::SelectMainBackend(name) => {
+                                call!(inner.select_main_backend(name.as_deref()));
+                                call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
+                            }
                             Command::SetBrailleOnly(on) => call!(inner.set_braille_only(on)),
                             Command::Preview {
                                 setting,
@@ -643,6 +649,9 @@ impl ThreadedSpeech {
         self.ready = ready;
         self.dropped_lines = 0;
         // The player's settings, in the order the game applied them.
+        if let Some(main) = self.replay.main_pref.clone() {
+            self.send_lossy(Command::SelectMainBackend(main));
+        }
         if let Some(pref) = self.replay.event_pref.clone() {
             self.send_lossy(Command::SelectEventBackend(pref));
         }
@@ -832,6 +841,12 @@ impl SpeechSink for ThreadedSpeech {
         let name = name.map(str::to_string);
         self.replay.event_pref = Some(name.clone());
         self.send_lossy(Command::SelectEventBackend(name));
+    }
+
+    fn select_main_backend(&mut self, name: Option<&str>) {
+        let name = name.map(str::to_string);
+        self.replay.main_pref = Some(name.clone());
+        self.send_lossy(Command::SelectMainBackend(name));
     }
 
     fn set_braille_only(&mut self, on: bool) {

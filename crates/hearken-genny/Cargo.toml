@@ -1,0 +1,14 @@
+[package]
+name = "hearken-genny"
+description = "genny's formant speech synthesizer in Rust: a built-in voice for devices with no screen reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Ported from genny with its authors' permission; not under Hearken's
+# MIT/Apache licence. See LICENSE.
+license-file = "LICENSE"
+repository.workspace = true
+authors = ["Oriol Gómez", "blal1", "Joshua Tubbs (Orinks)"]
+publish = false
+
+[dependencies]

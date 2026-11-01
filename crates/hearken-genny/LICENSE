@@ -1,0 +1,12 @@
+hearken-genny is a Rust port of the formant speech synthesizer in genny
+(genny/speech.py): genny by Oriol Gómez (https://github.com/ogomez92/genny)
+and blal1's fork of it (https://pypi.org/project/genny/).
+
+Copyright (c) Oriol Gómez and blal1. All rights reserved.
+
+The port is included in Hearken, and in games built with Hearken, with the
+authors' permission. It is not covered by Hearken's MIT or Apache-2.0
+licence. Ask the genny authors before using this code anywhere else.
+
+The British accent rules (src/accent.rs) and the British vowels in
+src/phonemes.rs were added for Hearken by Joshua Tubbs (Orinks).
