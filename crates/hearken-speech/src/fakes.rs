@@ -42,12 +42,20 @@ pub struct FakeVoice {
 }
 
 impl FakeVoice {
+    /// A voice that picks from installed voices gets one, "Default": with
+    /// none installed it could not speak (see `usable`).
     pub fn new(name: &str, priority: i32, features: VoiceFeatures) -> Self {
+        let voices = if features.selects_voices() {
+            vec!["Default".to_string()]
+        } else {
+            Vec::new()
+        };
         Self {
             state: Rc::new(RefCell::new(FakeVoiceState {
                 name: name.to_string(),
                 priority,
                 features,
+                voices,
                 ..FakeVoiceState::default()
             })),
         }

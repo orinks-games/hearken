@@ -142,6 +142,14 @@ impl<G: Game> App<G> {
                 self.ctx.stop_speech();
                 return;
             }
+            // Ctrl+Shift+V turns the built-in voice on or off from any
+            // screen, for a player who hears nothing and so cannot reach
+            // Settings.
+            Some(Key::V) if matches!(event, InputEvent::KeyDown { mods, .. } if mods.ctrl && mods.shift && !mods.alt) =>
+            {
+                self.ctx.toggle_builtin_voice();
+                return;
+            }
             // F1, or a controller's Back button, reads the top screen's
             // help.
             Some(Key::F1) => {

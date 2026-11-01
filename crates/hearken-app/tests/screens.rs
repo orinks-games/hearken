@@ -257,3 +257,32 @@ fn speech_voice_steps_through_the_built_in_voices_and_back_to_automatic() {
     h.press(Key::Right);
     assert_eq!(h.app.ctx.settings.speech.rate, 0.51);
 }
+
+#[test]
+fn control_shift_v_turns_the_built_in_voice_on_and_off_from_any_screen() {
+    use hearken_app::{InputEvent, Mods};
+    let chord = || InputEvent::KeyDown {
+        key: Key::V,
+        mods: Mods {
+            shift: true,
+            ctrl: true,
+            alt: false,
+        },
+        text: None,
+        repeat: false,
+    };
+    let mut h = Headless::new(TestData::default(), Probe::new("root"));
+    h.frame(0.0);
+    h.clear();
+    h.send(chord());
+    assert!(h.app.ctx.settings.speech.self_voicing);
+    assert_eq!(h.spoken(), ["Built-in voice on."]);
+    h.clear();
+    h.send(chord());
+    assert!(!h.app.ctx.settings.speech.self_voicing);
+    assert_eq!(h.spoken(), ["Built-in voice off. Speech is automatic."]);
+    // A plain V still reaches the screen.
+    h.clear();
+    h.press(Key::V);
+    assert!(!h.app.ctx.settings.speech.self_voicing);
+}

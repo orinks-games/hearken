@@ -415,9 +415,16 @@ fn non_empty(text: &str) -> Result<(), SpeechError> {
 // -- selection policy -------------------------------------------------------
 
 /// True when the backend can actually speak on this machine right now.
+///
+/// A software voice that picks from installed voices (SAPI, OneCore,
+/// Speech Dispatcher) and has none installed cannot speak, though it loads:
+/// Wine's SAPI is like that, so on a handheld running Windows games through
+/// Wine it would win over the built-in voice and the game would stay silent.
 pub fn usable(backend: &dyn VoiceBackend) -> bool {
     let features = backend.features();
-    features.is_supported_at_runtime && (features.supports_output || features.supports_speak)
+    features.is_supported_at_runtime
+        && (features.supports_output || features.supports_speak)
+        && !(features.selects_voices() && backend.voices_count().is_ok_and(|n| n == 0))
 }
 
 /// True when Windows Narrator is up.

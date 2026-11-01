@@ -831,3 +831,22 @@ fn apply_speech_settings_pushes_braille_only() {
     speech.say("Main menu", true);
     assert_eq!(nvda.spoken(), spoken(&[("Main menu", true)]));
 }
+
+#[test]
+fn a_software_voice_with_no_voices_installed_loses_to_the_built_in_voice() {
+    // Wine's SAPI loads and claims runtime support but has no voices, so it
+    // speaks nothing. The built-in voice, ranked below every system voice,
+    // must take over instead of the game staying silent.
+    let wine = FakeRegistry::new(vec![
+        FakeVoice::new("NVDA", 103, runtime(false)),
+        FakeVoice::with_voices("SAPI", 97, ADJUSTABLE, &[]),
+        FakeVoice::with_voices("Genny", -2, ADJUSTABLE, &["US female"]),
+    ]);
+    assert_eq!(picked_name(&wine, None).as_deref(), Some("Genny"));
+    // A SAPI with a voice installed still outranks it.
+    let windows = FakeRegistry::new(vec![
+        FakeVoice::with_voices("SAPI", 97, ADJUSTABLE, &["Microsoft David"]),
+        FakeVoice::with_voices("Genny", -2, ADJUSTABLE, &["US female"]),
+    ]);
+    assert_eq!(picked_name(&windows, None).as_deref(), Some("SAPI"));
+}
