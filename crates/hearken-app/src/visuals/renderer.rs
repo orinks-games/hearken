@@ -252,7 +252,7 @@ impl Renderer {
             self.text.draw(
                 &mut self.painter,
                 margin,
-                cap_y + 10. * scale + i as f32 * line_h,
+                cap_y - 20. * scale + 30. * text_scale + i as f32 * line_h,
                 line,
                 size,
                 Weight::Regular,
