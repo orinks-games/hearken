@@ -941,3 +941,28 @@ but one (`voice` on Windows):
 
 These lists name the notable licences, not every crate's. `cargo about`
 builds the complete notice for what a game actually compiles in.
+
+
+## Visuals
+
+The default `visuals` feature draws menus, text, focus and caption history in
+the SDL window. Disable it for an audio-only build. Display settings can
+also turn drawing off, enlarge text, use high-contrast text, or request
+reduced decorative motion without changing speech or gameplay controls.
+
+A screen can override `State::visuals(&Ctx)` and return a
+`hearken::visuals::Scene`. Its shapes use a 1000 by 600 coordinate space;
+its text uses the same labels as the screen's speech. Capture only facts the
+player may perceive. Keep secret answers and diagnostic maps out of the
+snapshot. Read `ctx.settings.display.reduced_motion` when drawing decoration;
+positions and essential timing cues still need to update.
+
+The renderer uses Freight Fate's batched SDL geometry and cached Overpass
+glyph atlas. Fonts and their OFL license are bundled with `hearken-app`.
+Unchanged frames are skipped, minimized windows do not draw, and headless
+shells keep their text capture behavior. `visuals::save_bmp` renders a
+snapshot with SDL software rendering for review without opening a window.
+
+Control with Page Up or Page Down scrolls screen text; adding Shift scrolls
+caption history. History retains speech requests in order rather than
+claiming synchronization with a screen reader's internal playback queue.

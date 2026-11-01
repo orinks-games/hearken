@@ -11,7 +11,8 @@ authors.workspace = true
 links = "hearken"
 
 [features]
-default = ["kira", "testing"]
+default = ["kira", "testing", "visuals"]
+visuals = ["hearken-app/visuals"]
 kira = ["hearken-app/kira"]
 # `hearken::Headless` and `hearken::testing`, for a game's own tests.
 testing = ["hearken-app/testing"]

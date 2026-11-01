@@ -199,8 +199,7 @@ impl<G: Game> App<G> {
             let dt = shell.frame();
             let dt = before(self, &mut events, dt);
             self.step(events, dt);
-            let lines = self.top_lines();
-            shell.render(&lines);
+            shell.render_scene(&self.visual_scene());
         }
         G::on_exit(&mut self.ctx);
         self.ctx.controller.shutdown();
@@ -219,6 +218,21 @@ impl<G: Game> App<G> {
         self.ctx.speech.shutdown_pumping(&mut || {
             let _ = shell.poll();
         });
+    }
+
+    /// Capture only the active screen: covered screens cannot leak information.
+    pub fn visual_scene(&self) -> crate::visuals::Scene {
+        let mut scene = self
+            .states
+            .last()
+            .map(|s| s.visuals(&self.ctx))
+            .unwrap_or_default();
+        scene.caption = self.ctx.transcript.last().cloned().unwrap_or_default();
+        scene.captions = self.ctx.transcript.clone();
+        scene.enabled = self.ctx.settings.display.enabled;
+        scene.high_contrast = self.ctx.settings.display.high_contrast;
+        scene.text_percent = self.ctx.settings.display.text_percent.clamp(100, 200);
+        scene
     }
 
     pub fn top_name(&self) -> &'static str {

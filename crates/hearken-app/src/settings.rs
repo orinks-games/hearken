@@ -32,6 +32,8 @@ pub struct Settings<GS> {
     pub bindings: SavedBindings,
     #[serde(default)]
     pub audio: AudioSettings,
+    #[serde(default)]
+    pub display: DisplaySettings,
     /// The player's online account, for a game with online play.
     #[serde(default, skip_serializing_if = "OnlineSettings::is_empty")]
     pub online: OnlineSettings,
@@ -297,5 +299,25 @@ impl<GS: Serialize> Settings<GS> {
         let tmp = file.with_extension("json.tmp");
         write_private(&tmp, json.as_bytes())?;
         std::fs::rename(&tmp, &file)
+    }
+}
+
+/// Visual output can be turned off without affecting speech or controls.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct DisplaySettings {
+    pub enabled: bool,
+    pub text_percent: u16,
+    pub reduced_motion: bool,
+    pub high_contrast: bool,
+}
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            text_percent: 100,
+            reduced_motion: false,
+            high_contrast: false,
+        }
     }
 }

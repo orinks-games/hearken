@@ -11,6 +11,10 @@ use hearken_speech::{CaptureSpeech, SharedCapture};
 
 const DOC: &str = "# Test Game\n\nIgnored preamble.\n\n## Getting around\n\nUp and Down move.\nEnter chooses.\n\n## Quitting\n\nPick Quit.\n";
 
+fn settings_count(base: usize) -> usize {
+    base + if cfg!(feature = "visuals") { 4 } else { 0 }
+}
+
 fn over_root(screen: impl hearken_app::State<TestGame> + 'static) -> Headless<TestGame> {
     let mut h = Headless::new(TestData::default(), Probe::new("root"));
     h.app.ctx.push(screen);
@@ -51,7 +55,10 @@ fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
     assert_eq!(
         h.spoken(),
-        ["Settings.", "Speech rate: 50 percent. 1 of 15."]
+        [
+            "Settings.".to_string(),
+            format!("Speech rate: 50 percent. 1 of {}.", settings_count(15))
+        ]
     );
     h.press(Key::Right);
     assert_eq!(h.app.ctx.settings.speech.rate, 0.55);
@@ -71,13 +78,16 @@ fn the_new_rate_is_read_back_through_the_voice_it_changed() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
     h.clear();
     h.press(Key::Right);
-    let line = "Speech rate: 55 percent. 1 of 15.";
+    let line = format!("Speech rate: 55 percent. 1 of {}.", settings_count(15));
     assert_eq!(
         h.speech.borrow().previews(),
         [("speech_rate".to_string(), line.to_string(), true)]
     );
     assert!(h.spoken().is_empty(), "read once, by the previewing voice");
-    assert_eq!(h.app.ctx.transcript.last().map(String::as_str), Some(line));
+    assert_eq!(
+        h.app.ctx.transcript.last().map(String::as_str),
+        Some(line.as_str())
+    );
 }
 
 #[test]
@@ -93,7 +103,10 @@ fn without_a_voice_that_can_change_rate_there_is_no_rate_row() {
     let _app = App::new(ctx, Box::new(SettingsScreen::<TestGame>::new()));
     assert_eq!(
         capture.borrow().main_lines(),
-        ["Settings.", "Speech voice: automatic. 1 of 14."]
+        [
+            "Settings.".to_string(),
+            format!("Speech voice: automatic. 1 of {}.", settings_count(14))
+        ]
     );
 }
 
@@ -114,9 +127,9 @@ fn the_menu_positions_row_toggles_on_enter_left_and_right_and_reads_back_once() 
     assert_eq!(
         h.spoken(),
         [
-            "Menu positions: off.",
-            "Menu positions: on. 12 of 15.",
-            "Menu positions: off."
+            "Menu positions: off.".to_string(),
+            format!("Menu positions: on. 12 of {}.", settings_count(15)),
+            "Menu positions: off.".to_string()
         ]
     );
 }
@@ -194,7 +207,14 @@ fn settings_open_the_shortcut_screens_and_turn_the_controller_off_and_on() {
     h.press(Key::Down); // Controller, right after Controller buttons
     h.clear();
     h.press(Key::Return);
-    assert_eq!(h.spoken(), ["Controller: off. 15 of 15."]);
+    assert_eq!(
+        h.spoken(),
+        [format!(
+            "Controller: off. {} of {}.",
+            settings_count(15),
+            settings_count(15)
+        )]
+    );
     assert!(!h.app.ctx.settings.controller.enabled);
     assert!(!h.app.ctx.controller.enabled());
     h.press(Key::Right);
@@ -219,7 +239,10 @@ fn a_game_with_nothing_to_rebind_gets_no_shortcut_rows() {
     let h = Headless::<Bare>::new((), SettingsScreen::<Bare>::new());
     assert_eq!(
         h.spoken(),
-        ["Settings.", "Speech rate: 50 percent. 1 of 11."]
+        [
+            "Settings.".to_string(),
+            format!("Speech rate: 50 percent. 1 of {}.", settings_count(11))
+        ]
     );
 }
 
@@ -238,7 +261,13 @@ fn speech_voice_steps_through_the_built_in_voices_and_back_to_automatic() {
     // The built-in voice brings its volume row along, just below.
     h.clear();
     h.press(Key::Down);
-    assert_eq!(h.spoken(), ["Speech volume: 100 percent. 3 of 16."]);
+    assert_eq!(
+        h.spoken(),
+        [format!(
+            "Speech volume: 100 percent. 3 of {}.",
+            settings_count(16)
+        )]
+    );
     h.clear();
     h.press(Key::Left);
     assert_eq!(h.spoken(), ["95 percent."]);

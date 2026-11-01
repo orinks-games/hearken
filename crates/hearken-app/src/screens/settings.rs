@@ -370,6 +370,100 @@ impl<G: Game> Menu for SettingsScreen<G> {
             )
             .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_positions(ctx)),
         ));
+        #[cfg(feature = "visuals")]
+        {
+            rows.push(SettingsRow::new(
+                "display",
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        format!(
+                            "Visual display: {}",
+                            if ctx.settings.display.enabled {
+                                "on"
+                            } else {
+                                "off"
+                            }
+                        )
+                    }),
+                    |s: &mut Self, ctx: &mut Ctx<G>| {
+                        toggle_row(s, ctx, |ctx| {
+                            ctx.settings.display.enabled = !ctx.settings.display.enabled
+                        })
+                    },
+                )
+                .help("Show the game, menus and captions. Speech and controls stay the same.")
+                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _| {
+                    ctx.settings.display.enabled = !ctx.settings.display.enabled
+                }),
+            ));
+            rows.push(SettingsRow::new(
+                "display_text",
+                MenuItem::inert(Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                    format!(
+                        "Display text: {} percent",
+                        ctx.settings.display.text_percent.clamp(100, 200)
+                    )
+                }))
+                .help("Left and Right change the size of menu text and captions.")
+                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| {
+                    ctx.settings.display.text_percent =
+                        (i32::from(ctx.settings.display.text_percent.clamp(100, 200)) + delta * 25)
+                            .clamp(100, 200) as u16;
+                }),
+            ));
+        }
+        #[cfg(feature = "visuals")]
+        {
+            rows.push(SettingsRow::new(
+                "display_motion",
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        format!(
+                            "Decorative motion: {}",
+                            if ctx.settings.display.reduced_motion {
+                                "off"
+                            } else {
+                                "on"
+                            }
+                        )
+                    }),
+                    |s: &mut Self, ctx: &mut Ctx<G>| {
+                        toggle_row(s, ctx, |ctx| {
+                            ctx.settings.display.reduced_motion =
+                                !ctx.settings.display.reduced_motion
+                        })
+                    },
+                )
+                .help("Stop decorative motion. Game positions and timing cues still update.")
+                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _| {
+                    ctx.settings.display.reduced_motion = !ctx.settings.display.reduced_motion
+                }),
+            ));
+            rows.push(SettingsRow::new(
+                "display_contrast",
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        format!(
+                            "High contrast text: {}",
+                            if ctx.settings.display.high_contrast {
+                                "on"
+                            } else {
+                                "off"
+                            }
+                        )
+                    }),
+                    |s: &mut Self, ctx: &mut Ctx<G>| {
+                        toggle_row(s, ctx, |ctx| {
+                            ctx.settings.display.high_contrast = !ctx.settings.display.high_contrast
+                        })
+                    },
+                )
+                .help("Use white text on black with yellow keyboard focus.")
+                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _| {
+                    ctx.settings.display.high_contrast = !ctx.settings.display.high_contrast
+                }),
+            ));
+        }
         let actions = <G::Action as Action>::all();
         if actions
             .iter()

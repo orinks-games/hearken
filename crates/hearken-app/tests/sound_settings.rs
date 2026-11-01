@@ -260,7 +260,11 @@ fn a_value_first_row_reads_only_its_new_value_on_left_and_right() {
     h.press(Key::End);
     assert_eq!(
         h.spoken().last().map(String::as_str),
-        Some("Difficulty: normal. 12 of 12.")
+        Some(if cfg!(feature = "visuals") {
+            "Difficulty: normal. 16 of 16."
+        } else {
+            "Difficulty: normal. 12 of 12."
+        })
     );
     h.clear();
     h.press(Key::Right);

@@ -34,6 +34,7 @@ pub mod testing;
 pub mod text;
 #[cfg(feature = "update")]
 pub mod updates;
+pub mod visuals;
 
 pub use app::App;
 pub use bindings::{Action, Chord, KeyBindings, NoAction, PadChord};

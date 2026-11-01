@@ -44,10 +44,13 @@ pub trait State<G: Game> {
     fn on_event(&mut self, _ctx: &mut Ctx<G>, _event: &G::Event) {}
     /// Once per frame, top screen only.
     fn update(&mut self, _ctx: &mut Ctx<G>, _dt: f64) {}
-    /// The screen as text, for a sighted helper and for tests (the SDL
-    /// window does not draw it). The player gets speech.
+    /// The screen as text, used by the display and headless tests.
     fn lines(&self, _ctx: &Ctx<G>) -> Vec<String> {
         Vec::new()
+    }
+    /// A read-only snapshot for drawing. Override to add a game scene.
+    fn visuals(&self, ctx: &Ctx<G>) -> crate::visuals::Scene {
+        crate::visuals::Scene::from_lines(self.lines(ctx))
     }
     /// Spoken on F1.
     fn help(&self, ctx: &Ctx<G>) -> String;
