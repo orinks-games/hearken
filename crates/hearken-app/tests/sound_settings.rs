@@ -71,7 +71,8 @@ fn a_volume_row_moves_by_five_clamps_and_is_heard_on_its_own_bus() {
 #[test]
 fn the_verbosity_row_steps_through_the_games_levels_and_wraps() {
     let mut h = settings();
-    h.press(Key::S); // from Speech rate, the first row, to Speech detail
+    h.press(Key::S); // from Speech rate, the first row, past Speech voice
+    h.press(Key::S); // to Speech detail
     assert!(h
         .spoken()
         .last()
@@ -259,7 +260,7 @@ fn a_value_first_row_reads_only_its_new_value_on_left_and_right() {
     h.press(Key::End);
     assert_eq!(
         h.spoken().last().map(String::as_str),
-        Some("Difficulty: normal. 11 of 11.")
+        Some("Difficulty: normal. 12 of 12.")
     );
     h.clear();
     h.press(Key::Right);

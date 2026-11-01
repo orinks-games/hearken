@@ -11,7 +11,7 @@ build = "build.rs"
 
 [features]
 default = ["kira", "testing"]
-kira = ["hearken-audio/kira"]
+kira = ["hearken-audio/kira", "hearken-speech/genny-voice"]
 # `Headless`, the in-memory app a game's tests drive. A game that tests
 # through its own harness turns default features off and skips `tempfile`.
 testing = ["dep:tempfile"]

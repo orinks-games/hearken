@@ -51,7 +51,7 @@ fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
     assert_eq!(
         h.spoken(),
-        ["Settings.", "Speech rate: 50 percent. 1 of 14."]
+        ["Settings.", "Speech rate: 50 percent. 1 of 15."]
     );
     h.press(Key::Right);
     assert_eq!(h.app.ctx.settings.speech.rate, 0.55);
@@ -71,7 +71,7 @@ fn the_new_rate_is_read_back_through_the_voice_it_changed() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
     h.clear();
     h.press(Key::Right);
-    let line = "Speech rate: 55 percent. 1 of 14.";
+    let line = "Speech rate: 55 percent. 1 of 15.";
     assert_eq!(
         h.speech.borrow().previews(),
         [("speech_rate".to_string(), line.to_string(), true)]
@@ -93,7 +93,7 @@ fn without_a_voice_that_can_change_rate_there_is_no_rate_row() {
     let _app = App::new(ctx, Box::new(SettingsScreen::<TestGame>::new()));
     assert_eq!(
         capture.borrow().main_lines(),
-        ["Settings.", "Speech detail: Full. 1 of 13."]
+        ["Settings.", "Speech voice: automatic. 1 of 14."]
     );
 }
 
@@ -115,7 +115,7 @@ fn the_menu_positions_row_toggles_on_enter_left_and_right_and_reads_back_once() 
         h.spoken(),
         [
             "Menu positions: off.",
-            "Menu positions: on. 11 of 14.",
+            "Menu positions: on. 12 of 15.",
             "Menu positions: off."
         ]
     );
@@ -194,7 +194,7 @@ fn settings_open_the_shortcut_screens_and_turn_the_controller_off_and_on() {
     h.press(Key::Down); // Controller, right after Controller buttons
     h.clear();
     h.press(Key::Return);
-    assert_eq!(h.spoken(), ["Controller: off. 14 of 14."]);
+    assert_eq!(h.spoken(), ["Controller: off. 15 of 15."]);
     assert!(!h.app.ctx.settings.controller.enabled);
     assert!(!h.app.ctx.controller.enabled());
     h.press(Key::Right);
@@ -219,6 +219,34 @@ fn a_game_with_nothing_to_rebind_gets_no_shortcut_rows() {
     let h = Headless::<Bare>::new((), SettingsScreen::<Bare>::new());
     assert_eq!(
         h.spoken(),
-        ["Settings.", "Speech rate: 50 percent. 1 of 10."]
+        ["Settings.", "Speech rate: 50 percent. 1 of 11."]
     );
+}
+
+#[test]
+fn speech_voice_steps_through_the_built_in_voices_and_back_to_automatic() {
+    let mut h = over_root(SettingsScreen::<TestGame>::new());
+    h.press(Key::Down);
+    h.clear();
+    h.press(Key::Right);
+    assert!(h.app.ctx.settings.speech.self_voicing);
+    assert_eq!(h.app.ctx.settings.speech.builtin_voice, "US female");
+    assert_eq!(h.spoken(), ["US female."]);
+    h.clear();
+    h.press(Key::Right);
+    assert_eq!(h.spoken(), ["US male."]);
+    // The built-in voice brings its volume row along, just below.
+    h.clear();
+    h.press(Key::Down);
+    assert_eq!(h.spoken(), ["Speech volume: 100 percent. 3 of 16."]);
+    h.clear();
+    h.press(Key::Left);
+    assert_eq!(h.spoken(), ["95 percent."]);
+    assert_eq!(h.app.ctx.settings.speech.volume, 0.95);
+    h.press(Key::Up);
+    h.clear();
+    h.press(Key::Left);
+    h.press(Key::Left);
+    assert!(!h.app.ctx.settings.speech.self_voicing);
+    assert_eq!(h.spoken(), ["US female.", "automatic."]);
 }

@@ -54,6 +54,56 @@ fn toggle_update_check<G: Game>(ctx: &mut Ctx<G>) {
     updates.check_at_start = !updates.check_at_start;
 }
 
+/// Whether the built-in voice is speaking or chosen.
+fn builtin_in_use<G: Game>(ctx: &Ctx<G>) -> bool {
+    ctx.settings.speech.self_voicing || ctx.speech.backend_name() == hearken_speech::BUILTIN_BACKEND
+}
+
+/// "automatic", or the built-in voice the player chose; "automatic, US
+/// female" when automatic fell back to the built-in voice.
+fn speech_voice_value<G: Game>(ctx: &Ctx<G>) -> String {
+    let speech = &ctx.settings.speech;
+    if speech.self_voicing {
+        speech.builtin_voice.clone()
+    } else if ctx.speech.backend_name() == hearken_speech::BUILTIN_BACKEND {
+        format!("automatic, {}", speech.builtin_voice)
+    } else {
+        "automatic".to_string()
+    }
+}
+
+/// Steps Speech voice through automatic and each built-in voice, wrapping.
+fn step_speech_voice<G: Game>(ctx: &mut Ctx<G>, delta: i32) {
+    let voices = hearken_speech::builtin_voices();
+    if voices.is_empty() {
+        return;
+    }
+    let speech = &mut ctx.settings.speech;
+    let current = if speech.self_voicing {
+        voices
+            .iter()
+            .position(|v| *v == speech.builtin_voice)
+            .map_or(1, |i| i + 1)
+    } else {
+        0
+    };
+    let n = voices.len() as i32 + 1;
+    let next = (current as i32 + delta).rem_euclid(n) as usize;
+    if next == 0 {
+        speech.self_voicing = false;
+    } else {
+        speech.self_voicing = true;
+        speech.builtin_voice = voices[next - 1].to_string();
+    }
+    ctx.apply_speech_settings();
+}
+
+fn step_speech_volume<G: Game>(ctx: &mut Ctx<G>, delta: i32) {
+    let next = ctx.settings.speech.volume + f64::from(delta) * f64::from(VOLUME_STEP) / 100.0;
+    ctx.settings.speech.volume = ((next * 100.0).round() / 100.0).clamp(0.05, 1.0);
+    ctx.apply_speech_settings();
+}
+
 fn toggle_duck<G: Game>(ctx: &mut Ctx<G>) {
     ctx.settings.audio.duck_for_speech = !ctx.settings.audio.duck_for_speech;
 }
@@ -188,6 +238,56 @@ impl<G: Game> Menu for SettingsScreen<G> {
                     ctx.apply_speech_settings();
                 }),
             ));
+        }
+
+        if !hearken_speech::builtin_voices().is_empty() {
+            rows.push(
+                SettingsRow::new(
+                    "speech_voice",
+                    MenuItem::new(
+                        Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                            format!("Speech voice: {}", speech_voice_value(ctx))
+                        }),
+                        |s: &mut Self, ctx: &mut Ctx<G>| {
+                            toggle_row(s, ctx, |ctx| step_speech_voice(ctx, 1))
+                        },
+                    )
+                    .help(
+                        "Automatic uses your screen reader, or a built-in voice when there is none. \
+                         Left and Right choose a built-in voice.",
+                    )
+                    .adjustable(|s: &mut Self, ctx: &mut Ctx<G>, delta| {
+                        step_speech_voice(ctx, delta);
+                        // The volume row comes and goes with the built-in voice.
+                        Menu::refresh(s, ctx, true);
+                    }),
+                )
+                .value_first(speech_voice_value),
+            );
+        }
+
+        if builtin_in_use(ctx) {
+            rows.push(
+                SettingsRow::new(
+                    "speech_volume",
+                    MenuItem::inert(Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        format!(
+                            "Speech volume: {} percent",
+                            (ctx.settings.speech.volume * 100.0).round() as i64
+                        )
+                    }))
+                    .help("Left and Right change how loud the built-in voice is.")
+                    .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| {
+                        step_speech_volume(ctx, delta)
+                    }),
+                )
+                .value_first(|ctx: &Ctx<G>| {
+                    format!(
+                        "{} percent",
+                        (ctx.settings.speech.volume * 100.0).round() as i64
+                    )
+                }),
+            );
         }
 
         if !ctx.verbosity().is_empty() {

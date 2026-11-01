@@ -53,6 +53,9 @@ pub struct Speech {
     event_backend: Option<Box<dyn VoiceBackend>>,
     ctx: Option<Box<dyn VoiceRegistry>>,
     override_name: Option<String>,
+    /// The main voice Settings chose (`select_main_backend`), after the
+    /// environment override.
+    chosen_main: Option<String>,
     event_pref: Option<String>,
     config: SpeechConfig,
     /// Settings > Speech, "Output: braille only". Kept on the object rather
@@ -105,9 +108,24 @@ impl Speech {
         } else {
             PrismRegistry::new()
         };
+        // The built-in voice joins Prism's backends, and stands alone when
+        // Prism could not start.
+        #[cfg(feature = "genny-voice")]
+        let registry: Result<Box<dyn VoiceRegistry>, prismer::Error> = {
+            let inner = match registry {
+                Ok(registry) => Some(Box::new(registry) as Box<dyn VoiceRegistry>),
+                Err(err) => {
+                    log::error!("Screen reader speech unavailable: {err}");
+                    None
+                }
+            };
+            Ok(Box::new(crate::builtin::WithBuiltin::new(inner)))
+        };
+        #[cfg(not(feature = "genny-voice"))]
+        let registry = registry.map(|r| Box::new(r) as Box<dyn VoiceRegistry>);
         let mut speech = match registry {
             Ok(registry) => {
-                let speech = Self::with_registry(Box::new(registry), override_name);
+                let speech = Self::with_registry(registry, override_name);
                 if let Some(ctx) = &speech.ctx {
                     ctx.settle();
                 }
@@ -134,6 +152,7 @@ impl Speech {
             event_backend: None,
             ctx: None,
             override_name,
+            chosen_main: None,
             event_pref: None,
             config: SpeechConfig::default(),
             braille_only: false,
@@ -153,7 +172,7 @@ impl Speech {
         let mut speech = Self::disabled_with_override(override_name);
         speech.backend = pick_backend_gated(
             ctx.as_ref(),
-            speech.override_name.as_deref(),
+            speech.main_preference(),
             speech.narrator_probe,
         );
         speech.ctx = Some(ctx);
@@ -187,6 +206,7 @@ impl Speech {
             event_backend,
             ctx,
             override_name: None,
+            chosen_main: None,
             event_pref: None,
             config: SpeechConfig::default(),
             braille_only: false,
@@ -215,6 +235,14 @@ impl Speech {
     /// Replace the event voice outright.
     pub fn set_event_backend(&mut self, backend: Option<Box<dyn VoiceBackend>>) {
         self.event_backend = backend;
+    }
+
+    /// The backend tried first: the environment's, else the one Settings
+    /// chose.
+    fn main_preference(&self) -> Option<&str> {
+        self.override_name
+            .as_deref()
+            .or(self.chosen_main.as_deref())
     }
 
     /// The remembered speech parameters.
@@ -438,6 +466,19 @@ impl SpeechSink for Speech {
         options
     }
 
+    fn select_main_backend(&mut self, name: Option<&str>) {
+        let name = name.filter(|name| !name.is_empty()).map(str::to_string);
+        if self.chosen_main == name {
+            return;
+        }
+        log::info!(
+            "Main speech voice chosen: {}",
+            name.as_deref().unwrap_or("automatic")
+        );
+        self.chosen_main = name;
+        self.refresh();
+    }
+
     fn select_event_backend(&mut self, name: Option<&str>) {
         // Remember the preference even when it cannot be honored right now:
         // refresh() re-runs the selection after a backend swap or when a
@@ -596,11 +637,7 @@ impl SpeechSink for Speech {
             return false;
         };
         let old_name = self.backend.as_ref().map(|backend| backend.name());
-        let picked = pick_backend_gated(
-            ctx.as_ref(),
-            self.override_name.as_deref(),
-            self.narrator_probe,
-        );
+        let picked = pick_backend_gated(ctx.as_ref(), self.main_preference(), self.narrator_probe);
         let Some(backend) = picked else {
             let Some(old_name) = old_name else {
                 return false;

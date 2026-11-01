@@ -62,6 +62,8 @@
 //! screen readers.
 
 pub mod backend;
+#[cfg(feature = "genny-voice")]
+pub mod builtin;
 pub mod capture;
 pub mod fakes;
 pub mod live;
@@ -94,6 +96,23 @@ pub use verbosity::{Category, Level, NoCategory, Rule, Verbosity};
 /// own live tests that talk to a backend directly. A game needs no `prismer`
 /// dependency of its own, so there is never a second copy to link.
 pub use prismer;
+
+/// The registry name of the built-in voice (see `builtin`), the backend a
+/// player gets with no screen reader or speech engine, or by choosing it.
+pub const BUILTIN_BACKEND: &str = "Genny";
+
+/// The built-in voice's voices, in Settings order; empty in a build without
+/// the `genny-voice` feature.
+pub fn builtin_voices() -> &'static [&'static str] {
+    #[cfg(feature = "genny-voice")]
+    {
+        &hearken_genny::VOICE_NAMES
+    }
+    #[cfg(not(feature = "genny-voice"))]
+    {
+        &[]
+    }
+}
 
 /// Seconds between runtime health checks of the speech backend. Short enough
 /// that a player who switches screen readers hears the game again within a few
@@ -225,6 +244,14 @@ pub trait SpeechSink {
     /// available separate software voice is used instead.
     fn select_event_backend(&mut self, name: Option<&str>);
 
+    /// Make `name` the main voice whenever it can speak (the player chose
+    /// the built-in voice in Settings); `None` goes back to the automatic
+    /// choice. An environment override still comes first. Sinks with a
+    /// single voice ignore it.
+    fn select_main_backend(&mut self, name: Option<&str>) {
+        let _ = name;
+    }
+
     /// Installed voice names from the first backend that lets us pick one;
     /// empty when none does.
     fn voice_names(&self) -> Vec<String>;
@@ -336,6 +363,11 @@ pub struct SpeechSettings {
     pub braille_only: bool,
     /// The verbosity level's id; empty for the game's first level.
     pub verbosity: String,
+    /// Speak with the built-in voice even when a screen reader is running.
+    /// Off, the built-in voice speaks only when nothing else can.
+    pub self_voicing: bool,
+    /// The built-in voice's voice, a name from [`builtin_voices`].
+    pub builtin_voice: String,
 }
 
 impl Default for SpeechSettings {
@@ -349,6 +381,11 @@ impl Default for SpeechSettings {
             voice: String::new(),
             braille_only: false,
             verbosity: String::new(),
+            self_voicing: false,
+            builtin_voice: builtin_voices()
+                .first()
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
         }
     }
 }
@@ -371,6 +408,7 @@ impl Default for SpeechSettings {
 /// fallback mirrors `select_event_backend`: a preference missing from a
 /// non-empty option list becomes the first option.
 pub fn apply_speech_settings(sink: &mut dyn SpeechSink, settings: &mut SpeechSettings) {
+    sink.select_main_backend(settings.self_voicing.then_some(BUILTIN_BACKEND));
     let preference = settings
         .separate_event_voice
         .then(|| settings.event_backend.clone());
@@ -386,7 +424,13 @@ pub fn apply_speech_settings(sink: &mut dyn SpeechSink, settings: &mut SpeechSet
             settings.event_backend = options[0].clone();
         }
     }
-    let voice = (!settings.voice.is_empty()).then(|| settings.voice.clone());
+    // The installed voice the player picked, else the built-in voice's
+    // voice: each backend takes only a name it has.
+    let voice = if settings.voice.is_empty() {
+        (!settings.builtin_voice.is_empty()).then(|| settings.builtin_voice.clone())
+    } else {
+        Some(settings.voice.clone())
+    };
     sink.configure(
         Some(settings.rate),
         Some(settings.pitch),
