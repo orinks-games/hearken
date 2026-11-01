@@ -415,9 +415,16 @@ fn non_empty(text: &str) -> Result<(), SpeechError> {
 // -- selection policy -------------------------------------------------------
 
 /// True when the backend can actually speak on this machine right now.
+///
+/// A backend that selects installed voices is excluded when it reports
+/// zero voices, even if runtime support is available. This allows fallback
+/// to the built-in voice on systems such as Wine without installed SAPI
+/// voices. A voice-count error leaves the backend eligible.
 pub fn usable(backend: &dyn VoiceBackend) -> bool {
     let features = backend.features();
-    features.is_supported_at_runtime && (features.supports_output || features.supports_speak)
+    features.is_supported_at_runtime
+        && (features.supports_output || features.supports_speak)
+        && !(features.selects_voices() && backend.voices_count().is_ok_and(|n| n == 0))
 }
 
 /// True when Windows Narrator is up.

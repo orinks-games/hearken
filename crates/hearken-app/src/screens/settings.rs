@@ -262,8 +262,9 @@ impl<G: Game> Menu for SettingsScreen<G> {
                         },
                     )
                     .help(
-                        "Automatic uses your screen reader, or a built-in voice when there is none. \
-                         Left and Right choose a built-in voice.",
+                        "Automatic uses a running screen reader or an installed system voice when it can. Otherwise, it uses the built-in voice. \
+                         Left and Right choose automatic or a built-in voice. \
+                         Press Control, Shift, and V together on any screen to switch between your chosen built-in voice and automatic. The game saves the choice.",
                     )
                     .adjustable(|s: &mut Self, ctx: &mut Ctx<G>, delta| {
                         step_speech_voice(ctx, delta);
