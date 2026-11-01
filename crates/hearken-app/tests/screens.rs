@@ -276,11 +276,11 @@ fn control_shift_v_turns_the_built_in_voice_on_and_off_from_any_screen() {
     h.clear();
     h.send(chord());
     assert!(h.app.ctx.settings.speech.self_voicing);
-    assert_eq!(h.spoken(), ["Built-in voice on."]);
+    assert_eq!(h.spoken(), ["Speech voice set to built-in."]);
     h.clear();
     h.send(chord());
     assert!(!h.app.ctx.settings.speech.self_voicing);
-    assert_eq!(h.spoken(), ["Built-in voice off. Speech is automatic."]);
+    assert_eq!(h.spoken(), ["Speech voice set to automatic."]);
     // A plain V still reaches the screen.
     h.clear();
     h.press(Key::V);

@@ -416,10 +416,10 @@ fn non_empty(text: &str) -> Result<(), SpeechError> {
 
 /// True when the backend can actually speak on this machine right now.
 ///
-/// A software voice that picks from installed voices (SAPI, OneCore,
-/// Speech Dispatcher) and has none installed cannot speak, though it loads:
-/// Wine's SAPI is like that, so on a handheld running Windows games through
-/// Wine it would win over the built-in voice and the game would stay silent.
+/// A backend that selects installed voices is excluded when it reports
+/// zero voices, even if runtime support is available. This allows fallback
+/// to the built-in voice on systems such as Wine without installed SAPI
+/// voices. A voice-count error leaves the backend eligible.
 pub fn usable(backend: &dyn VoiceBackend) -> bool {
     let features = backend.features();
     features.is_supported_at_runtime

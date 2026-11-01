@@ -313,8 +313,8 @@ impl<G: Game> Ctx<G> {
         hearken_speech::apply_speech_settings(self.speech.as_mut(), &mut self.settings.speech);
     }
 
-    /// Turns the built-in voice on (in the player's chosen preset) or back
-    /// to automatic, says which, and saves it.
+    /// Switches between the player's chosen built-in voice and automatic
+    /// speech selection, announces the selection, and saves it.
     pub fn toggle_builtin_voice(&mut self) {
         if hearken_speech::builtin_voices().is_empty() {
             return;
@@ -322,9 +322,9 @@ impl<G: Game> Ctx<G> {
         let speech = &mut self.settings.speech;
         speech.self_voicing = !speech.self_voicing;
         let line = if speech.self_voicing {
-            "Built-in voice on."
+            "Speech voice set to built-in."
         } else {
-            "Built-in voice off. Speech is automatic."
+            "Speech voice set to automatic."
         };
         self.apply_speech_settings();
         self.save_settings();

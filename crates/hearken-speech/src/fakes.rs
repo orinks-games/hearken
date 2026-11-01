@@ -42,8 +42,9 @@ pub struct FakeVoice {
 }
 
 impl FakeVoice {
-    /// A voice that picks from installed voices gets one, "Default": with
-    /// none installed it could not speak (see `usable`).
+    /// Gives backends that select voices one voice named "Default", so
+    /// they remain eligible under `usable`. Use `with_voices` to test an
+    /// empty voice list.
     pub fn new(name: &str, priority: i32, features: VoiceFeatures) -> Self {
         let voices = if features.selects_voices() {
             vec!["Default".to_string()]

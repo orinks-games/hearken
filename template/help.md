@@ -5,6 +5,16 @@
 Up and Down move through a menu, Enter chooses, and Escape goes back. F1
 reads help for wherever you are, and F2 stops speech.
 
+## Speech
+
+If you cannot hear the game, press Control, Shift, and V together to select
+the built-in voice. Press it again to return to automatic speech selection.
+This shortcut works on any screen and saves your choice.
+
+Automatic uses a running screen reader or an installed system voice when
+it can. Otherwise, it uses the built-in voice. In Settings, use Speech voice to
+choose automatic or a built-in voice.
+
 ## The practice room
 
 Press Space to count out loud. Press Escape for the pause menu.

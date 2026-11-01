@@ -18,7 +18,11 @@ Every Hearken game has these, without the game writing any of it:
   reaches NVDA, JAWS, VoiceOver, Speech Dispatcher, SAPI and more. Hearken
   picks the one that is actually running. Switch screen readers while you play, and the game
   follows within a few seconds instead of going silent. With no screen
-  reader on Windows, SAPI voices speak instead.
+  reader on Windows, an installed SAPI voice speaks instead. If no usable
+  screen reader or system voice is available, the built-in voice speaks
+  when included in the build. Press Ctrl+Shift+V on any screen to switch
+  between your chosen built-in voice and automatic selection. The choice
+  is saved. Automatic selection may still use the built-in voice.
 - **The same keys everywhere.** Up and Down move through menus, Enter
   chooses and Escape goes back. F1 reads help for the screen you are on, and
   F2 stops speech.
