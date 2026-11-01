@@ -1246,6 +1246,14 @@ fn a_track_heard_in_the_menu_is_listed_and_plays_before_it_is_heard() {
         lines.contains("Export album, locked: 0 of 2 heard"),
         "{lines}"
     );
+    // The count on opening is of tracks heard.
+    assert!(
+        h.spoken()
+            .iter()
+            .any(|l| l.contains("0 of 2 tracks unlocked")),
+        "{:?}",
+        h.spoken()
+    );
     // Rows: Locked track (Day), Small hours, Export, Back.
     h.press(Key::Down);
     h.clear();
