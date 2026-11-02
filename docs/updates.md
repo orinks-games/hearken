@@ -55,6 +55,12 @@ value as an ordinary launch; any other nonempty value enables AG Now mode.
    - `.channels(&["stable", "beta"])`: the channels a player can follow,
      the default first. With more than one, Settings gets an "Update
      channel" row. A channel is lowercase letters, digits and hyphens.
+   - `.own_build(&["alpha"])`: channels whose players install only packages
+     built for that channel (the manifest's `built`), never a steadier
+     channel's package signed again for it. Use it when a copy shows
+     content by the channel it was built for, so following the channel
+     never installs a copy that hides what the player has. Such an update
+     is ignored at the check, as if nothing were published.
    - `.manual("example.com slash my-game")`: where to get an update by hand,
      spoken when one cannot install itself. GitHub sources say their
      releases page unless told otherwise.
@@ -232,6 +238,7 @@ fields:
 | `notes` | Release notes, as Markdown. |
 | `published` | Optional: when it was released, RFC 3339. |
 | `index` | Optional, for a zip: the file index's name (`file`), size and SHA-256. |
+| `built` | Optional: the channel the archive's copy was built for. `hearken release` sets it to `channel`; a manifest signed again for another channel keeps it. |
 
 Copies made before `index` existed ignore it, as they ignore any field they
 do not know, and download the whole archive. A manifest without it is a

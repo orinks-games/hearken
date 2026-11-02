@@ -46,7 +46,7 @@ mod baked {
 }
 
 pub use apply::{apply_and_restart, apply_and_restart_with, recover_interrupted, Recovery};
-pub use check::{check, CheckError, Refusal, Running, Update};
+pub use check::{check, check_with, CheckError, Refusal, Running, Update};
 pub use download::{download, DownloadError, IDLE_TIMEOUT};
 pub use extract::Limits;
 #[cfg(feature = "http")]

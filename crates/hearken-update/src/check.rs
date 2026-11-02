@@ -136,6 +136,22 @@ pub fn check(
     running: &Running,
     channel: &str,
 ) -> Result<Option<Update>, CheckError> {
+    check_with(source, fetch, running, channel, false)
+}
+
+/// [`check`], and with `own_build` only a package built for `channel`
+/// itself ([`Manifest::built`]) is offered: one built for another channel
+/// and signed again for this one is ignored, as if nothing were published. A game whose
+/// copies show content by the channel they were built for sets this on
+/// the channels that show the most, so following one never installs a
+/// copy that hides what the player has.
+pub fn check_with(
+    source: &dyn UpdateSource,
+    fetch: &dyn Fetch,
+    running: &Running,
+    channel: &str,
+    own_build: bool,
+) -> Result<Option<Update>, CheckError> {
     let current = Version::parse(&running.version)
         .ok_or_else(|| CheckError::BadRunningVersion(running.version.clone()))?;
     let query = Query {
@@ -166,6 +182,16 @@ pub fn check(
                 source.describe()
             );
         }
+        return Ok(None);
+    }
+    if own_build && manifest.built.as_deref() != Some(channel) {
+        // Another channel's package: not this channel's update, so it is
+        // passed over as if nothing were published.
+        log::warn!(
+            "{} offers {offered} on {channel}, a package built for {}; ignoring it",
+            source.describe(),
+            manifest.built.as_deref().unwrap_or("an unnamed channel")
+        );
         return Ok(None);
     }
     let archive_url = match &manifest.url {
@@ -322,6 +348,58 @@ mod tests {
                 Err(CheckError::Refused(expected))
             );
         }
+    }
+
+    #[test]
+    fn an_own_build_channel_ignores_a_package_built_for_another() {
+        let secret = SecretKey::generate().unwrap();
+        // A beta package signed again for alpha, as 1.4.0-beta.3 was.
+        let mut resigned = sample();
+        resigned.channel = "alpha".into();
+        resigned.built = Some("beta".into());
+        let mut legacy = resigned.clone();
+        legacy.built = None;
+        let url = "https://example.com/g/update-alpha-linux-x64.json";
+        for manifest in [resigned, legacy] {
+            let fetch = Table::default().with(url, manifest::sign(&manifest, &secret).unwrap());
+            let alpha =
+                |own| check_with(&source(), &fetch, &running(&secret, "1.0.0"), "alpha", own);
+            assert_eq!(alpha(true), Ok(None));
+            // Without the rule it is offered, as before.
+            assert!(alpha(false).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn an_own_build_channel_takes_its_own_package() {
+        let secret = SecretKey::generate().unwrap();
+        let mut own = sample();
+        own.channel = "alpha".into();
+        own.built = Some("alpha".into());
+        own.archive = "my-game-1.4.0-alpha-linux-x64.tar.gz".into();
+        let url = "https://example.com/g/update-alpha-linux-x64.json";
+        let fetch = Table::default().with(url, manifest::sign(&own, &secret).unwrap());
+        let update = check_with(&source(), &fetch, &running(&secret, "1.0.0"), "alpha", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            update.archive_url,
+            "https://example.com/g/my-game-1.4.0-alpha-linux-x64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn an_older_package_for_another_channel_is_only_up_to_date() {
+        let secret = SecretKey::generate().unwrap();
+        let mut resigned = sample();
+        resigned.channel = "alpha".into();
+        resigned.built = Some("beta".into());
+        let url = "https://example.com/g/update-alpha-linux-x64.json";
+        let fetch = Table::default().with(url, manifest::sign(&resigned, &secret).unwrap());
+        assert_eq!(
+            check_with(&source(), &fetch, &running(&secret, "1.4.0"), "alpha", true),
+            Ok(None)
+        );
     }
 
     #[test]

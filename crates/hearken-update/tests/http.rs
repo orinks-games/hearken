@@ -140,6 +140,7 @@ fn tar_gz_with_program(path: &Path) -> Vec<u8> {
 fn manifest_for(archive: &[u8], name: &str) -> Manifest {
     Manifest {
         format: FORMAT,
+        built: None,
         game: "my-game".into(),
         version: "1.1.0".into(),
         channel: "stable".into(),

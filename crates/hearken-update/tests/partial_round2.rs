@@ -118,6 +118,7 @@ fn many_unchanged_files_still_get_a_partial_download() {
     let index_file = index::index_name(NAME).unwrap();
     let manifest = Manifest {
         format: FORMAT,
+        built: None,
         game: "g".into(),
         version: "1.1.0".into(),
         channel: "stable".into(),
