@@ -655,3 +655,59 @@ fn an_update_installed_by_hand_leaves_no_staging_behind() {
     assert!(!staging.exists(), "{} was left behind", staging.display());
     assert!(w.h.app.ctx.running, "the game stays open");
 }
+
+#[test]
+fn agnow_hides_update_controls_and_preserves_preferences() {
+    let mut w = world();
+    w.h.app.ctx.settings.updates.channel = Some("beta".into());
+    w.h.app.ctx.settings.updates.skipped = Some("1.1.0".into());
+    let before = serde_json::to_value(&w.h.app.ctx.settings.updates).unwrap();
+    for managed in [true, false] {
+        w.h.app.ctx.updates.set_agnow(managed);
+        assert_eq!(w.h.app.ctx.updates.is_offered(), !managed);
+        w.h.app.ctx.reset_to(SettingsScreen::<Patched>::new());
+        w.h.frame(0.016);
+        let lines = w.h.app.top_lines();
+        for label in [
+            "Check for updates",
+            "Update channel: beta",
+            "Check for updates at start: on",
+        ] {
+            assert_eq!(
+                lines.iter().any(|line| line.contains(label)),
+                !managed,
+                "{lines:?}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(&w.h.app.ctx.settings.updates).unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
+fn agnow_blocks_startup_prompts_and_manual_requests() {
+    let mut w = world_with_config(Patched::updates().unwrap().prompt_at_start());
+    w.h.app.ctx.updates.set_agnow(true);
+    let settings = w.h.app.ctx.settings.updates.clone();
+    w.h.clear();
+    w.h.app.ctx.updates.check_at_start(&settings);
+    for _ in 0..10 {
+        w.h.frame(0.016);
+    }
+    assert!(w.h.app.ctx.updates.available().is_none());
+    assert!(!w
+        .h
+        .spoken()
+        .iter()
+        .any(|line| line.contains("is available")));
+    w.check();
+    assert!(w
+        .h
+        .spoken()
+        .iter()
+        .any(|line| line.contains("AG Now keeps this copy up to date")));
+    assert!(w.table.1.lock().unwrap().is_empty());
+    assert!(w.applied.lock().unwrap().is_empty());
+}

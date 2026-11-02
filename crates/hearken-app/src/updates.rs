@@ -271,9 +271,11 @@ impl Updates {
         }
     }
 
-    /// Whether the game offers updates at all.
+    /// Whether to show this game's updater and its settings.
+    /// AG Now and app stores manage their own updates. Custom menus should
+    /// use this check too; saved update preferences are left unchanged.
     pub fn is_offered(&self) -> bool {
-        self.config.is_some()
+        self.config.is_some() && hearken_update::SELF_UPDATES && !self.agnow
     }
 
     pub fn config(&self) -> Option<&UpdateConfig> {
@@ -320,7 +322,7 @@ impl Updates {
     /// What the player hears instead of a check, when this copy cannot
     /// update itself.
     pub fn blocked_line(&self) -> Option<String> {
-        if !self.is_offered() {
+        if self.config.is_none() {
             return Some("This game does not update itself.".to_string());
         }
         Some(match self.blocked()? {

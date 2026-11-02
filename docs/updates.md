@@ -10,6 +10,22 @@ update from a plain web host is as safe as one from GitHub.
 The checks and the swap are in `hearken-update`, which has no window or
 speech code. The screens are in `hearken-app`, behind its `update` feature.
 
+## AG Now and app stores
+
+When AG Now launches a game with `AGNOW=1`, Hearken hides Check for
+updates, Update channel, and Check for updates at start. Startup and
+manual checks make no update requests. The same controls are hidden on
+platforms where the app store manages updates.
+
+Games using the standard settings screen inherit this behavior. Custom
+menus should use `ctx.updates.is_offered()` before adding update controls
+or offering updates. This leaves saved update preferences intact for the
+next ordinary launch. A direct check on AG Now still explains that AG Now
+keeps the copy up to date.
+
+The environment check treats a missing, empty, whitespace-only, or `0`
+value as an ordinary launch; any other nonempty value enables AG Now mode.
+
 ## Turning it on
 
 1. Turn on `hearken`'s `update` feature in the game's `Cargo.toml`.
