@@ -416,7 +416,7 @@ impl Updates {
         let fetch = self.fetch.clone();
         let host = self.host.clone();
         let wanted = channel.to_string();
-        let own_build = config.own_build.iter().any(|c| *c == wanted);
+        let own_build = config.own_build.contains(&wanted);
         let (tx, rx) = std::sync::mpsc::channel();
         let planning = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
