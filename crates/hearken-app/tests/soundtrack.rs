@@ -1209,3 +1209,113 @@ fn export_file_names_are_safe_everywhere() {
     assert_eq!(file_name("Comet"), "Comet");
     assert_eq!(file_name("  End.  "), "End");
 }
+
+fn menu_heard_game() -> Headless<TestGame> {
+    let mut h = Headless::new(Default::default(), Probe::new("base"));
+    h.app.ctx.soundtrack.set_tracks(vec![
+        Track::clip("day", "Day", "music/day").album("Lobby"),
+        Track::clip("late", "Small hours", "music/late")
+            .album("Lobby")
+            .hint("Open the game after midnight.")
+            .about("The lobby after midnight.")
+            .heard_in_menu(),
+    ]);
+    h.app.ctx.soundtrack.set_album(
+        "Lobby",
+        hearken_app::soundtrack::AlbumOptions {
+            export: true,
+            vary_export: false,
+        },
+    );
+    h.frame(0.0);
+    h
+}
+
+#[test]
+fn a_track_heard_in_the_menu_is_listed_and_plays_before_it_is_heard() {
+    let mut h = menu_heard_game();
+    assert!(!h.app.ctx.track_unlocked("late"));
+    assert!(h.app.ctx.soundtrack.is_playable("late"));
+    h.app.ctx.push(SoundtrackScreen::new().album("Lobby"));
+    h.frame(0.0);
+    let lines = h.app.top_lines().join("\n");
+    assert!(lines.contains("Small hours, not heard yet"), "{lines}");
+    assert!(lines.contains("Locked track"), "{lines}");
+    // Not heard yet, so the album cannot be exported.
+    assert!(
+        lines.contains("Export album, locked: 0 of 2 heard"),
+        "{lines}"
+    );
+    // The count on opening is of tracks heard.
+    assert!(
+        h.spoken()
+            .iter()
+            .any(|l| l.contains("0 of 2 tracks unlocked")),
+        "{:?}",
+        h.spoken()
+    );
+    // Rows: Locked track (Day), Small hours, Export, Back.
+    h.press(Key::Down);
+    h.clear();
+    h.press(Key::Return);
+    assert_eq!(h.played(), vec!["music/late"]);
+    assert_eq!(h.spoken(), vec!["Playing Small hours."]);
+    // Playing it here counts it as heard, saved, with nothing to announce.
+    assert!(h.app.ctx.track_unlocked("late"));
+    assert!(saved(&h).contains("\"late\""));
+    assert!(h.app.ctx.soundtrack.take_new().is_empty());
+    let lines = h.app.top_lines().join("\n");
+    assert!(lines.contains("Small hours, playing"), "{lines}");
+    assert!(
+        lines.contains("Export album, locked: 1 of 2 heard"),
+        "{lines}"
+    );
+}
+
+#[test]
+fn a_track_heard_in_the_menu_says_so_on_f1() {
+    let mut h = menu_heard_game();
+    h.app.ctx.push(SoundtrackScreen::new().album("Lobby"));
+    h.frame(0.0);
+    h.press(Key::Down);
+    h.clear();
+    h.press(Key::F1);
+    assert_eq!(
+        h.spoken(),
+        vec!["Not heard yet: Enter plays it. The lobby after midnight."]
+    );
+}
+
+#[test]
+fn hearing_a_menu_track_in_play_still_unlocks_it() {
+    let mut h = menu_heard_game();
+    h.app.ctx.audio.play("music/late", Bus::MUSIC);
+    h.frame(0.016);
+    assert!(h.app.ctx.track_unlocked("late"));
+    assert_eq!(h.app.ctx.soundtrack.take_new(), vec!["Small hours"]);
+}
+
+#[test]
+fn a_portable_copy_exports_beside_its_executable() {
+    use hearken_app::soundtrack::export;
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(export::portable_music_in(dir.path()), None);
+    std::fs::write(dir.path().join("portable.txt"), "").unwrap();
+    let music = export::portable_music_in(dir.path()).unwrap();
+    assert_eq!(music, dir.path().join("Music"));
+    let lake = export::album_folder(&music, "Lake: night");
+    assert_eq!(lake, dir.path().join("Music").join("Lake night"));
+    assert_eq!(export::album_folder(&music, ""), music);
+    assert_eq!(
+        export::spoken_folder_in(&lake, Some(dir.path())),
+        format!(
+            "{}, in the game's folder",
+            std::path::Path::new("Music").join("Lake night").display()
+        )
+    );
+    let elsewhere = std::path::Path::new("/somewhere/Music/Game");
+    assert_eq!(
+        export::spoken_folder_in(elsewhere, Some(dir.path())),
+        elsewhere.display().to_string()
+    );
+}

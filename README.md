@@ -603,12 +603,18 @@ seals them; a game that keeps progress elsewhere overrides
 lists one game's tracks with `.album("My Game")` when a collection
 groups them by `Track::album`. While it is open the game's music is
 paused, and it goes on from the same place on Escape. Nothing played on
-that screen unlocks a track, and playback stops when another screen is
+that screen unlocks a track but a `.heard_in_menu()` one (below), and playback stops when another screen is
 pushed over it. A save keeps what `soundtrack.json` already holds and
 writes nothing while the file cannot be read, so a file held for a moment
 by a virus scanner or a sync client never costs the player their tracks:
 a save that could not be made is tried again every few seconds, and once
 more as the game closes. `Game::save_soundtrack` returns whether it saved.
+
+A track marked `.heard_in_menu()` is for music a player may never be
+there for, such as a piece that plays only after midnight. The menu lists
+it by title ("Small hours, not heard yet") and plays it before it is heard
+in play; playing it there counts it as heard, for the album's export,
+without announcing it as new.
 
 The menu plays a track as the player heard it: a clip as recorded, and
 `Stems` with the bed first and the voices joining one loop at a time in
@@ -653,9 +659,12 @@ named album). It reads "Export album, locked: 2 of 5 heard" until every
 track listed in that album is unlocked; a secret track counts once heard.
 Export plays each track once on a mixer with no device, faster than real
 time, and writes only its finished mix, never the stems, as a 16-bit
-stereo 48 kHz WAV to `Music/<game>/<album>/01 <title>.wav`. When the
-system has no Music folder it uses `Soundtrack` in the game's data folder,
-and `ctx.soundtrack.set_export_dir` moves it anywhere else. A track that
+stereo 48 kHz WAV to `Music/<game>/<album>/01 <title>.wav`. A portable
+copy (one with `portable.txt` beside its executable) writes to
+`Music/<album>/` in its own folder instead, as it keeps its saves there,
+and says the path from that folder. When the system has no Music folder
+it uses `Soundtrack` in the game's data folder, and
+`ctx.soundtrack.set_export_dir` moves it anywhere else. A track that
 would run on (a live piece that never ends) stops at 15 minutes. The game
 keeps answering while it works; Escape stops it and leaves no half-written
 file, and when it is done it says where the files are. With
