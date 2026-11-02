@@ -139,6 +139,7 @@ fn publish(world: &World, signer: &SecretKey, with_program: bool, version: &str)
     std::fs::write(&sums, &bytes).unwrap();
     let manifest = Manifest {
         format: FORMAT,
+        built: None,
         game: "patched".into(),
         version: version.into(),
         channel: "stable".into(),
@@ -297,6 +298,18 @@ fn an_update_signed_with_another_key_is_refused() {
     publish(&w, &other, true, "9.0.0");
     w.check();
     frames_until(&mut w.h, "did not sign");
+    assert!(w.applied.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_own_build_channel_ignores_a_package_built_for_another_channel() {
+    // `publish` signs a manifest that does not say which channel its
+    // package was built for, like one signed again for another channel.
+    let mut w = world_with_config(Patched::updates().unwrap().own_build(&["stable"]));
+    let secret = w.secret.clone();
+    publish(&w, &secret, true, "9.0.0");
+    w.check();
+    frames_until(&mut w.h, "Up to date");
     assert!(w.applied.lock().unwrap().is_empty());
 }
 
@@ -519,6 +532,7 @@ fn publish_indexed(world: &World) -> String {
     let index = b"{}".to_vec();
     let manifest = Manifest {
         format: FORMAT,
+        built: None,
         game: "patched".into(),
         version: "1.1.0".into(),
         channel: "stable".into(),

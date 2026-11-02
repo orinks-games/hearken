@@ -131,6 +131,7 @@ fn release_with(changed: usize) -> Release {
     let index_file = index::index_name(NAME).unwrap();
     let manifest = Manifest {
         format: FORMAT,
+        built: None,
         game: "g".into(),
         version: "1.1.0".into(),
         channel: "stable".into(),

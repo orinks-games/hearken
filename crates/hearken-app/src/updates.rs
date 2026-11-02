@@ -45,6 +45,9 @@ pub struct UpdateConfig {
     pub announce: bool,
     /// Open the usual update check and offer when startup finds an update.
     pub prompt_at_start: bool,
+    /// The channels that take only packages built for them (see
+    /// [`UpdateConfig::own_build`]).
+    pub own_build: Vec<String>,
 }
 
 impl UpdateConfig {
@@ -58,6 +61,7 @@ impl UpdateConfig {
             check_at_start: true,
             announce: true,
             prompt_at_start: false,
+            own_build: Vec::new(),
         }
     }
 
@@ -87,6 +91,21 @@ impl UpdateConfig {
         if !kept.is_empty() {
             self.channels = kept;
         }
+        self
+    }
+
+    /// Channels whose players install only packages built for that channel,
+    /// never a steadier channel's package signed again for it: `["alpha"]`
+    /// when an alpha copy shows games a beta or stable build leaves out.
+    /// Such an update is ignored at the check, as if nothing were
+    /// published, so it is never offered or applied. Names that are not
+    /// channels are dropped.
+    pub fn own_build(mut self, channels: &[&str]) -> UpdateConfig {
+        self.own_build = channels
+            .iter()
+            .filter(|c| hearken_update::manifest::is_channel(c))
+            .map(|c| c.to_string())
+            .collect();
         self
     }
 
@@ -397,6 +416,7 @@ impl Updates {
         let fetch = self.fetch.clone();
         let host = self.host.clone();
         let wanted = channel.to_string();
+        let own_build = config.own_build.iter().any(|c| *c == wanted);
         let (tx, rx) = std::sync::mpsc::channel();
         let planning = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -404,30 +424,35 @@ impl Updates {
         let spawned = std::thread::Builder::new()
             .name("update-check".into())
             .spawn(move || {
-                let outcome =
-                    hearken_update::check(source.as_ref(), fetch.as_ref(), &running, &wanted)
-                        .map(|found| {
-                            // Which files this copy already has, so the
-                            // offer gives the smaller download. Hashing
-                            // them takes a while; it is on this thread,
-                            // and stops when the checker is dropped.
-                            found.map(|mut update| {
-                                if with_plan && !cancel_flag.load(Ordering::SeqCst) {
-                                    planning_flag.store(true, Ordering::SeqCst);
-                                    update.plan = hearken_update::plan_until(
-                                        &update,
-                                        fetch.as_ref(),
-                                        &host.install(),
-                                        &cancel_flag,
-                                    );
-                                }
-                                update
-                            })
-                        })
-                        .map_err(|e| {
-                            log::warn!("update check of {}: {e}", source.describe());
-                            check_error_line(&e)
-                        });
+                let outcome = hearken_update::check_with(
+                    source.as_ref(),
+                    fetch.as_ref(),
+                    &running,
+                    &wanted,
+                    own_build,
+                )
+                .map(|found| {
+                    // Which files this copy already has, so the
+                    // offer gives the smaller download. Hashing
+                    // them takes a while; it is on this thread,
+                    // and stops when the checker is dropped.
+                    found.map(|mut update| {
+                        if with_plan && !cancel_flag.load(Ordering::SeqCst) {
+                            planning_flag.store(true, Ordering::SeqCst);
+                            update.plan = hearken_update::plan_until(
+                                &update,
+                                fetch.as_ref(),
+                                &host.install(),
+                                &cancel_flag,
+                            );
+                        }
+                        update
+                    })
+                })
+                .map_err(|e| {
+                    log::warn!("update check of {}: {e}", source.describe());
+                    check_error_line(&e)
+                });
                 let _ = tx.send(outcome);
             });
         if let Err(e) = spawned {

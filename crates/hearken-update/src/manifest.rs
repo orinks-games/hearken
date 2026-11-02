@@ -71,6 +71,13 @@ pub struct Manifest {
     /// ignores any field it does not know, and download the whole archive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<IndexRef>,
+    /// The channel the archive's copy was built for, which it follows and
+    /// shows content for once installed. `hearken release` sets it to the
+    /// channel it signs; a manifest signed again for another channel keeps
+    /// it, so a copy can tell a package built for its own channel from one
+    /// built for a steadier channel. `None` in manifests that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built: Option<String>,
 }
 
 /// Where a release's file index is (see [`crate::index`]), and what it must
@@ -191,6 +198,11 @@ impl Manifest {
         }
         if from_hex::<32>(&self.sha256).is_none() || self.sha256.chars().any(|c| c.is_uppercase()) {
             return bad("sha256");
+        }
+        if let Some(built) = &self.built {
+            if !is_channel(built) {
+                return bad("built");
+            }
         }
         if self.notes.len() > MAX_NOTES_BYTES {
             return bad("notes");
@@ -318,6 +330,7 @@ pub(crate) mod tests {
             notes: "## Fixed\n- The menu no longer skips a row.".into(),
             published: Some("2026-10-30T02:00:00Z".into()),
             index: None,
+            built: Some("stable".into()),
         }
     }
 

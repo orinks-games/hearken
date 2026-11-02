@@ -271,6 +271,8 @@ fn write_manifest(
         notes: what.notes.to_string(),
         published: Some(utc_now()),
         index,
+        // The copy in the archive was built for this channel.
+        built: Some(what.channel.to_string()),
     };
     let text = hearken_update::manifest::sign(&manifest, key)
         .map_err(|e| format!("Could not sign the update manifest: {e}"))?;
@@ -632,6 +634,7 @@ mod tests {
             ("beta", "1.2.0")
         );
         assert_eq!(manifest.notes, "- Faster.");
+        assert_eq!(manifest.built.as_deref(), Some("beta"));
         assert!(manifest.published.is_some());
         // A tar.gz cannot be read in parts: no index.
         assert_eq!(manifest.index, None);
