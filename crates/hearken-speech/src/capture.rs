@@ -372,6 +372,9 @@ impl SpeechSink for CaptureSpeech {
             age: std::time::Duration::ZERO,
         })
     }
+    fn main_voice_report(&mut self) -> Option<super::VoiceReport> {
+        self.event_voice_report()
+    }
     fn say(&mut self, text: &str, interrupt: bool) {
         if !text.is_empty() {
             self.record(SpeechChannel::Main, text, interrupt);
@@ -644,6 +647,9 @@ impl SpeechSink for SharedCapture {
     }
     fn event_voice_report(&mut self) -> Option<super::VoiceReport> {
         self.0.borrow_mut().event_voice_report()
+    }
+    fn main_voice_report(&mut self) -> Option<super::VoiceReport> {
+        self.0.borrow_mut().main_voice_report()
     }
     fn startup_hold(&self) -> std::time::Duration {
         self.0.borrow().startup_hold()

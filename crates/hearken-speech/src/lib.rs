@@ -315,6 +315,13 @@ pub trait SpeechSink {
         None
     }
 
+    /// The same report from the main voice, for a game that speaks its
+    /// road lines on the main channel (both voices set to the screen
+    /// reader).
+    fn main_voice_report(&mut self) -> Option<VoiceReport> {
+        None
+    }
+
     /// How long the speech worker holds this sink's first lines after
     /// start-up, so the screen reader's own announcement of the new window
     /// cannot talk over the game's first screen. Most voices need none.

@@ -869,6 +869,10 @@ fn test_event_voice_report_asks_the_voice_events_use() {
         Some(true)
     );
 
+    // A game speaking road lines on the main channel asks the main voice,
+    // never the idle event voice beside it.
+    assert_eq!(both.main_voice_report().map(|r| r.speaking), Some(true));
+
     main.set_speaking_report(None);
     assert_eq!(
         main_only.event_voice_report(),

@@ -755,6 +755,17 @@ impl SpeechSink for Speech {
         })
     }
 
+    fn main_voice_report(&mut self) -> Option<VoiceReport> {
+        if self.braille_only && self.supports_braille() {
+            return None;
+        }
+        let speaking = self.backend.as_ref()?.speaking_report()?;
+        Some(VoiceReport {
+            speaking,
+            age: std::time::Duration::ZERO,
+        })
+    }
+
     fn shutdown(&mut self) {
         self.stop();
         self.backend = None;
