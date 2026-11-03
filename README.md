@@ -237,7 +237,22 @@ Prism library.
 
 ### Make your own game
 
-Copy `template/` to start, or set a game up by hand:
+`hearken new` makes a game in a new folder, ready to build, test and play:
+
+```
+hearken new cave-run
+cd cave-run
+hearken play
+```
+
+`--template=menu` (the default) is `template/` with your game's names: a
+title menu, settings, help and a practice room. `--template=blank` is one
+screen that speaks and plays a sound. `--title="Cave Run"` sets the title
+(by default it comes from the name). Both have a `sounds` folder, a test
+that keeps the program from opening a console window, and a CI workflow.
+Hearken Studio's New game runs the same command.
+
+Or set a game up by hand:
 
 1. Add Hearken to your game's `Cargo.toml`:
 
