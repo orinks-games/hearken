@@ -153,6 +153,10 @@ pub struct PacerConfig {
     /// How long after the projection runs out the caller keeps asking the
     /// voice, so a voice slower than the estimate is still caught speaking.
     pub voice_linger_s: f64,
+    /// How long a report stays good for [`EventSpeechPacer::voice_quiet`]
+    /// and [`EventSpeechPacer::voice_reporting`]. Older than this, the
+    /// voice is treated as one that cannot report.
+    pub voice_report_fresh_s: f64,
 }
 
 impl PacerConfig {
@@ -172,6 +176,7 @@ impl PacerConfig {
         voice_start_grace_s: 0.4,
         voice_hold_s: 0.3,
         voice_linger_s: 3.0,
+        voice_report_fresh_s: 1.0,
     };
 }
 
@@ -291,6 +296,11 @@ pub struct EventSpeechPacer {
     /// When a line was last handed to the voice. A "not speaking" report
     /// older than this plus `voice_start_grace_s` is ignored.
     last_submit_at: f64,
+    /// When the newest voice report was taken.
+    voice_reported_at: f64,
+    /// Whether that report said the voice is quiet, and came after the last
+    /// line handed over had time to start.
+    voice_quiet: bool,
 }
 
 impl Default for EventSpeechPacer {
@@ -324,6 +334,8 @@ impl EventSpeechPacer {
             busy_since: 0.0,
             backlog_urgent: false,
             last_submit_at: f64::NEG_INFINITY,
+            voice_reported_at: f64::NEG_INFINITY,
+            voice_quiet: false,
         }
     }
 
@@ -338,7 +350,8 @@ impl EventSpeechPacer {
         self.clock = clock;
     }
 
-    fn now(&mut self) -> f64 {
+    /// The pacer's clock, for a caller timing things against it.
+    pub fn now(&mut self) -> f64 {
         (self.clock)()
     }
 
@@ -379,6 +392,7 @@ impl EventSpeechPacer {
     /// and whether everything it holds is an `Important` or `Critical` line.
     fn extend_projection(&mut self, now: f64, text: &str, priority: EventPriority) {
         self.last_submit_at = now;
+        self.voice_quiet = false;
         if now >= self.clear_at {
             self.busy_since = now;
             self.backlog_urgent = true;
@@ -816,6 +830,12 @@ impl EventSpeechPacer {
     pub fn observe_voice(&mut self, speaking: bool, age_s: f64) {
         let now = self.now();
         let observed_at = now - age_s.max(0.0);
+        if observed_at < self.voice_reported_at {
+            return;
+        }
+        self.voice_reported_at = observed_at;
+        self.voice_quiet =
+            !speaking && observed_at >= self.last_submit_at + self.config.voice_start_grace_s;
         if speaking {
             if now >= self.clear_at && self.clear_at > 0.0 {
                 self.clear_at = self.clear_at.max(observed_at + self.config.voice_hold_s);
@@ -832,6 +852,22 @@ impl EventSpeechPacer {
         if let Some(held) = self.protected.as_mut() {
             held.done_at = held.done_at.min(now);
         }
+    }
+
+    /// Whether the voice has reported on itself within
+    /// `voice_report_fresh_s`. A caller holding lines for a quiet voice
+    /// does so only while this is true; a voice that cannot report gets
+    /// every line straight away, as before.
+    pub fn voice_reporting(&mut self) -> bool {
+        let now = self.now();
+        now - self.voice_reported_at <= self.config.voice_report_fresh_s
+    }
+
+    /// Whether the voice's latest fresh report says it is quiet, with
+    /// nothing handed to it since (beyond the start grace). The moment to
+    /// speak the next held line.
+    pub fn voice_quiet(&mut self) -> bool {
+        self.voice_quiet && self.voice_reporting()
     }
 
     /// Whether the projection says the voice is still speaking.
