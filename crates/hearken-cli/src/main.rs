@@ -16,6 +16,7 @@
 mod doctor;
 mod macos_app;
 mod macos_sign;
+mod new;
 mod project;
 mod release;
 mod rules_module;
@@ -27,12 +28,17 @@ use std::process::{Command, ExitCode, Stdio};
 
 use project::Project;
 
-const USAGE: &str = "Usage: hearken play [game] [--download | --source]
+const USAGE: &str = "Usage: hearken new <name> [--template=menu|blank] [--title=TITLE]
+       hearken play [game] [--download | --source]
        hearken release [game] [--channel=NAME] [--notes=FILE]
        hearken seal-key [game] [--print]
        hearken update-key [game] [--print]
        hearken doctor
 
+new        makes a game in a new folder called <name> (lowercase, hyphens):
+           menu (the default) has a title menu, settings, help and a
+           practice room; blank is one screen. Both have a sounds folder,
+           tests and a CI workflow.
 play       starts a game. With Rust installed it builds the latest source as a
            developer build; otherwise it downloads the latest release.
            --download and --source choose.
@@ -112,6 +118,8 @@ fn main() -> ExitCode {
             show_update_key(game, !flags.is_empty())
         }
         (Some("doctor"), 0, _) if flags.is_empty() => doctor::run(),
+        // A new game's name is neither a folder nor a repository yet.
+        (Some("new"), 1, _) => new::run(names[0], &flags),
         (Some("--version" | "-V"), 0, _) => {
             println!("hearken {}", env!("CARGO_PKG_VERSION"));
             Ok(())
