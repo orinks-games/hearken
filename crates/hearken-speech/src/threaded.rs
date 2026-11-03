@@ -71,6 +71,13 @@ const WEDGE_AFTER_S: f64 = 8.0;
 const RESPAWN_AFTER_S: f64 = 20.0;
 /// Replacement workers per session, at most.
 const MAX_RESPAWNS: u32 = 3;
+/// How often the game may ask the worker whether the event voice is
+/// speaking. A local call to the screen reader, but still one per ask, so
+/// it is rate-limited and only made while the pacer wants an answer.
+const VOICE_REPORT_INTERVAL: Duration = Duration::from_millis(100);
+/// A report older than this is not used: the worker is busy or stuck, and
+/// the pacer's estimate is the better guess.
+const VOICE_REPORT_MAX_AGE: Duration = Duration::from_secs(1);
 /// Command queue depth; beyond it, new say lines are dropped, not queued.
 const QUEUE_DEPTH: usize = 256;
 /// How often the worker asks Prism to re-check the live speech backends.
@@ -117,6 +124,9 @@ enum Command {
         interrupt: bool,
         reply: mpsc::Sender<bool>,
     },
+    /// Ask the event voice whether it is speaking. Queued behind the lines
+    /// sent before it, so the answer covers them.
+    ReportVoice(Arc<Mutex<VoiceSlot>>),
     /// Does nothing but answer, once everything queued before it is done.
     Flush {
         done: mpsc::Sender<()>,
@@ -131,6 +141,17 @@ enum Command {
         /// `stop()` lands immediately and would cut it off.
         finish_line: bool,
     },
+}
+
+/// The event voice's latest report, shared between the game and the worker.
+#[derive(Default)]
+struct VoiceSlot {
+    /// Whether it was speaking, and when the worker asked.
+    report: Option<(bool, Instant)>,
+    /// A `ReportVoice` is queued and not yet answered.
+    in_flight: bool,
+    /// When the game last queued one.
+    asked_at: Option<Instant>,
 }
 
 /// The query answers, published by the worker after every state change so
@@ -348,6 +369,7 @@ pub struct ThreadedSpeech {
     /// watch the watchdog notice.
     wedge_after_s: f64,
     dropped_lines: u64,
+    voice_slot: Arc<Mutex<VoiceSlot>>,
 }
 
 impl ThreadedSpeech {
@@ -395,6 +417,7 @@ impl ThreadedSpeech {
             wedged: false,
             wedge_after_s: WEDGE_AFTER_S,
             dropped_lines: 0,
+            voice_slot: Arc::default(),
         }
     }
 
@@ -573,6 +596,13 @@ impl ThreadedSpeech {
                                     call!(inner.say_adjustment_preview(&setting, &text, interrupt));
                                 let _ = reply.send(spoke);
                             }
+                            Command::ReportVoice(slot) => {
+                                let asked = Instant::now();
+                                let report = call!(inner.event_voice_report());
+                                let mut slot = slot.lock().expect("voice report lock");
+                                slot.in_flight = false;
+                                slot.report = report.map(|report| (report.speaking, asked));
+                            }
                             Command::Flush { done } => {
                                 let _ = done.send(());
                             }
@@ -648,6 +678,8 @@ impl ThreadedSpeech {
         self.abandoned = abandoned;
         self.ready = ready;
         self.dropped_lines = 0;
+        // The stuck worker will never answer what it was asked.
+        self.voice_slot = Arc::default();
         // The player's settings, in the order the game applied them.
         if let Some(main) = self.replay.main_pref.clone() {
             self.send_lossy(Command::SelectMainBackend(main));
@@ -790,6 +822,35 @@ impl SpeechSink for ThreadedSpeech {
 
     fn request_refresh(&mut self) {
         self.send_lossy(Command::RequestRefresh);
+    }
+
+    /// The worker's latest answer, and a new question when the last one
+    /// has been answered and the interval has passed. Never waits.
+    fn event_voice_report(&mut self) -> Option<super::VoiceReport> {
+        let ask = {
+            let mut slot = self.voice_slot.lock().expect("voice report lock");
+            let due = slot
+                .asked_at
+                .is_none_or(|at| at.elapsed() >= VOICE_REPORT_INTERVAL);
+            let ask = !slot.in_flight && due;
+            if ask {
+                slot.in_flight = true;
+                slot.asked_at = Some(Instant::now());
+            }
+            ask
+        };
+        if ask
+            && self
+                .commands
+                .try_send(Command::ReportVoice(Arc::clone(&self.voice_slot)))
+                .is_err()
+        {
+            self.voice_slot.lock().expect("voice report lock").in_flight = false;
+        }
+        let slot = self.voice_slot.lock().expect("voice report lock");
+        let (speaking, at) = slot.report?;
+        let age = at.elapsed();
+        (age <= VOICE_REPORT_MAX_AGE).then_some(super::VoiceReport { speaking, age })
     }
 
     fn available(&self) -> bool {

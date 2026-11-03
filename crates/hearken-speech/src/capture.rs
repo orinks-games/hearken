@@ -122,6 +122,9 @@ pub struct CaptureSpeech {
     configure_calls: Vec<ConfigureCall>,
     refresh_requests: u32,
     shutdown_calls: u32,
+    /// What `event_voice_report` answers; `None` until a test scripts it.
+    voice_speaking: Option<bool>,
+    voice_reports: u32,
 }
 
 impl Default for CaptureSpeech {
@@ -159,7 +162,20 @@ impl CaptureSpeech {
             configure_calls: Vec::new(),
             refresh_requests: 0,
             shutdown_calls: 0,
+            voice_speaking: None,
+            voice_reports: 0,
         }
+    }
+
+    /// Script the event voice's report: `Some(speaking)` makes the capture
+    /// answer like a voice that can say whether it is talking.
+    pub fn set_voice_speaking(&mut self, speaking: Option<bool>) {
+        self.voice_speaking = speaking;
+    }
+
+    /// How many times the event voice was asked whether it is speaking.
+    pub fn voice_reports(&self) -> u32 {
+        self.voice_reports
     }
 
     /// Resolve `SpokenMessage` pairs to their terse rendering, as a player
@@ -349,6 +365,13 @@ impl CaptureSpeech {
 }
 
 impl SpeechSink for CaptureSpeech {
+    fn event_voice_report(&mut self) -> Option<super::VoiceReport> {
+        self.voice_reports += 1;
+        self.voice_speaking.map(|speaking| super::VoiceReport {
+            speaking,
+            age: std::time::Duration::ZERO,
+        })
+    }
     fn say(&mut self, text: &str, interrupt: bool) {
         if !text.is_empty() {
             self.record(SpeechChannel::Main, text, interrupt);
@@ -618,6 +641,9 @@ impl SpeechSink for SharedCapture {
     }
     fn is_speaking(&self) -> bool {
         self.0.borrow().is_speaking()
+    }
+    fn event_voice_report(&mut self) -> Option<super::VoiceReport> {
+        self.0.borrow_mut().event_voice_report()
     }
     fn startup_hold(&self) -> std::time::Duration {
         self.0.borrow().startup_hold()

@@ -850,3 +850,29 @@ fn a_software_voice_with_no_voices_installed_loses_to_the_built_in_voice() {
     ]);
     assert_eq!(picked_name(&windows, None).as_deref(), Some("SAPI"));
 }
+
+/// The pacer's report comes from the voice events are spoken by: the
+/// separate event voice when there is one, the main voice otherwise, and
+/// nothing from a voice that cannot tell.
+#[test]
+fn test_event_voice_report_asks_the_voice_events_use() {
+    let main = FakeVoice::new("NVDA", 0, SPEAKING);
+    let event = FakeVoice::new("SAPI", 0, SPEAKING);
+    main.set_speaking_report(Some(true));
+    event.set_speaking_report(Some(false));
+    let mut both = Speech::from_parts(None, Some(main.boxed()), Some(event.boxed()));
+    assert_eq!(both.event_voice_report().map(|r| r.speaking), Some(false));
+
+    let mut main_only = Speech::from_parts(None, Some(main.boxed()), None);
+    assert_eq!(
+        main_only.event_voice_report().map(|r| r.speaking),
+        Some(true)
+    );
+
+    main.set_speaking_report(None);
+    assert_eq!(
+        main_only.event_voice_report(),
+        None,
+        "an older NVDA cannot tell"
+    );
+}

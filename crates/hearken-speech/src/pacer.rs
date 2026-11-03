@@ -48,6 +48,9 @@
 //! speaking rate. A faster voice just flushes a little less eagerly than it
 //! could; a slower one flushes a little late but stays bounded -- either way
 //! the player never again waits through a paragraph of expired narration.
+//! A voice that can report whether it is speaking corrects the estimate as
+//! it goes ([`EventSpeechPacer::observe_voice`]): silence ends the
+//! projection early, and speech past its end holds it open.
 //!
 //! Ported from Freight Fate's `speech_pacing.rs`, itself a port of
 //! `freight_fate/speech_pacing.py`, generalised for Hearken: no
@@ -137,6 +140,19 @@ pub struct PacerConfig {
     /// The fraction is elapsed speaking time over the line's estimated
     /// duration, so it is only as exact as the duration model.
     pub mostly_heard_fraction: f64,
+    /// How long after a line is handed to the voice a "not speaking"
+    /// report is still disbelieved. A screen reader queues the text before
+    /// its synthesizer starts, so a report taken in that gap says nothing
+    /// about the line. See [`EventSpeechPacer::observe_voice`].
+    pub voice_start_grace_s: f64,
+    /// How far a "still speaking" report pushes the projection past now
+    /// when the estimate had already run out: a little longer than the
+    /// interval between reports, so the voice reads busy until the next
+    /// one arrives.
+    pub voice_hold_s: f64,
+    /// How long after the projection runs out the caller keeps asking the
+    /// voice, so a voice slower than the estimate is still caught speaking.
+    pub voice_linger_s: f64,
 }
 
 impl PacerConfig {
@@ -153,6 +169,9 @@ impl PacerConfig {
         recent_memory_s: 300.0,
         rescue_once_window_s: 30.0,
         mostly_heard_fraction: 0.5,
+        voice_start_grace_s: 0.4,
+        voice_hold_s: 0.3,
+        voice_linger_s: 3.0,
     };
 }
 
@@ -269,6 +288,9 @@ pub struct EventSpeechPacer {
     busy_since: f64,
     /// Whether every line in that backlog is `Important` or `Critical`.
     backlog_urgent: bool,
+    /// When a line was last handed to the voice. A "not speaking" report
+    /// older than this plus `voice_start_grace_s` is ignored.
+    last_submit_at: f64,
 }
 
 impl Default for EventSpeechPacer {
@@ -301,6 +323,7 @@ impl EventSpeechPacer {
             receipts: DeliveryReceipts::default(),
             busy_since: 0.0,
             backlog_urgent: false,
+            last_submit_at: f64::NEG_INFINITY,
         }
     }
 
@@ -355,6 +378,7 @@ impl EventSpeechPacer {
     /// Extend the projection by `text`, noting when a quiet voice starts
     /// and whether everything it holds is an `Important` or `Critical` line.
     fn extend_projection(&mut self, now: f64, text: &str, priority: EventPriority) {
+        self.last_submit_at = now;
         if now >= self.clear_at {
             self.busy_since = now;
             self.backlog_urgent = true;
@@ -760,10 +784,60 @@ impl EventSpeechPacer {
         cut
     }
 
+    /// Whether a report from the voice itself would help right now: the
+    /// projection says it is speaking, or ran out within
+    /// `voice_linger_s`, so a voice slower than the estimate can still be
+    /// caught mid-line. Outside that window nothing is queued and asking
+    /// costs a screen-reader call for nothing.
+    pub fn wants_voice_report(&mut self) -> bool {
+        let now = self.now();
+        self.clear_at > 0.0 && now < self.clear_at + self.config.voice_linger_s
+    }
+
+    /// Correct the projection with the voice's own report of whether it is
+    /// speaking, taken `age_s` seconds ago.
+    ///
+    /// The projection is an estimate from text length; a screen reader
+    /// that can say whether it is talking (NVDA 2026.3 and later, SAPI,
+    /// OneCore) replaces the guess with the fact:
+    ///
+    /// * **Silent** while the projection still runs: the voice finished
+    ///   early (a fast rate). The projection ends now, every line in it
+    ///   counts as heard in full, and nothing is left to rescue. A report
+    ///   taken within `voice_start_grace_s` of the last line handed over is
+    ///   ignored, since the voice may not have started on it yet.
+    /// * **Speaking** after the projection ran out: the voice is slower
+    ///   than the estimate, or is reading something else first. The
+    ///   projection is held `voice_hold_s` past now, so the channel reads
+    ///   busy until the next report.
+    ///
+    /// A voice that cannot answer sends no reports, and the estimate stands
+    /// exactly as before.
+    pub fn observe_voice(&mut self, speaking: bool, age_s: f64) {
+        let now = self.now();
+        let observed_at = now - age_s.max(0.0);
+        if speaking {
+            if now >= self.clear_at && self.clear_at > 0.0 {
+                self.clear_at = self.clear_at.max(observed_at + self.config.voice_hold_s);
+            }
+            return;
+        }
+        if now >= self.clear_at
+            || observed_at < self.last_submit_at + self.config.voice_start_grace_s
+        {
+            return;
+        }
+        self.clear_at = now;
+        self.receipts.complete_pending(now);
+        if let Some(held) = self.protected.as_mut() {
+            held.done_at = held.done_at.min(now);
+        }
+    }
+
     /// Whether the projection says the voice is still speaking.
     ///
-    /// The channel cannot be asked directly (nothing reports queue state),
-    /// so this is the same estimate the staleness budget runs on. Purges,
+    /// The estimate the staleness budget runs on, corrected by
+    /// [`Self::observe_voice`] when the voice can report on itself. Purges,
     /// pauses, and resets zero the projection, so a silenced channel reads
     /// not-busy at once instead of waiting out a stale estimate.
     pub fn busy(&mut self) -> bool {
@@ -931,3 +1005,5 @@ impl EventSpeechPacer {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod voice_tests;
