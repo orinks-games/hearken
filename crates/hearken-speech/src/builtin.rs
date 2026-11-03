@@ -378,6 +378,10 @@ impl VoiceBackend for BuiltinVoice {
         Ok(self.engine.speaking())
     }
 
+    fn speaking_report(&self) -> Option<bool> {
+        Some(self.engine.speaking())
+    }
+
     fn set_rate(&mut self, rate: f64) -> Result<(), SpeechError> {
         self.engine
             .shared

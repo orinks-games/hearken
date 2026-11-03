@@ -77,6 +77,15 @@ impl DeliveryReceipts {
         }
     }
 
+    /// The voice fell silent: every line still pending was heard in full.
+    pub(super) fn complete_pending(&mut self, now: f64) {
+        for receipt in self.entries.values_mut() {
+            if !receipt.interrupted && now < receipt.done_at {
+                receipt.done_at = now;
+            }
+        }
+    }
+
     pub(super) fn resume_text(&mut self, text: &str, done_at: f64) {
         for receipt in self.entries.values_mut() {
             if receipt.interrupted && receipt.text == text {

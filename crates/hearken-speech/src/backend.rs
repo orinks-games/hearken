@@ -128,6 +128,12 @@ pub trait VoiceBackend {
     fn is_speaking(&self) -> Result<bool, SpeechError> {
         Ok(false)
     }
+    /// Whether the voice is speaking, only when it can really tell: `None`
+    /// for a backend that does not implement the check (NVDA before
+    /// 2026.3 among them), where `is_speaking` would answer a bare `false`.
+    fn speaking_report(&self) -> Option<bool> {
+        None
+    }
     fn set_rate(&mut self, rate: f64) -> Result<(), SpeechError>;
     fn set_pitch(&mut self, pitch: f64) -> Result<(), SpeechError>;
     fn set_volume(&mut self, volume: f64) -> Result<(), SpeechError>;
@@ -375,6 +381,12 @@ impl VoiceBackend for PrismVoice {
 
     fn is_speaking(&self) -> Result<bool, SpeechError> {
         self.backend.borrow().is_speaking()
+    }
+
+    fn speaking_report(&self) -> Option<bool> {
+        // Prism answers NotImplemented for a backend without the check,
+        // and for an NVDA whose controller lacks isSpeaking.
+        self.backend.borrow().is_speaking().ok()
     }
 
     fn set_rate(&mut self, rate: f64) -> Result<(), SpeechError> {
