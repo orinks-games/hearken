@@ -33,6 +33,8 @@ pub struct FakeVoiceState {
     /// When set, `braille` fails while speech still works: a screen reader
     /// whose display just unplugged.
     pub fail_braille: bool,
+    /// What `speaking_report` answers: `None` is a voice that cannot tell.
+    pub speaking_report: Option<bool>,
 }
 
 /// A recording voice. Cloning the handle shares the state.
@@ -80,6 +82,11 @@ impl FakeVoice {
         self.state.borrow_mut().features.is_supported_at_runtime = supported;
     }
 
+    /// Make the voice report whether it is speaking (`None`: it cannot).
+    pub fn set_speaking_report(&self, report: Option<bool>) {
+        self.state.borrow_mut().speaking_report = report;
+    }
+
     pub fn set_fail_output(&self, fail: bool) {
         self.state.borrow_mut().fail_output = fail;
     }
@@ -117,6 +124,9 @@ impl FakeVoice {
 }
 
 impl VoiceBackend for FakeVoice {
+    fn speaking_report(&self) -> Option<bool> {
+        self.state.borrow().speaking_report
+    }
     fn name(&self) -> String {
         self.state.borrow().name.clone()
     }

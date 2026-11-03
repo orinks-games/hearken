@@ -121,6 +121,13 @@ impl SpeechSink for StubSink {
     fn is_speaking(&self) -> bool {
         self.speaking.load(Ordering::SeqCst)
     }
+    fn event_voice_report(&mut self) -> Option<crate::VoiceReport> {
+        self.calls.lock().unwrap().push("report".into());
+        Some(crate::VoiceReport {
+            speaking: self.speaking.load(Ordering::SeqCst),
+            age: Duration::ZERO,
+        })
+    }
     fn shutdown(&mut self) {
         self.calls.lock().unwrap().push("shutdown".into());
     }
@@ -781,4 +788,32 @@ fn bounded_replies_reach_the_backend_when_it_is_healthy() {
     wait_for(&calls, 1);
     assert!(calls.lock().unwrap()[0].starts_with("preview"));
     sink.shutdown();
+}
+
+/// The game asks without waiting: the first ask only queues the question,
+/// a second ask before it is answered queues nothing, and once the worker
+/// has answered the report comes back fresh.
+#[test]
+fn test_voice_report_never_waits_and_never_piles_up() {
+    let mut rig = rig();
+    rig.speaking.store(true, Ordering::SeqCst);
+    rig.slow.store(true, Ordering::SeqCst);
+    rig.sink.say("a long line", false);
+    assert_eq!(rig.sink.event_voice_report(), None, "nothing answered yet");
+    assert_eq!(rig.sink.event_voice_report(), None);
+    assert!(rig.sink.flush(Duration::from_secs(2)));
+    let report = rig
+        .sink
+        .event_voice_report()
+        .expect("answered after the flush");
+    assert!(report.speaking);
+    assert!(report.age < VOICE_REPORT_MAX_AGE);
+    let asks = rig
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|call| *call == "report")
+        .count();
+    assert_eq!(asks, 1, "the second ask waited for the first answer");
 }

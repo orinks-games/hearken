@@ -10,7 +10,7 @@ use super::backend::{
     narrator_running, pick_backend_gated, pick_event_backend, preserve_backend_default_pitch,
     usable, PrismRegistry, VoiceBackend, VoiceFeatures, VoiceRegistry,
 };
-use super::{PreviewFeature, SpeechSink, EVENT_BACKEND, REFRESH_INTERVAL_S};
+use super::{PreviewFeature, SpeechSink, VoiceReport, EVENT_BACKEND, REFRESH_INTERVAL_S};
 
 /// How long the first lines wait when the game starts on VoiceOver. VoiceOver
 /// reads the newly focused game window aloud as the game opens, and that cuts
@@ -703,6 +703,19 @@ impl SpeechSink for Speech {
         self.backend
             .as_ref()
             .is_some_and(|backend| backend.is_speaking().unwrap_or(false))
+    }
+
+    fn event_voice_report(&mut self) -> Option<VoiceReport> {
+        if self.braille_only && self.supports_braille() {
+            // Nothing is spoken; the pacer's estimate paces the display.
+            return None;
+        }
+        let voice = self.event_backend.as_ref().or(self.backend.as_ref())?;
+        let speaking = voice.speaking_report()?;
+        Some(VoiceReport {
+            speaking,
+            age: std::time::Duration::ZERO,
+        })
     }
 
     fn shutdown(&mut self) {

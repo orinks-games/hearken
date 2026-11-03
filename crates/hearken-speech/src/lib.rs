@@ -155,6 +155,14 @@ impl PreviewFeature {
     }
 }
 
+/// A voice's own answer to "are you speaking?", and how old it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceReport {
+    pub speaking: bool,
+    /// Time since the voice was asked.
+    pub age: std::time::Duration,
+}
+
 /// What a game needs from a speech object, the public surface a game-facing
 /// context talks to.
 ///
@@ -266,6 +274,18 @@ pub trait SpeechSink {
     /// answer it report `false`.
     fn is_speaking(&self) -> bool {
         false
+    }
+
+    /// The event voice's own report of whether it is speaking, for
+    /// [`EventSpeechPacer::observe_voice`]. `None` when the voice cannot
+    /// say (NVDA before 2026.3, JAWS, a fake) or no recent report is
+    /// available; the pacer's estimate then stands alone.
+    ///
+    /// Takes `&mut self` because a worker-backed sink answers from its last
+    /// report and asks for a fresh one in the same call, so the game loop
+    /// never waits on the screen reader.
+    fn event_voice_report(&mut self) -> Option<VoiceReport> {
+        None
     }
 
     /// How long the speech worker holds this sink's first lines after

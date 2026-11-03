@@ -826,3 +826,28 @@ fn apply_speech_settings_pushes_braille_only() {
     speech.say("Main menu", true);
     assert_eq!(nvda.spoken(), spoken(&[("Main menu", true)]));
 }
+/// The pacer's report comes from the voice events are spoken by: the
+/// separate event voice when there is one, the main voice otherwise, and
+/// nothing from a voice that cannot tell.
+#[test]
+fn test_event_voice_report_asks_the_voice_events_use() {
+    let main = FakeVoice::new("NVDA", 0, SPEAKING);
+    let event = FakeVoice::new("SAPI", 0, SPEAKING);
+    main.set_speaking_report(Some(true));
+    event.set_speaking_report(Some(false));
+    let mut both = Speech::from_parts(None, Some(main.boxed()), Some(event.boxed()));
+    assert_eq!(both.event_voice_report().map(|r| r.speaking), Some(false));
+
+    let mut main_only = Speech::from_parts(None, Some(main.boxed()), None);
+    assert_eq!(
+        main_only.event_voice_report().map(|r| r.speaking),
+        Some(true)
+    );
+
+    main.set_speaking_report(None);
+    assert_eq!(
+        main_only.event_voice_report(),
+        None,
+        "an older NVDA cannot tell"
+    );
+}
