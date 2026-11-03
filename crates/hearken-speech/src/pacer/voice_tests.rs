@@ -122,3 +122,34 @@ fn test_staleness_follows_the_real_voice() {
     pacer.observe_voice(false, 0.0);
     assert!(!pacer.would_start_stale("Next.", EventPriority::Important));
 }
+
+#[test]
+fn test_quiet_needs_a_fresh_silent_report_after_the_last_line() {
+    let (mut pacer, now) = make_pacer();
+    assert!(!pacer.voice_reporting());
+    assert!(!pacer.voice_quiet(), "no report yet");
+    pacer.observe_voice(false, 0.0);
+    assert!(pacer.voice_quiet());
+    pacer.should_flush(LINE, EventPriority::Ambient, Protect::Yes, None);
+    assert!(!pacer.voice_quiet(), "a line was just handed over");
+    advance(&now, 0.1);
+    pacer.observe_voice(false, 0.0);
+    assert!(!pacer.voice_quiet(), "inside the start grace");
+    advance(&now, 0.5);
+    pacer.observe_voice(true, 0.0);
+    assert!(!pacer.voice_quiet());
+    advance(&now, 1.0);
+    pacer.observe_voice(false, 0.0);
+    assert!(pacer.voice_quiet());
+    advance(&now, 1.5);
+    assert!(!pacer.voice_reporting(), "the report went stale");
+    assert!(!pacer.voice_quiet());
+}
+
+#[test]
+fn test_an_older_report_never_overrides_a_newer_one() {
+    let (mut pacer, _now) = make_pacer();
+    pacer.observe_voice(true, 0.0);
+    pacer.observe_voice(false, 0.5);
+    assert!(!pacer.voice_quiet());
+}
