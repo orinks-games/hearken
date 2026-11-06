@@ -708,9 +708,9 @@ fn a_sentence_opens_with_a_capital_and_names_need_few_letters_of_frame() {
 fn a_joined_piece_and_a_name_with_a_label_still_translate() {
     assert_eq!(
         listen().translate(
-            "You have 5,000 dollars.  Mission brief: Aurora Studios is looking for steady players."
+            "You have 5,000 dollars.  Mission brief: Pinecone Lantern Works is looking for steady players."
         ),
-        "Tienes 5.000 dólares.  Informe de misión: Aurora Studios busca jugadores constantes."
+        "Tienes 5.000 dólares.  Informe de misión: Pinecone Lantern Works busca jugadores constantes."
     );
 }
 

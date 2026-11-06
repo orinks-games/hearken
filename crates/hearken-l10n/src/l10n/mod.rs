@@ -949,7 +949,7 @@ impl Pass<'_, '_> {
                 return false;
             }
             // A name never holds a lead-in: "{studio} is looking for ..."
-            // must not take "Mission brief: Aurora Studios" as
+            // must not take "Mission brief: Pinecone Lantern Works" as
             // the studio and leave the label English; nor does a hole that
             // opens a template: "{name} Company Yard" must not take
             // "company yard: Chicago" and say the label twice.
