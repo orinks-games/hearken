@@ -1167,6 +1167,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hearken-acoustics"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hearken-app"
 version = "0.1.0"
 dependencies = [
