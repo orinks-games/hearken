@@ -65,7 +65,10 @@ fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
     h.press(Key::Down);
     assert_eq!(
         h.spoken(),
-        [format!("Speech rate: 50 percent. 2 of {}.", settings_count(15))]
+        [format!(
+            "Speech rate: 50 percent. 2 of {}.",
+            settings_count(15)
+        )]
     );
     h.press(Key::Right);
     assert_eq!(h.app.ctx.settings.speech.rate, 0.55);

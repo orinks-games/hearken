@@ -26,7 +26,7 @@ fn settings_open_and_the_title_comes_back_where_it_was() {
     h.press(Key::Return);
     assert_eq!(
         h.spoken(),
-        ["Settings.", "Speech rate: 50 percent. 1 of 17."]
+        ["Settings.", "Language: Automatic, English. 1 of 18."]
     );
     h.clear();
     h.press(Key::Escape);
