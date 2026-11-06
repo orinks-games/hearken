@@ -200,7 +200,7 @@ clicks.
 | `room` | `true` | the shared reverb |
 | `hrtf` | `false` | headphone rendering (needs the `hrtf` feature) |
 | `ramp_ms` | `50` | how long changes ramp |
-| `max_delay_s` | `0.5` | longest delay a sound holds; longer ones are held at this |
+| `max_delay_s` | `0.5` | longest delay a sound holds, 0.01 to 2 s (0.5 s is about 170 m); farther sounds arrive at this delay |
 | `obstacle_sense` | `0` | strength of the obstacle-sense floor, 0 to 1 |
 | `sense_radius_m` | `4` | how far obstacle sense reaches |
 | `room_move_m` | `0.5` | how far the listener moves before the room is estimated again |

@@ -14,6 +14,11 @@ pub const BUILTIN_SOFA: &[u8] = include_bytes!("../../hrtf/mit_kemar_normal_pinn
 const MAX_SOFA_BYTES: usize = 64 * 1024 * 1024;
 /// Longest filter accepted, taps.
 const MAX_FILTER_LEN: usize = 8192;
+/// Most filter samples after resampling (64 MB of `f32`).
+const MAX_SOFA_VALUES: u64 = 16 * 1024 * 1024;
+/// Largest rate over the common divisor of the file's rate and the
+/// output's (44.1 kHz to 48 kHz is 147 and 160).
+const MAX_RATE_STEP: u64 = 4096;
 /// Convolution block, frames: also the HRTF path's latency.
 const PARTITION: usize = 64;
 /// Re-aim only when the direction moves more than this, degrees.
@@ -59,17 +64,17 @@ impl HrtfSet {
         if !(8_000..=384_000).contains(&rate) {
             return Err(format!("unusable sample rate {rate}"));
         }
-        let opened = std::panic::catch_unwind(|| {
-            OpenOptions::new()
-                .sample_rate(rate as f32)
-                .normalized(true)
-                .open_data(bytes)
-        });
-        let sofa = match opened {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Err(format!("SOFA file not read: {e}")),
-            Err(_) => return Err("SOFA file not read: the reader failed".into()),
-        };
+        // The reader trusts the file's own rate and sizes when it resamples,
+        // and a failed allocation aborts. So read the file once as it is
+        // (a NaN target rate never differs by more than 0.1 Hz, so nothing
+        // is resampled) and check it before resampling.
+        let raw = open(bytes, f32::NAN, false)?;
+        check_resample(&raw, rate)?;
+        drop(raw);
+        let sofa = open(bytes, rate as f32, true)?;
+        if sofa.sample_rate() != rate as f32 {
+            return Err("SOFA file not resampled".into());
+        }
         let len = sofa.filter_len();
         if len == 0 || len > MAX_FILTER_LEN {
             return Err(format!("SOFA filter length {len} out of range"));
@@ -133,6 +138,56 @@ impl HrtfSet {
         };
         Ok((link, dsp))
     }
+}
+
+fn open(bytes: &[u8], rate: f32, normalized: bool) -> Result<Sofar, String> {
+    let opened = std::panic::catch_unwind(|| {
+        OpenOptions::new()
+            .sample_rate(rate)
+            .normalized(normalized)
+            .open_data(bytes)
+    });
+    match opened {
+        Ok(Ok(s)) => Ok(s),
+        Ok(Err(e)) => Err(format!("SOFA file not read: {e}")),
+        Err(_) => Err("SOFA file not read: the reader failed".into()),
+    }
+}
+
+/// Refuses a file whose own rate, or whose size after resampling to
+/// `rate`, the reader cannot handle safely.
+fn check_resample(raw: &Sofar, rate: u32) -> Result<(), String> {
+    let from = raw.sample_rate();
+    if !(from.is_finite() && from.fract() == 0.0 && (8_000.0..=384_000.0).contains(&from)) {
+        return Err(format!("SOFA sample rate {from} out of range"));
+    }
+    let from = from as u64;
+    let to = u64::from(rate);
+    // The resampler's FFT is as long as the rates over their common
+    // divisor; coprime rates would make it huge and slow.
+    let g = gcd(from, to);
+    if from / g > MAX_RATE_STEP || to / g > MAX_RATE_STEP {
+        return Err(format!(
+            "SOFA sample rate {from} cannot be resampled to {to}"
+        ));
+    }
+    let d = raw.hrtf().dimensions();
+    let (m, r, n) = (u64::from(d.m), u64::from(d.r), u64::from(d.n));
+    let new_n = (n * to).div_ceil(from);
+    if m == 0 || r == 0 || n == 0 || new_n > MAX_FILTER_LEN as u64 {
+        return Err(format!("SOFA filter length {new_n} out of range"));
+    }
+    if m.saturating_mul(r).saturating_mul(new_n) > MAX_SOFA_VALUES {
+        return Err("SOFA file has too many filters".into());
+    }
+    Ok(())
+}
+
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a.max(1)
 }
 
 /// The game side of one sound's HRTF: publishes a new filter as the sound
@@ -234,5 +289,9 @@ mod tests {
         let half: Arc<[u8]> = BUILTIN_SOFA[..BUILTIN_SOFA.len() / 3].into();
         assert!(HrtfSet::load(&HrtfSource::Sofa(half), 48_000).is_err());
         assert!(HrtfSet::load(&HrtfSource::Builtin, 0).is_err());
+        // The bundled set is 44.1 kHz: a rate with no common step is
+        // refused, common ones resample.
+        assert!(HrtfSet::load(&HrtfSource::Builtin, 44_101).is_err());
+        assert!(HrtfSet::load(&HrtfSource::Builtin, 96_000).is_ok());
     }
 }

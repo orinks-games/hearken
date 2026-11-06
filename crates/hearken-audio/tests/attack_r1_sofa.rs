@@ -1,10 +1,10 @@
-//! Attack round 1: SOFA files whose sampling rate field is hostile. Each
+//! SOFA files whose sampling rate field is hostile, found in attack round 1
+//! and kept as regression tests. Each
 //! case is the bundled MIT KEMAR file with its Data.SamplingRate chunk
 //! rewritten (byte patches made with h5py). Each case runs in a child
 //! process, because an allocation failure aborts instead of panicking.
 //! Run (cap memory first so the big allocations fail fast):
 //! ulimit -v 8000000; cargo test --release -p hearken-audio --features hrtf --test attack_r1_sofa -- --nocapture
-//! FAILS: see the per-case notes in the output.
 
 #![cfg(feature = "hrtf")]
 

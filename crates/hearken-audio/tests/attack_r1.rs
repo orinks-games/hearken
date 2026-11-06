@@ -1,6 +1,6 @@
-//! Attack round 1 on the rendering side, through Kira's offline mixer.
+//! Rendering cases found in attack round 1, kept as regression tests,
+//! through Kira's offline mixer.
 //! Run: cargo test --release -p hearken-audio --test attack_r1 -- --nocapture
-//! Tests marked FAILS fail on the build they were written against.
 
 #![cfg(feature = "kira")]
 
@@ -97,14 +97,11 @@ fn through_two_walls(tl: [f64; 7]) -> (f64, f32) {
     (rms(&out[RATE as usize / 4..]), g[4])
 }
 
-/// The direct path's level is anchored on its lowest band: the shelf
-/// cascade only holds 80 dB per step and floors bands at 1e-6, then the
-/// whole path is scaled by band 0. A material that blocks only the lowest
-/// band (two crossings of 60 dB at 125 Hz, 0 dB elsewhere) then also mutes
-/// the 2 kHz band the model says passes untouched.
-/// FAILS: the tone comes out tens of dB quieter than its band gain says.
+/// A material that blocks only the lowest band (two crossings of 60 dB at
+/// 125 Hz, 0 dB elsewhere) must not mute the 2 kHz band the model says
+/// passes untouched.
 #[test]
-fn a_quiet_lowest_band_mutes_every_band() {
+fn a_quiet_lowest_band_leaves_the_others() {
     let (open, g_open) = through_two_walls([0.0; 7]);
     let (low_cut, g_cut) = through_two_walls([60.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     eprintln!("2 kHz band gain: open {g_open} low-cut {g_cut}");
@@ -112,20 +109,20 @@ fn a_quiet_lowest_band_mutes_every_band() {
     // The model gives the 2 kHz band the same gain in both scenes.
     assert_eq!(g_open, g_cut);
     let db = 20.0 * (low_cut / open).log10();
-    assert!(db > -3.0, "2 kHz tone {db:.1} dB down");
+    assert!(db > -1.0, "2 kHz tone {db:.1} dB down");
 }
 
-/// A source past the delay line's reach arrives early: the line holds
-/// `max_delay_s * 96 kHz` samples, so at 48 kHz anything beyond about
-/// 2 * 0.5 s (340 m) is clamped, and the audible delay stops growing.
-#[test]
-fn far_source_delay_is_clamped() {
+/// Where a click from `d` metres away lands, seconds, with `max_delay_s`.
+fn click_arrival(d: f32, max_delay_s: f32) -> (Option<f64>, f64) {
     let scene = Arc::new(SceneBuilder::new().build());
     let mut audio = Audio::new(
         Box::new(KiraBackend::offline(RATE).unwrap()),
         Box::new(LooseClips::none()),
     );
-    audio.set_acoustics(Some(bare()));
+    audio.set_acoustics(Some(AcousticSettings {
+        max_delay_s,
+        ..bare()
+    }));
     audio.set_listener(Vec3::new(0.0, 0.0, 1.5), 0.0);
     audio.update_acoustic(&scene);
     let mut s = vec![0.0f32; RATE as usize * 3];
@@ -134,10 +131,9 @@ fn far_source_delay_is_clamped() {
         samples: s,
         at: Mutex::new(0),
     });
-    let d = 600.0f32;
     audio.start_feed(click, Some(Vec3::new(0.0, d, 1.5)), Bus::EFFECTS);
     let mut out = Vec::new();
-    while out.len() < RATE as usize * 2 {
+    while out.len() < RATE as usize * 5 / 2 {
         audio.update_acoustic(&scene);
         out.extend(audio.render(800).unwrap());
     }
@@ -145,10 +141,22 @@ fn far_source_delay_is_clamped() {
         .iter()
         .position(|f| f[0].abs() > 1e-5)
         .map(|i| i as f64 / f64::from(RATE));
-    let want = f64::from(d) / scene.speed_of_sound();
-    eprintln!("click at {at:?} s, travel time {want:.3} s");
-    // Documented behaviour, not a crash; printed for the record.
-    assert!(at.is_some());
+    (at, f64::from(d) / scene.speed_of_sound())
+}
+
+/// The delay line's reach is `max_delay_s` at every output rate (it was
+/// twice that at 48 kHz, since the line is sized for 96 kHz). Farther
+/// sounds arrive at the reach; a longer setting reaches them.
+#[test]
+fn far_source_delay_holds_at_max_delay() {
+    let (at, travel) = click_arrival(600.0, 0.5);
+    eprintln!("default: click at {at:?} s, travel time {travel:.3} s");
+    let at = at.expect("click heard");
+    assert!((at - 0.5).abs() < 0.005, "{at}");
+    let (at, travel) = click_arrival(600.0, 2.0);
+    eprintln!("2 s line: click at {at:?} s, travel time {travel:.3} s");
+    let at = at.expect("click heard");
+    assert!((at - travel).abs() < 0.005, "{at} vs {travel}");
 }
 
 /// A sealed room of a material that absorbs nothing: RT60 hits the 30 s

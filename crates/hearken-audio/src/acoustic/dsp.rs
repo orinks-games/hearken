@@ -200,6 +200,23 @@ impl Glide {
     }
 }
 
+/// Lowest band level the shelf cascade shapes, relative to the loudest
+/// band (-60 dB); quieter bands are held here.
+const MIN_RELATIVE: f32 = 1e-3;
+
+/// The direct path's overall gain and each band's level relative to it.
+/// The shelves start from the lowest band, so the gain is that band's
+/// level, but the levels are taken relative to the loudest band and floored
+/// there. So a nearly silent low band cannot drag the other bands down.
+fn direct_shape(bands: &[f32; BAND_COUNT]) -> (f32, [f32; BAND_COUNT]) {
+    let top = bands.iter().fold(0.0f32, |m, &g| m.max(g));
+    if !(top > 0.0 && top.is_finite()) {
+        return (0.0, [1.0; BAND_COUNT]);
+    }
+    let rel = bands.map(|g| (g / top).max(MIN_RELATIVE));
+    (top * rel[0], rel)
+}
+
 struct Direct {
     head: Head,
     /// Band gains as filtered now.
@@ -402,13 +419,16 @@ impl AcousticDsp {
         let rate = self.rate;
         let p = self.p;
         self.direct.head = Head {
-            cur: (p[word::DELAY] * rate).max(0.0),
+            cur: (p[word::DELAY] * rate).clamp(
+                0.0,
+                self.line.max_delay().min(self.shared.max_delay_s * rate),
+            ),
             ..Head::new()
         };
         self.direct
             .bands
             .copy_from_slice(&p[word::GAINS..word::GAINS + BAND_COUNT]);
-        self.direct.gain.settle(p[word::GAINS]);
+        self.direct.gain.settle(direct_shape(&self.direct.bands).0);
         for s in 0..2 {
             self.direct.pan[s].settle(p[word::PAN + s]);
         }
@@ -455,7 +475,9 @@ impl AcousticDsp {
         };
         let glide = p[word::DOPPLER] > 0.5;
         let a = self.smooth;
-        let max_delay = self.line.max_delay();
+        // The line is sized for the highest rate; hold the reach to the
+        // asked seconds so it is the same at every rate.
+        let max_delay = self.line.max_delay().min(self.shared.max_delay_s * rate);
         let delay = |s: f32| {
             if s.is_finite() {
                 (s * rate).clamp(0.0, max_delay)
@@ -483,10 +505,10 @@ impl AcousticDsp {
             }
         }
         d.on = d.bands.iter().any(|&g| g >= SILENT);
+        let (gain, rel) = direct_shape(&d.bands);
         if d.on {
-            let floor = |g: f32| g.max(1e-6);
             for k in 0..BAND_COUNT - 1 {
-                d.shelves[k].c = d.shapes[k].coeffs(floor(d.bands[k + 1]) / floor(d.bands[k]));
+                d.shelves[k].c = d.shapes[k].coeffs(rel[k + 1] / rel[k]);
                 d.shelves[k].flush();
             }
         } else {
@@ -494,7 +516,7 @@ impl AcousticDsp {
                 s.clear();
             }
         }
-        d.gain.aim(d.bands[0]);
+        d.gain.aim(gain);
         d.pan[0].aim(p[word::PAN]);
         d.pan[1].aim(p[word::PAN + 1]);
 
@@ -642,6 +664,7 @@ impl AcousticDsp {
 #[cfg(test)]
 mod tests {
     use super::super::voice::{AcousticVoice, Post};
+    use super::{direct_shape, BAND_COUNT, MIN_RELATIVE};
     use crate::spatial::SpatialConfig;
     use hearken_acoustics::{SoundRender, Tap};
 
@@ -697,6 +720,18 @@ mod tests {
         let mut out = input.clone();
         dsp.process(&mut out, 44_100.0);
         assert_eq!(out, input);
+    }
+
+    #[test]
+    fn direct_shape_is_relative_to_the_loudest_band() {
+        let (g, rel) = direct_shape(&[1e-9, 0.5, 0.5, 0.5, 0.5, 0.25, 0.0]);
+        assert_eq!(rel[1], 1.0);
+        assert_eq!(rel[0], MIN_RELATIVE);
+        assert_eq!(rel[6], MIN_RELATIVE);
+        assert_eq!(rel[5], 0.5);
+        assert_eq!(g, 0.5 * MIN_RELATIVE);
+        assert_eq!(direct_shape(&[0.0; BAND_COUNT]).0, 0.0);
+        assert_eq!(direct_shape(&[f32::NAN; BAND_COUNT]).0, 0.0);
     }
 
     #[test]

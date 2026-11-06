@@ -63,7 +63,10 @@ pub struct AcousticSettings {
     pub hrtf: bool,
     /// How long parameter changes ramp, ms: about one or two game frames.
     pub ramp_ms: f32,
-    /// Longest delay a sound's line holds, seconds (0.5 s is about 170 m).
+    /// Longest delay a sound's line holds, seconds, 0.01 to 2 (0.5 s is
+    /// about 170 m at 343 m/s). A sound farther away arrives at this delay
+    /// and keeps its distance loss. The reach is the same at every output
+    /// rate up to 96 kHz.
     pub max_delay_s: f32,
     /// The obstacle-sense noise floor, 0 (off) to 1.
     pub obstacle_sense: f32,
