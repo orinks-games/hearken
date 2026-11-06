@@ -140,18 +140,7 @@ mod tests {
         fn translation_catalogs() -> &'static [(&'static str, &'static str)] {
             &[(
                 "zh_CN",
-                concat!(
-                    "msgid \"\"
-",
-                    "msgstr \"X-Language-Name: Simplified Chinese\n",
-                    "X-Language-Autonym: 简体中文\n\"
-
-",
-                    "msgid \"New screen.\"
-",
-                    "msgstr \"新画面。\"
-",
-                ),
+                "msgid \"\"\nmsgstr \"\"\n\"X-Language-Name: Simplified Chinese\\n\"\n\"X-Language-Autonym: 简体中文\\n\"\n\nmsgid \"New screen.\"\nmsgstr \"新画面。\"\n",
             )]
         }
 
