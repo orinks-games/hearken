@@ -758,7 +758,6 @@ msgstr "vence mañana"
     );
 }
 
-
 /// Neutral placeholder catalog for engine tests and docs examples.
 const DEMO_PO: &str = r#"
 msgid ""

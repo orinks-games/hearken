@@ -11,15 +11,15 @@
 #![allow(missing_docs)]
 
 mod check;
-mod load;
 mod l10n;
+mod load;
 
 pub use check::{check_catalog, check_dir, CheckIssue};
+pub use l10n::po::{self, PoEntry, PoError};
 pub use l10n::{
     add_languages, language, languages, match_locale, resolve, Catalog, Language, Translator, AUTO,
     ENGLISH, LANGUAGES, POSITION_CUE,
 };
-pub use l10n::po::{self, PoEntry, PoError};
 pub use load::{
     added_languages_in, catalog_text, discover_languages, load_translator, offered_codes,
     override_folders, system_locale, SharedTranslator, LANG_ENV_SUFFIX, MISSES_ENV_SUFFIX,

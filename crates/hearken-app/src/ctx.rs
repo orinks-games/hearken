@@ -1,8 +1,8 @@
 //! What every screen is handed.
 
 use hearken_audio::{Audio, Bus, Sound};
-use hearken_speech::SpeechSink;
 use hearken_l10n::Translator;
+use hearken_speech::SpeechSink;
 use std::sync::Arc;
 
 use crate::bindings::KeyBindings;

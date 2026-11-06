@@ -56,7 +56,9 @@ fn missing_entry_stays_english() {
     h.app.ctx.say("No matching entry.");
     let spoken = h.spoken();
     assert!(
-        spoken.iter().any(|line| line.contains("No matching entry.")),
+        spoken
+            .iter()
+            .any(|line| line.contains("No matching entry.")),
         "spoken={spoken:?}"
     );
 }

@@ -97,10 +97,7 @@ mod tests {
 
     #[test]
     fn unknown_placeholder_is_reported() {
-        let issues = check_catalog(
-            "xx",
-            "msgid \"Hello {name}.\"\nmsgstr \"Hola {nombre}.\"\n",
-        );
+        let issues = check_catalog("xx", "msgid \"Hello {name}.\"\nmsgstr \"Hola {nombre}.\"\n");
         assert!(
             issues.iter().any(|i| i.message.contains("nombre")),
             "{issues:?}"

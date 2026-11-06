@@ -19,10 +19,7 @@ pub fn system_locale() -> Option<String> {
 }
 
 /// Folders to search for override catalogs, first match wins.
-pub fn override_folders(
-    game_root: Option<&Path>,
-    data_dir: Option<&Path>,
-) -> Vec<PathBuf> {
+pub fn override_folders(game_root: Option<&Path>, data_dir: Option<&Path>) -> Vec<PathBuf> {
     game_root
         .into_iter()
         .chain(data_dir)
@@ -215,6 +212,8 @@ mod tests {
         write_catalog(&game.path().join("lang"), "nl", "Hallo.");
         let folders = override_folders(Some(game.path()), None);
         let added = added_languages_in(&folders, &[]);
-        assert!(added.iter().any(|(c, n, a)| c == "nl" && n == "Example" && a == "Ejemplo"));
+        assert!(added
+            .iter()
+            .any(|(c, n, a)| c == "nl" && n == "Example" && a == "Ejemplo"));
     }
 }
