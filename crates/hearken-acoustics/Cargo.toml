@@ -1,0 +1,25 @@
+[package]
+name = "hearken-acoustics"
+description = "Sound propagation for games: air, materials, geometry, and how a sound reaches the listener"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# No audio, threads or platform code, so it builds for
+# wasm32-unknown-unknown and gives the same bits everywhere.
+[dependencies]
+libm.workspace = true
+serde.workspace = true
+# float_roundtrip: parse every float to its exact bits, whatever else
+# is in the build.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+# The determinism test's scene; builds as a WebAssembly module too, so the
+# same hash can be checked on wasm32 (see tests/determinism.rs).
+[[example]]
+name = "golden"
+path = "examples/golden.rs"
+crate-type = ["cdylib", "rlib"]

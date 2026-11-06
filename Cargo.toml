@@ -15,6 +15,8 @@ log = "0.4"
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Software maths, so acoustics give the same bits on every target.
+libm = "0.2.16"
 tempfile = "3"
 dirs = "6"
 libc = "0.2"
@@ -33,6 +35,7 @@ hearken-audio = { path = "crates/hearken-audio", default-features = false }
 hearken-radio = { path = "crates/hearken-radio" }
 hearken-voice = { path = "crates/hearken-voice" }
 hearken-replay = { path = "crates/hearken-replay" }
+hearken-acoustics = { path = "crates/hearken-acoustics" }
 hearken-discord = { path = "crates/hearken-discord" }
 # The engine side turns on `http`; `hearken release` only signs.
 hearken-update = { path = "crates/hearken-update", default-features = false }
@@ -40,6 +43,8 @@ kira = { version = "0.12", default-features = false, features = ["cpal", "sympho
 # Kira's own versions: hearken-audio opens the device itself.
 cpal = "0.18"
 rtrb = "0.4"
+# HRTF rendering: a pure Rust SOFA reader and partitioned convolution.
+sofar = { version = "0.4", default-features = false, features = ["dsp", "resample"] }
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
 symphonia-adapter-libopus = "0.3"
 symphonia-core = "0.6"

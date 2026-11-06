@@ -199,12 +199,17 @@ impl<G: Game> Ctx<G> {
     }
 
     /// Per-frame audio upkeep: re-mixes positioned sounds against the
-    /// listener and the game's occlusion hook, and speaks a one-time notice
+    /// listener and the game's acoustic scene or occlusion hook, and speaks a one-time notice
     /// (such as "no sound device") once the pool has one.
     pub(crate) fn update_audio(&mut self) {
-        let listener = self.audio.listener().pos;
-        let game = &self.game;
-        self.audio.update(&|pos| G::occluded(game, listener, pos));
+        match G::acoustic_scene(&self.game) {
+            Some(scene) => self.audio.update_acoustic(&scene),
+            None => {
+                let listener = self.audio.listener().pos;
+                let game = &self.game;
+                self.audio.update(&|pos| G::occluded(game, listener, pos));
+            }
+        }
         if let Some(notice) = self.audio.take_notice() {
             self.say_queued(notice);
         }

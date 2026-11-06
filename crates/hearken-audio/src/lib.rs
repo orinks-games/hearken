@@ -5,6 +5,7 @@
 //! and per-bus controls (gain, pan, pitch, low-pass filter cutoff). A backend — Kira, FMOD, or
 //! your own — plays them over speakers or a headset.
 
+mod acoustic;
 mod backend;
 mod clips;
 #[cfg(feature = "kira")]
@@ -23,6 +24,12 @@ mod voicing;
 
 #[cfg(feature = "kira")]
 pub use self::kira::{DeviceBackend, DeviceError, GainCurve, KiraBackend, PanLaw};
+pub use acoustic::{
+    AcousticDsp, AcousticGain, AcousticSettings, AcousticVoice, ObstacleSense, ReverbSend,
+    RoomReverbDsp,
+};
+#[cfg(feature = "hrtf")]
+pub use acoustic::{HrtfSet, HrtfSource, BUILTIN_SOFA};
 pub use backend::{Backend, BackendError, Channel, Source};
 pub use clips::{
     discover_clips, discover_clips_from, game_dirs, ClipSource, Discovered, LayeredClips,
@@ -31,6 +38,9 @@ pub use clips::{
 #[cfg(feature = "kira")]
 pub use decode::{probe_clip, ClipInfo};
 pub use feed::{Feed, FeedRead};
+/// The acoustic model the acoustic path renders: scenes, materials and
+/// queries.
+pub use hearken_acoustics as acoustics;
 pub use open::{NO_SOUND_NOTICE, SHUTDOWN_WAIT};
 pub use pool::{Audio, Fades, Heard, LiveSound, PlayError, Sound};
 pub use recording::{Call, Recorder, RecordingBackend};

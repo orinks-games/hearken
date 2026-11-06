@@ -1,5 +1,6 @@
 //! The [`Backend`] trait every sound library implements, and what it plays.
 
+use crate::acoustic::AcousticDsp;
 use crate::feed::Feed;
 use crate::types::{LoopRegion, Mix, Ramps};
 use crate::voicing::Insert;
@@ -74,6 +75,50 @@ pub trait Backend: Send {
     ) -> Result<Channel, BackendError> {
         let _ = insert;
         self.play_from(key, source, looping, mix, from_s)
+    }
+
+    /// Whether this backend runs [`AcousticDsp`] inserts
+    /// ([`Backend::play_acoustic`]) and a shared reverb
+    /// ([`Backend::set_room`]). When it does not, which is the default, the
+    /// pool gives acoustic sounds the nearest plain mix instead: a gain, a
+    /// pan and a low-pass.
+    fn renders_acoustics(&self) -> bool {
+        false
+    }
+
+    /// Starts `source` as [`Backend::play_inserted`] does (or
+    /// [`Backend::play_from`] with no `insert`), with `acoustic` processing
+    /// it after the insert and before its mix. The default drops the
+    /// processor and plays the sound plainly.
+    #[allow(clippy::too_many_arguments)]
+    fn play_acoustic(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+        insert: Option<&Insert>,
+        acoustic: AcousticDsp,
+    ) -> Result<Channel, BackendError> {
+        drop(acoustic);
+        match insert {
+            Some(insert) => self.play_inserted(key, source, looping, mix, from_s, insert),
+            None if from_s > 0.0 => self.play_from(key, source, looping, mix, from_s),
+            None => self.play(key, source, looping, mix),
+        }
+    }
+
+    /// Sets the shared reverb's room, or turns it off with `None` (its tail
+    /// rings out). The default does nothing.
+    fn set_room(&mut self, room: Option<&hearken_acoustics::RoomRender>) {
+        let _ = room;
+    }
+
+    /// The rate the backend mixes at, when it knows: for loading an HRTF
+    /// set at the right rate.
+    fn sample_rate(&self) -> Option<u32> {
+        None
     }
 
     /// Changes a playing channel's mix, ramping over `ramp_ms`.

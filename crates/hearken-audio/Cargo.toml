@@ -11,9 +11,16 @@ authors.workspace = true
 [features]
 default = ["kira"]
 kira = ["dep:kira", "dep:cpal", "dep:rtrb", "dep:symphonia", "dep:symphonia-adapter-libopus"]
+# Headphone rendering of acoustic sounds through an HRTF (the sofar crate),
+# with the MIT KEMAR set bundled (about 1.2 MB; see hrtf/README.md).
+hrtf = ["kira", "dep:sofar"]
 
 [dependencies]
 hearken-synth.workspace = true
+# The acoustic model the acoustic path renders.
+hearken-acoustics.workspace = true
+libm.workspace = true
+sofar = { workspace = true, optional = true }
 # A release's sounds.pak (see `PackedClips`).
 hearken-pack.workspace = true
 kira = { workspace = true, optional = true }

@@ -1,5 +1,7 @@
 //! The pool of positioned sounds: generation-checked handles over a [`Backend`].
 
+use crate::acoustic::state::{bypass, AcousticKey, AcousticMix, AcousticState};
+use crate::acoustic::AcousticVoice;
 use crate::backend::{Backend, BackendError, Channel, Source};
 use crate::clips::{ClipSource, LooseClips};
 use crate::feed::Feed;
@@ -7,6 +9,7 @@ use crate::silent::SilentBackend;
 use crate::spatial::{place, SpatialConfig};
 use crate::types::{Bus, Listener, LoopRegion, Mix, Ramps, Start, Vec3};
 use crate::voicing::Insert;
+use hearken_acoustics::Propagation;
 use hearken_synth::{builtin_wav, Params, Recipe, Voice};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::Receiver;
@@ -111,6 +114,15 @@ pub(crate) struct Live {
     pub(crate) paused_by_all: bool,
     pub(crate) occluded: bool,
     pub(crate) sent: Mix,
+    /// The acoustic path's voice, for a positioned sound started while it
+    /// was on.
+    pub(crate) acoustic: Option<AcousticVoice>,
+    /// The mix the acoustic path gives in place of the spatial model's.
+    pub(crate) acoustic_mix: Option<AcousticMix>,
+    pub(crate) acoustic_key: Option<AcousticKey>,
+    /// The last propagation worked out, and the facing it was rendered
+    /// for, so a turn re-renders it without a new query.
+    pub(crate) acoustic_prop: Option<(Propagation, f64)>,
 }
 
 impl Live {
@@ -134,6 +146,10 @@ impl Live {
             paused_by_all: false,
             occluded: false,
             sent: Mix::UNITY,
+            acoustic: None,
+            acoustic_mix: None,
+            acoustic_key: None,
+            acoustic_prop: None,
         }
     }
 }
@@ -176,7 +192,7 @@ impl Default for Mixing {
     }
 }
 
-fn bus_gain_of(mixing: &Mixing, bus: Bus) -> f32 {
+pub(crate) fn bus_gain_of(mixing: &Mixing, bus: Bus) -> f32 {
     let master = *mixing.bus_volumes.get(&Bus::MASTER).unwrap_or(&1.0);
     let mut gain = if bus == Bus::MASTER {
         master
@@ -203,13 +219,27 @@ pub(crate) fn clamped_or(current: f32, value: f32, min: f32, max: f32) -> f32 {
     }
 }
 
-fn compute_mix(listener: &Listener, spatial: &SpatialConfig, bus_gain: f32, live: &Live) -> Mix {
+pub(crate) fn compute_mix(
+    listener: &Listener,
+    spatial: &SpatialConfig,
+    bus_gain: f32,
+    live: &Live,
+) -> Mix {
     let mut gain = live.volume * bus_gain;
     let (mut pan, mut lowpass_hz, mut relative) = (live.pan, None, None);
     if let Some(pos) = live.pos {
         let p = place(listener, pos, live.occluded, spatial);
-        gain *= p.gain;
-        (pan, lowpass_hz, relative) = (p.pan, p.lowpass_hz, Some(p.relative));
+        relative = Some(p.relative);
+        match live.acoustic_mix {
+            Some(a) => {
+                gain *= a.gain;
+                (pan, lowpass_hz) = (a.pan, a.lowpass_hz);
+            }
+            None => {
+                gain *= p.gain;
+                (pan, lowpass_hz) = (p.pan, p.lowpass_hz);
+            }
+        }
     }
     Mix {
         gain,
@@ -238,8 +268,10 @@ pub struct Audio {
     clips: Box<dyn ClipSource>,
     pub(crate) slots: Vec<Slot>,
     free: Vec<u32>,
-    listener: Listener,
+    pub(crate) listener: Listener,
     pub(crate) mixing: Mixing,
+    /// The acoustic path, while it is on.
+    pub(crate) acoustic: Option<AcousticState>,
     missing: BTreeSet<String>,
     /// Whether a missing or refused clip plays its built-in default.
     fallback: bool,
@@ -277,6 +309,7 @@ impl Audio {
             free: Vec::new(),
             listener: Listener::default(),
             mixing: Mixing::default(),
+            acoustic: None,
             missing: BTreeSet::new(),
             fallback: true,
             bed: None,
@@ -445,6 +478,7 @@ impl Audio {
     /// missing. A feed is the same: it has no clip either. Shared by
     /// `launch` and, for the replay after a deferred backend opens, `open`'s
     /// `swap_backend`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn play_with_fallback(
         &mut self,
         key: &str,
@@ -453,9 +487,18 @@ impl Audio {
         mix: Mix,
         from_s: f64,
         bus: Bus,
+        mut acoustic: Option<&mut AcousticVoice>,
     ) -> Option<Channel> {
         let is_live = matches!(source, Source::Voice(_) | Source::Feed(_));
-        match self.play_on_backend(key, source, looping, mix, from_s, bus) {
+        match self.play_on_backend(
+            key,
+            source,
+            looping,
+            mix,
+            from_s,
+            bus,
+            acoustic.as_deref_mut(),
+        ) {
             Ok(channel) => Some(channel),
             Err(err) => {
                 if is_live {
@@ -475,6 +518,7 @@ impl Audio {
                     mix,
                     0.0,
                     bus,
+                    acoustic,
                 ) {
                     Ok(channel) => Some(channel),
                     Err(err) => {
@@ -486,10 +530,12 @@ impl Audio {
         }
     }
 
-    /// A sound on a bus with an insert goes through
+    /// A sound with an acoustic voice goes through
+    /// [`Backend::play_acoustic`]; one on a bus with an insert through
     /// [`Backend::play_inserted`]; otherwise `from_s` past the top goes
     /// through [`Backend::play_from`], and from the top through
     /// [`Backend::play`], as it always has.
+    #[allow(clippy::too_many_arguments)]
     fn play_on_backend(
         &mut self,
         key: &str,
@@ -498,7 +544,21 @@ impl Audio {
         mix: Mix,
         from_s: f64,
         bus: Bus,
+        acoustic: Option<&mut AcousticVoice>,
     ) -> Result<Channel, BackendError> {
+        if let Some(voice) = acoustic {
+            let dsp = self.acoustic_processor(voice);
+            let insert = self.mixing.inserts.get(&bus);
+            return self.backend.play_acoustic(
+                key,
+                source,
+                looping,
+                mix,
+                from_s.max(0.0),
+                insert,
+                dsp,
+            );
+        }
         if let Some(insert) = self.mixing.inserts.get(&bus) {
             self.backend
                 .play_inserted(key, source, looping, mix, from_s.max(0.0), insert)
@@ -582,7 +642,15 @@ impl Audio {
         let live = self.live_for(key, Some(bytes.clone()), bus, start);
         let mix = self.mix_of(&live);
         let from_s = offset(start);
-        match self.play_on_backend(key, Source::Clip(bytes), live.looping, mix, from_s, bus) {
+        match self.play_on_backend(
+            key,
+            Source::Clip(bytes),
+            live.looping,
+            mix,
+            from_s,
+            bus,
+            None,
+        ) {
             Ok(channel) => Ok(self.adopt(live, channel, mix, start)),
             Err(err) => {
                 if self.note_missing(key) {
@@ -644,7 +712,15 @@ impl Audio {
         let live = self.live_for(key, keep.then(|| bytes.clone()), bus, start);
         let mix = self.mix_of(&live);
         let from_s = offset(start);
-        match self.play_with_fallback(key, Source::Clip(bytes), live.looping, mix, from_s, bus) {
+        match self.play_with_fallback(
+            key,
+            Source::Clip(bytes),
+            live.looping,
+            mix,
+            from_s,
+            bus,
+            None,
+        ) {
             Some(channel) => self.adopt(live, channel, mix, start),
             None => Sound::NONE,
         }
@@ -653,10 +729,22 @@ impl Audio {
     /// Plays `source` for `live` and gives it a slot, or returns
     /// [`Sound::NONE`] if the backend would not take it.
     fn launch(&mut self, source: Source, mut live: Live) -> Sound {
+        self.prepare_acoustic(&mut live);
+        // Rendered before it starts, so its first mix and its processor's
+        // first block are already right.
+        self.first_render(&mut live);
         let mix = self.mix_of(&live);
-
-        match self.play_with_fallback(&live.key, source, live.looping, mix, 0.0, live.bus) {
+        let mut voice = live.acoustic.take();
+        let (key, looping, bus) = (live.key.clone(), live.looping, live.bus);
+        let channel = self.play_with_fallback(&key, source, looping, mix, 0.0, bus, voice.as_mut());
+        live.acoustic = voice;
+        match channel {
             Some(channel) => {
+                #[cfg(feature = "hrtf")]
+                if live.acoustic.as_ref().is_some_and(|v| v.hrtf.is_some()) {
+                    // The HRTF link only exists now; aim it.
+                    self.reaim_acoustic(&mut live);
+                }
                 live.channel = channel;
                 live.sent = mix;
                 self.alloc(live)
@@ -891,6 +979,7 @@ impl Audio {
                 continue;
             }
             if let Some(pos) = live.pos {
+                bypass(live);
                 live.occluded = occluded(pos);
                 let gain = bus_gain_of(mixing, live.bus);
                 let mix = compute_mix(&listener, &spatial, gain, live);
