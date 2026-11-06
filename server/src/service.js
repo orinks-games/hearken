@@ -110,6 +110,9 @@ function isSeed(seed) {
  *   X-Forwarded-For address (the one the nearest proxy saw) by default.
  * @param {(event: object) => void} [options.log]
  *   Where unexpected errors go; `console.warn` by default.
+ * @param {({ guest, player }) => Promise<void>} [options.onLink]
+ *   Called once when a guest connects an account: `guest` is the guest's
+ *   id, `player` the account. Move the guest's scores here.
  * @param {object} [options.limits]
  */
 export function createService(options) {
@@ -127,6 +130,8 @@ export function createService(options) {
     clientKey = (request) =>
       (request.headers.get("x-forwarded-for") ?? "").split(",").pop().trim() || "unknown",
     log = (event) => console.warn("hearken-online", event),
+    // Called once when a guest connects an account: move the guest's scores.
+    onLink = async () => {},
   } = options;
   const limits = {
     runsPerMinute: 20,
@@ -134,6 +139,9 @@ export function createService(options) {
     // A game polls every 5 seconds; this leaves room for several players
     // connecting behind one address.
     pollsPerMinute: 120,
+    // New guests from one address in a day, and new names one guest can ask for.
+    guestsPerDay: 5,
+    renamesPerHour: 20,
     ...options.limits,
   };
   for (const kind of Object.keys(handlers)) {
@@ -244,11 +252,41 @@ export function createService(options) {
       return error(429, "rate-limited", undefined, { "retry-after": "60" });
     }
     const body = await readJson(request);
+    // A guest connecting an account says so with its own token, so its
+    // scores can follow it.
+    const token = bearer(request);
+    const guest = token ? await accounts.player(token) : null;
     const started = await accounts.startActivation({
       clientKey: clientKey(request),
       machine: typeof body?.machine === "string" ? body.machine.slice(0, 64) : undefined,
+      guest: guest?.guest ? guest : undefined,
     });
     return json(started);
+  }
+
+  // A player with no account: the server names it, from word lists, so no
+  // name a player typed ever reaches a board.
+  async function guest(request) {
+    if (typeof accounts.createGuest !== "function") return error(404, "not-found");
+    if (!(await limiter.allow(`guest:${clientKey(request)}`, limits.guestsPerDay, 86_400_000))) {
+      return error(429, "rate-limited", undefined, { "retry-after": "3600" });
+    }
+    const made = await accounts.createGuest({ clientKey: clientKey(request) });
+    return json({ status: "ready", token: made.token, name: made.name, guest: true });
+  }
+
+  async function rename(request) {
+    if (typeof accounts.renameGuest !== "function") return error(404, "not-found");
+    const token = bearer(request);
+    const player = token ? await accounts.player(token) : null;
+    if (!player) return error(401, "signed-out");
+    if (!player.guest) return error(422, "not-a-guest");
+    if (!(await limiter.allow(`rename:${player.id}`, limits.renamesPerHour, 3_600_000))) {
+      return error(429, "rate-limited", undefined, { "retry-after": "600" });
+    }
+    const name = await accounts.renameGuest(player);
+    if (!name) return error(422, "not-a-guest");
+    return json({ ok: true, name });
   }
 
   async function poll(request) {
@@ -265,6 +303,13 @@ export function createService(options) {
     const result = await accounts.pollActivation(code);
     if (result.status === "expired") return json({ status: "expired" }, 410);
     if (result.status === "ready") {
+      if (result.linked) {
+        try {
+          await onLink({ guest: result.linked, player: await accounts.player(result.token) });
+        } catch (e) {
+          log({ error: String(e?.stack ?? e), note: "a guest's scores were not moved to its account" });
+        }
+      }
       return json({ status: "ready", token: result.token, name: result.name ?? null });
     }
     return json({ status: "pending" });
@@ -295,6 +340,8 @@ export function createService(options) {
     if (method === "POST" && parts.length === 2 && parts[0] === "activate") {
       if (parts[1] === "start") return start(request);
       if (parts[1] === "poll") return poll(request);
+      if (parts[1] === "guest") return guest(request);
+      if (parts[1] === "rename") return rename(request);
     }
     if (method === "GET" && parts.length >= 1 && KIND_PATTERN.test(parts[0])) {
       return read(request, parts[0], parts.slice(1));
