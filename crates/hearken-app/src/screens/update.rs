@@ -43,6 +43,9 @@ pub fn download_size(update: &Update) -> String {
 /// Checks for an update when the player asks, from Settings.
 pub struct UpdateCheckScreen {
     automatic: bool,
+    /// What the check at start found: only which files this copy has is
+    /// left to find, not the update itself.
+    found: Option<Update>,
     checker: Option<Checker>,
     message: String,
     /// Whether it said it is finding which files the player already has.
@@ -56,6 +59,7 @@ impl UpdateCheckScreen {
     pub fn new() -> Self {
         UpdateCheckScreen {
             automatic: false,
+            found: None,
             checker: None,
             message: String::new(),
             planning: false,
@@ -72,10 +76,21 @@ impl UpdateCheckScreen {
         }
     }
 
-    /// An automatic offer defaults to postponing, not installing.
-    pub(crate) fn at_start() -> Self {
+    /// The offer of `update`, which the check at start found: it only
+    /// finds which files this copy already has before offering it.
+    pub fn found(update: Update) -> Self {
+        Self {
+            found: Some(update),
+            ..Self::new()
+        }
+    }
+
+    /// An automatic offer of what the check at start found defaults to
+    /// postponing, not installing. Without it, a fresh check.
+    pub(crate) fn at_start(found: Option<Update>) -> Self {
         Self {
             automatic: true,
+            found,
             ..Self::new()
         }
     }
@@ -100,6 +115,12 @@ impl<G: Game> State<G> for UpdateCheckScreen {
         }
         if self.checker.is_none() {
             ctx.updates.cancel_background();
+            if let Some(update) = self.found.take() {
+                self.checker = ctx.updates.plan_found(update);
+                self.planning = true;
+                ctx.say(PLANNING_LINE);
+                return;
+            }
             let channel = ctx.updates.channel(&ctx.settings.updates);
             self.checker = ctx.updates.check(&channel);
             ctx.say("Checking for updates.");

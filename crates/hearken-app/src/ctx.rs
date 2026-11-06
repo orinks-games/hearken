@@ -228,7 +228,8 @@ impl<G: Game> Ctx<G> {
         if self.updates.announces() {
             if self.updates.prompts_at_start() {
                 if safe_to_prompt && !self.has_pending() && self.updates.take_prompt() {
-                    self.push(crate::screens::UpdateCheckScreen::at_start());
+                    let found = self.updates.available().cloned();
+                    self.push(crate::screens::UpdateCheckScreen::at_start(found));
                 }
                 return;
             }

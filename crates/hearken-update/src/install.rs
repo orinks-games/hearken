@@ -396,7 +396,7 @@ pub(crate) fn find_bundle(root: &Path, name: &str) -> io::Result<PathBuf> {
     }
 }
 
-fn dir_writable(path: &Path) -> bool {
+pub(crate) fn dir_writable(path: &Path) -> bool {
     let probe = path.join(format!(".hearken-update-probe-{}", std::process::id()));
     if fs::write(&probe, b"").is_err() {
         return false;
@@ -440,6 +440,11 @@ pub fn can_auto_apply(staged: &Staged, install: &Install) -> bool {
 /// one top folder). [`make_staging_dir`] removes such a folder a day later.
 pub fn stash_for_manual_install(staged: &Staged, staging: &Path, home: Option<&Path>) -> PathBuf {
     let from = staged.path();
+    // A partial update left the player's unchanged files where they were:
+    // one installed by hand needs them in it.
+    if let Err(e) = crate::partial::fill_kept(staging, from) {
+        log::warn!("could not copy the kept files into the update: {e}");
+    }
     let unnamed = from == staging.join("unpacked") || from == staging;
     let dest = match home {
         Some(home) if !unnamed => home.join(file_name(from)),

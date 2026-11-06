@@ -388,6 +388,48 @@ impl Updates {
         self.start_check(channel, true)
     }
 
+    /// Finds which files of `update` (what the check at start found) this
+    /// copy already has, on its own thread, without asking the source
+    /// again: the offer then gives the smaller download. `None` when this
+    /// copy cannot update itself.
+    pub fn plan_found(&self, update: Update) -> Option<Checker> {
+        if self.config.is_none() || self.blocked().is_some() {
+            return None;
+        }
+        let fetch = self.fetch.clone();
+        let host = self.host.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let planning = Arc::new(AtomicBool::new(true));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_flag = cancelled.clone();
+        let spawned = std::thread::Builder::new()
+            .name("update-plan".into())
+            .spawn(move || {
+                let mut update = update;
+                if update.plan.is_none() {
+                    update.plan = hearken_update::plan_until(
+                        &update,
+                        fetch.as_ref(),
+                        &host.install(),
+                        &cancel_flag,
+                    );
+                }
+                let _ = tx.send(Ok(Some(update)));
+            });
+        if let Err(e) = spawned {
+            log::warn!("could not start the update check: {e}");
+            return Some(Checker::finished(Err(
+                "The update check could not start.".to_string()
+            )));
+        }
+        Some(Checker {
+            rx,
+            done: None,
+            planning,
+            cancelled,
+        })
+    }
+
     /// A foreground check takes over, so the background result cannot
     /// open a second offer over the player's update screen.
     pub(crate) fn cancel_background(&mut self) {

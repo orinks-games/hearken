@@ -332,6 +332,21 @@ pub(crate) struct Assembly<'a> {
     pub entries: &'a [IndexEntry],
     /// Entries to copy from the player's install instead, by position.
     pub reuse: &'a BTreeMap<usize, PathBuf>,
+    /// Entries of `reuse` left where they are in the install, not copied:
+    /// the apply copies the update over the install, which keeps them. Each
+    /// must still be the size and modified time it had when the plan hashed
+    /// it.
+    pub in_place: &'a BTreeMap<usize, Stamp>,
+}
+
+/// A file's size and modified time, as the plan saw them.
+pub type Stamp = (u64, Option<std::time::SystemTime>);
+
+/// The size and modified time of the file at `path`, when it is a plain
+/// file and not a link.
+pub(crate) fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    meta.is_file().then(|| (meta.len(), meta.modified().ok()))
 }
 
 /// Unpacks a zip put together from parts into `dest`, exactly as
@@ -432,7 +447,19 @@ fn extract_zip(archive: &Path, writer: &mut Writer, assembly: Option<&Assembly>)
             Some(_) => return Err(refuse(format!("{name} is not a file, folder or link"))),
         };
         let is_file = matches!(kind, Kind::File { .. });
+        let in_place = assembly.and_then(|a| a.in_place.get(&i));
         match reuse {
+            Some(installed) if in_place.is_some() => {
+                if !is_file {
+                    return Err(refuse(format!("{name} is not a file to reuse")));
+                }
+                // Hashed by the plan, and still the same file: nothing to
+                // write, and nothing to hash again.
+                if stamp(installed).as_ref() != in_place {
+                    return Err(refuse(format!("{} changed", installed.display())));
+                }
+                continue;
+            }
             Some(installed) => {
                 if !is_file {
                     return Err(refuse(format!("{name} is not a file to reuse")));

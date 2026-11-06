@@ -598,15 +598,17 @@ impl<G: Game> Menu for SettingsScreen<G> {
                     }),
                     |_s: &mut Self, ctx: &mut Ctx<G>| match ctx.updates.available().cloned() {
                         // The check at start does not look for the files
-                        // this copy already has. With a file index, check
-                        // again, so the offer and the download take only
-                        // the files that changed.
+                        // this copy already has. With a file index, find
+                        // them, without asking for the update again, so the
+                        // offer and the download take only the files that
+                        // changed.
                         Some(update)
                             if update.manifest.index.is_none() || update.plan.is_some() =>
                         {
                             ctx.push(crate::screens::UpdatePromptScreen::<G>::new(update))
                         }
-                        _ => ctx.push(crate::screens::UpdateCheckScreen::new()),
+                        Some(update) => ctx.push(crate::screens::UpdateCheckScreen::found(update)),
+                        None => ctx.push(crate::screens::UpdateCheckScreen::new()),
                     },
                 )
                 .help("Looks for a newer version of the game, and installs it if you choose."),

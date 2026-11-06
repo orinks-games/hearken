@@ -508,7 +508,10 @@ fn a_late_startup_offer_waits_for_home_and_ignores_held_enter() {
     assert!(w.h.app.ctx.updates.available().is_some());
     assert!(!w.h.spoken().iter().any(|s| s.contains("Update available")));
     w.h.app.ctx.pop();
-    frames_until(&mut w.h, "Checking for updates.");
+    // The offer uses what the check at start found: the source is not
+    // asked again.
+    let asked = w.table.1.lock().unwrap().len();
+    frames_until(&mut w.h, "Checking which files you already have.");
     let mut held = hearken_app::InputEvent::key(Key::Return);
     if let hearken_app::InputEvent::KeyDown { repeat, .. } = &mut held {
         *repeat = true;
@@ -521,6 +524,7 @@ fn a_late_startup_offer_waits_for_home_and_ignores_held_enter() {
     }
     w.h.app.step(vec![held], 0.016);
     assert!(w.h.app.top_lines().join(" ").contains("Update available"));
+    assert_eq!(w.table.1.lock().unwrap().len(), asked);
     assert!(w.applied.lock().unwrap().is_empty());
     w.h.press(Key::Return);
     assert!(!w.h.app.top_lines().join(" ").contains("Update available"));

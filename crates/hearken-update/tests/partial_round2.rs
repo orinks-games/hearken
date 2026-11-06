@@ -198,6 +198,10 @@ fn many_unchanged_files_still_get_a_partial_download() {
     );
     let whole = dir.path().join("whole");
     extract::extract(&path, &whole, Limits::default(), None).unwrap();
+    // The 1,100 kept files stay in the install, never copied; with them
+    // copied in, the update is what the whole archive unpacks to.
+    assert_eq!(tree(staged.path()).len(), 2);
+    hearken_update::partial::fill_kept(&staging, staged.path()).unwrap();
     assert_eq!(tree(staged.path()), tree(&whole.join("g")));
 }
 

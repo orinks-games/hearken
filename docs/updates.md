@@ -280,8 +280,15 @@ player back to a version with a known flaw.
 
    The parts are written at their places in a file of the archive's
    signed size, the gaps left empty, and that is unpacked by the same code
-   and with the same checks as a whole archive (step 2), except that each
-   kept file is copied from the install instead of read from a gap. A kept
+   and with the same checks as a whole archive (step 2), except that a
+   kept file is not read from a gap. In a folder install the player can
+   write to, a kept file other than the program stays where it is: it is
+   not copied into the update, nor hashed again, since the update is
+   copied over the install and leaves it alone. It must still be the size
+   and modified time it had when the check hashed it, or the whole archive
+   downloads. In an app bundle, which is swapped whole, each kept file is
+   copied from the install. If the update ends up installed by hand, the
+   files left in place are copied into it first. A kept
    file's local header, which the unpack reads only to find where the
    entry's data starts, is written in as a stand-in that says just its
    length; that start must still be where the index signs it, and the
@@ -325,9 +332,11 @@ player back to a version with a known flaw.
    up without touching anything), swaps the update in, starts the game
    again and deletes the folder, itself with it.
 
-   - **A folder install** (Windows, Linux): the install is copied to a
-     backup first, and if that fails, nothing is touched. Then a journal,
-     `.hearken-update-journal`, is put in the install, naming the backup,
+   - **A folder install** (Windows, Linux): before the game quits, each
+     install file the update replaces is copied to a backup (only those,
+     so an unchanged sound pack is never copied), and if that fails,
+     nothing is touched. Then a journal, `.hearken-update-journal`, is put
+     in the install, naming the backup and what the update adds,
      and the update is copied over the install, the program last: it is
      copied in beside the old one and renamed over it, so the old program
      stays whole until the very end. Only then is the journal removed. If
@@ -416,9 +425,12 @@ player back to a version with a known flaw.
   screen says "Found an update. Checking which files you already have.",
   and Escape stops it. The check at start never does this: it only says
   whether there is an update, so a skipped version or a quiet game's
-  check costs no more than the manifest. Choosing "Install version 1.4.0"
-  in Settings after it found one runs Check for updates again, so the
-  offer gives the smaller size.
+  check costs no more than the manifest. The offer at start, and choosing
+  "Install version 1.4.0" in Settings after the check at start found one,
+  only find the kept files of what it found, without asking for the
+  update again, so the offer gives the smaller size. Several big files
+  are hashed side by side. A GitHub release list is fetched once for a
+  check that looks at several channels (it answers again for 30 seconds).
 - **The partial download still takes the archive's size on disk.** It is
   put together in a file of the archive's full size (the gaps are sparse
   where the system allows), then unpacked as a whole one is.
