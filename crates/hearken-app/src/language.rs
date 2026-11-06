@@ -208,4 +208,94 @@ mod tests {
         assert!(!uses_cjk_pacing("en"));
         assert!(!uses_cjk_pacing("es"));
     }
+
+    /// A game that opts into Automatic and whose system locale is Chinese
+    /// must raise wide-character pacing the same way an explicit zh_CN
+    /// setting does.
+    struct AutoDemo;
+    struct AutoTitle;
+
+    impl Game for AutoDemo {
+        const TITLE: &'static str = "Auto Demo";
+        const DATA_DIR: &'static str = "hearken-l10n-auto-cjk";
+        const ENV_PREFIX: &'static str = "HEARKEN_L10N_AUTO_CJK";
+        type Event = ();
+        type Data = ();
+        type Settings = ();
+        type Action = NoAction;
+        type Category = NoCategory;
+
+        fn default_language() -> &'static str {
+            AUTO
+        }
+
+        fn translation_catalogs() -> &'static [(&'static str, &'static str)] {
+            Demo::translation_catalogs()
+        }
+
+        fn sound() -> SoundConfig {
+            SoundConfig {
+                pacer: Some(PacerConfig::default()),
+                ..SoundConfig::default()
+            }
+        }
+    }
+
+    impl State<AutoDemo> for AutoTitle {
+        fn name(&self) -> &'static str {
+            "title"
+        }
+        fn help(&self, _ctx: &Ctx<AutoDemo>) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn auto_following_system_chinese_raises_wide_char_weight() {
+        use std::sync::Mutex;
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let prev_lang = std::env::var("LANG").ok();
+        let prev_lc_all = std::env::var("LC_ALL").ok();
+        let prev_override = std::env::var("HEARKEN_L10N_AUTO_CJK_LANG").ok();
+        std::env::remove_var("HEARKEN_L10N_AUTO_CJK_LANG");
+        std::env::set_var("LANG", "zh_CN.UTF-8");
+        std::env::set_var("LC_ALL", "zh_CN.UTF-8");
+
+        let result = std::panic::catch_unwind(|| {
+            let h = Headless::<AutoDemo>::new((), AutoTitle);
+            assert_eq!(h.app.ctx.settings.language, AUTO);
+            assert_eq!(h.app.ctx.translator.language(), "zh_CN");
+            let weight = h
+                .app
+                .ctx
+                .delivery
+                .pacer
+                .as_ref()
+                .expect("pacer")
+                .config()
+                .wide_char_weight;
+            assert!(
+                (weight - CJK_WIDE_CHAR_WEIGHT).abs() < 1e-9,
+                "weight={weight}"
+            );
+        });
+
+        match prev_lang {
+            Some(v) => std::env::set_var("LANG", v),
+            None => std::env::remove_var("LANG"),
+        }
+        match prev_lc_all {
+            Some(v) => std::env::set_var("LC_ALL", v),
+            None => std::env::remove_var("LC_ALL"),
+        }
+        match prev_override {
+            Some(v) => std::env::set_var("HEARKEN_L10N_AUTO_CJK_LANG", v),
+            None => std::env::remove_var("HEARKEN_L10N_AUTO_CJK_LANG"),
+        }
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    }
 }
