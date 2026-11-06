@@ -519,6 +519,12 @@ fn only_the_changed_files_are_downloaded_over_http() {
             std::fs::read(staged.path().join("my-game.exe")).unwrap(),
             b"MZ new"
         );
+        // Unchanged, the pack stays where it is in the install, never
+        // copied; an update installed by hand gets it copied in.
+        if folder == "ranged" {
+            assert!(!staged.path().join("sounds.pak").exists());
+            hearken_update::partial::fill_kept(&staging, staged.path()).unwrap();
+        }
         assert_eq!(
             std::fs::read(staged.path().join("sounds.pak")).unwrap(),
             big

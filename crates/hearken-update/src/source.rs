@@ -98,6 +98,48 @@ pub struct GitHubReleases {
     owner: String,
     repo: String,
     api: String,
+    list: ListCache,
+}
+
+/// How long a fetched release list answers again: a check that looks at
+/// several channels, one after another, asks GitHub once. A game with many
+/// releases has a list of megabytes.
+pub const RELEASE_LIST_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The last release list fetched, and when. Shared by clones; never part
+/// of what makes two sources the same.
+#[derive(Clone, Default)]
+struct ListCache(std::sync::Arc<std::sync::Mutex<Option<Fetched>>>);
+
+/// When a release list came, and its bytes.
+type Fetched = (std::time::Instant, Vec<u8>);
+
+impl PartialEq for ListCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ListCache {}
+
+impl std::fmt::Debug for ListCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ListCache")
+    }
+}
+
+impl ListCache {
+    fn fresh(&self) -> Option<Vec<u8>> {
+        let held = self.0.lock().ok()?;
+        let (at, list) = held.as_ref()?;
+        (at.elapsed() < RELEASE_LIST_FRESH).then(|| list.clone())
+    }
+
+    fn keep(&self, list: &[u8]) {
+        if let Ok(mut held) = self.0.lock() {
+            *held = Some((std::time::Instant::now(), list.to_vec()));
+        }
+    }
 }
 
 /// The public GitHub API.
@@ -124,12 +166,14 @@ impl GitHubReleases {
             owner: owner.to_string(),
             repo: repo.to_string(),
             api: GITHUB_API.to_string(),
+            list: ListCache::default(),
         })
     }
 
     /// Another API, such as GitHub Enterprise's `https://github.example.com/api/v3`.
     pub fn api(mut self, base: &str) -> GitHubReleases {
         self.api = base.trim_end_matches('/').to_string();
+        self.list = ListCache::default();
         self
     }
 
@@ -147,23 +191,31 @@ impl UpdateSource for GitHubReleases {
     /// count: the channel in the manifest's name, not GitHub's flag, says
     /// which players a release is for.
     fn find(&self, query: &Query, fetch: &dyn Fetch) -> Result<Option<Found>, SourceError> {
-        let list = match fetch.get(
-            &self.releases_url(),
-            &[
-                ("Accept", "application/vnd.github+json"),
-                ("X-GitHub-Api-Version", "2022-11-28"),
-            ],
-            MAX_RELEASE_LIST_BYTES,
-        ) {
-            Ok(list) => list,
-            Err(FetchError::Status(404)) => return Err(SourceError::NotFound),
-            Err(e) => return Err(e.into()),
+        let cached = self.list.fresh();
+        let fetched = cached.is_none();
+        let list = match cached {
+            Some(list) => list,
+            None => match fetch.get(
+                &self.releases_url(),
+                &[
+                    ("Accept", "application/vnd.github+json"),
+                    ("X-GitHub-Api-Version", "2022-11-28"),
+                ],
+                MAX_RELEASE_LIST_BYTES,
+            ) {
+                Ok(list) => list,
+                Err(FetchError::Status(404)) => return Err(SourceError::NotFound),
+                Err(e) => return Err(e.into()),
+            },
         };
         let releases: Value = serde_json::from_slice(&list)
             .map_err(|_| SourceError::Malformed("the release list is not JSON".into()))?;
         let releases = releases
             .as_array()
             .ok_or_else(|| SourceError::Malformed("the release list is not a list".into()))?;
+        if fetched {
+            self.list.keep(&list);
+        }
         let wanted = manifest_name(&query.channel, &query.platform);
         for release in releases {
             if release["draft"].as_bool() == Some(true) {
@@ -372,6 +424,17 @@ pub(crate) mod tests {
         );
         let beta = source.find(&query("beta"), &fetch).unwrap().unwrap();
         assert_eq!(beta.manifest, b"beta manifest");
+        // One list answers every channel of a check.
+        let listed = |fetch: &Table| {
+            fetch
+                .asked
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|u| u.contains("/releases?"))
+                .count()
+        };
+        assert_eq!(listed(&fetch), 1);
         assert_eq!(source.find(&query("nightly"), &fetch), Ok(None));
         assert_eq!(source.describe(), "github.com/o/r");
     }

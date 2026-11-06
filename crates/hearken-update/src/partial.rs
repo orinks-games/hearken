@@ -82,6 +82,9 @@ pub struct Plan {
     pub reuse: BTreeMap<usize, PathBuf>,
     /// The parts of the archive to fetch, in order, none overlapping.
     pub ranges: Vec<Range<u64>>,
+    /// Each kept file's size and modified time when it was hashed, by
+    /// entry: a file that has neither changed since is not hashed again.
+    pub stamps: BTreeMap<usize, (PathBuf, extract::Stamp)>,
 }
 
 impl Plan {
@@ -248,11 +251,8 @@ fn plan_from_index_inner(
     cancelled: Option<&AtomicBool>,
 ) -> Option<Plan> {
     let installed = install_paths(&index, install);
-    let mut reuse = BTreeMap::new();
+    let mut candidates = Vec::new();
     for (i, (entry, path)) in index.entries.iter().zip(installed).enumerate() {
-        if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
-            return None;
-        }
         let Some(path) = path else { continue };
         if entry.is_dir() || entry.size < thresholds.min_reuse {
             continue;
@@ -262,11 +262,16 @@ fn plan_from_index_inner(
         if local_header_stub(entry.data.saturating_sub(entry.header)).is_none() {
             continue;
         }
-        let same_size = fs::symlink_metadata(&path)
-            .is_ok_and(|meta| meta.is_file() && meta.len() == entry.size);
-        if same_size && sha256_file_until(&path, cancelled).is_some_and(|sum| sum == entry.sha256) {
-            reuse.insert(i, path);
+        if let Some(stamp) = extract::stamp(&path).filter(|(len, _)| *len == entry.size) {
+            candidates.push((i, path, stamp));
         }
+    }
+    let kept = hash_all(&index, candidates, cancelled)?;
+    let mut reuse = BTreeMap::new();
+    let mut stamps = BTreeMap::new();
+    for (i, path, stamp) in kept {
+        stamps.insert(i, (path.clone(), stamp));
+        reuse.insert(i, path);
     }
     if reuse.is_empty() {
         return None;
@@ -297,11 +302,54 @@ fn plan_from_index_inner(
         index,
         reuse,
         ranges,
+        stamps,
     };
     let worth = plan.download_size().saturating_add(thresholds.min_saving)
         <= plan.index.archive_size
         && plan.ranges.len() <= thresholds.max_ranges;
     worth.then_some(plan)
+}
+
+/// The `candidates` whose bytes are the signed ones, each hashed once, a
+/// few at a time: a game with several big packs reads them side by side.
+/// `None` once `cancelled` is set.
+fn hash_all(
+    index: &Index,
+    candidates: Vec<(usize, PathBuf, extract::Stamp)>,
+    cancelled: Option<&AtomicBool>,
+) -> Option<Vec<(usize, PathBuf, extract::Stamp)>> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 4)
+        .min(candidates.len().max(1));
+    let queue = std::sync::Mutex::new(candidates.into_iter());
+    let kept = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
+                    return;
+                }
+                let Some((i, path, stamp)) = queue.lock().ok().and_then(|mut q| q.next()) else {
+                    return;
+                };
+                let same = sha256_file_until(&path, cancelled)
+                    .is_some_and(|sum| sum == index.entries[i].sha256);
+                // A file that changed while it was hashed is not kept.
+                if same && extract::stamp(&path) == Some(stamp) {
+                    if let Ok(mut kept) = kept.lock() {
+                        kept.push((i, path, stamp));
+                    }
+                }
+            });
+        }
+    });
+    if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
+        return None;
+    }
+    let mut kept = kept.into_inner().ok()?;
+    kept.sort_by_key(|(i, _, _)| *i);
+    Some(kept)
 }
 
 /// For each entry of `index`, where the install has the file it unpacks
@@ -432,7 +480,7 @@ pub fn download_and_stage_with(
     if let Some(plan) = &update.plan {
         phase(Phase::Downloading);
         let partial = partial(
-            update, plan, fetch, staging, limits, progress, phase, cancelled, idle,
+            update, plan, fetch, staging, install, limits, progress, phase, cancelled, idle,
         );
         match partial {
             // Past here the update is unpacked as a whole download would
@@ -449,6 +497,7 @@ pub fn download_and_stage_with(
                 );
                 let _ = fs::remove_dir_all(staging.join(UNPACKED));
                 let _ = fs::remove_file(staging.join(&update.manifest.archive));
+                let _ = fs::remove_file(staging.join(KEPT_LIST));
             }
         }
     }
@@ -462,6 +511,86 @@ pub fn download_and_stage_with(
         limits,
         Some(cancelled),
     )?)
+}
+
+/// The name, in the staging folder, of the list of files a partial update
+/// left in the install rather than copying (see [`fill_kept`]).
+pub const KEPT_LIST: &str = "kept-in-place.json";
+
+/// The kept files of `plan` that can stay where they are in `install`
+/// rather than be copied into the update: in a folder install the player
+/// can write to, which the apply copies the update over, all but the
+/// program (the apply always copies it in last). An app bundle is swapped
+/// whole, so it gets every file.
+fn left_in_place(plan: &Plan, install: &Install) -> BTreeMap<usize, extract::Stamp> {
+    let Install::Folder { dir, exe } = install else {
+        return BTreeMap::new();
+    };
+    if !install::dir_writable(dir) {
+        return BTreeMap::new();
+    }
+    let program = dir.join(exe);
+    plan.reuse
+        .iter()
+        .filter(|(_, path)| **path != program && path.starts_with(dir))
+        .filter_map(|(i, path)| {
+            let (hashed, stamp) = plan.stamps.get(i)?;
+            (hashed == path).then_some((*i, *stamp))
+        })
+        .collect()
+}
+
+/// Writes, in `staging`, where each file left in place is in the install
+/// and where it belongs in the update, so an update that ends up installed
+/// by hand can have them copied in ([`fill_kept`]).
+fn write_kept_list(
+    staging: &Path,
+    in_place: &BTreeMap<usize, extract::Stamp>,
+    plan: &Plan,
+    install: &Install,
+) -> io::Result<()> {
+    let Install::Folder { dir, .. } = install else {
+        return Ok(());
+    };
+    let list: Vec<(String, String)> = in_place
+        .keys()
+        .filter_map(|i| {
+            let from = plan.reuse.get(i)?;
+            let rel = from.strip_prefix(dir).ok()?;
+            Some((rel.to_str()?.to_string(), from.to_str()?.to_string()))
+        })
+        .collect();
+    if list.len() != in_place.len() {
+        return Err(io::Error::other("a kept file's path is not text"));
+    }
+    fs::write(
+        staging.join(KEPT_LIST),
+        serde_json::to_vec(&list).map_err(io::Error::other)?,
+    )
+}
+
+/// Copies into `root` (the update, as staged or moved for the player to
+/// install by hand) the files a partial update left in the install, so it
+/// is whole. Nothing to do for an update that left none.
+pub fn fill_kept(staging: &Path, root: &Path) -> io::Result<()> {
+    let list = match fs::read(staging.join(KEPT_LIST)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let list: Vec<(String, String)> = serde_json::from_slice(&list).map_err(io::Error::other)?;
+    for (rel, from) in list {
+        let rel = safe_path(&rel).ok_or_else(|| io::Error::other("an unsafe kept path"))?;
+        let to = root.join(rel);
+        if fs::symlink_metadata(&to).is_ok() {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&from, &to)?;
+    }
+    Ok(())
 }
 
 /// The size of a zip local header with no name or extra field.
@@ -528,6 +657,7 @@ fn partial(
     plan: &Plan,
     fetch: &dyn Fetch,
     staging: &Path,
+    install: &Install,
     limits: Limits,
     progress: &mut dyn FnMut(u64, u64),
     phase: &mut dyn FnMut(Phase),
@@ -604,9 +734,12 @@ fn partial(
     }
     phase(Phase::Unpacking);
     let limits = limits.at_most(Limits::for_archive(manifest.size));
+    let in_place = left_in_place(plan, install);
+    write_kept_list(staging, &in_place, plan, install)?;
     let assembly = Assembly {
         entries: &plan.index.entries,
         reuse: &plan.reuse,
+        in_place: &in_place,
     };
     extract::extract_assembled(
         &path,
@@ -905,6 +1038,19 @@ mod tests {
         }
     }
 
+    /// The tree of `staged` with the files a partial update left in the
+    /// install copied in, as an update installed by hand gets them.
+    fn whole(staged: &Staged) -> BTreeMap<PathBuf, (String, Vec<u8>, u32)> {
+        let staging = staged
+            .path()
+            .ancestors()
+            .find(|p| p.file_name().is_some_and(|n| n == UNPACKED))
+            .and_then(Path::parent)
+            .unwrap();
+        fill_kept(staging, staged.path()).unwrap();
+        tree(staged.path())
+    }
+
     /// Every file, folder and link under `root`: its kind, contents (a
     /// link's target) and mode.
     fn tree(root: &Path) -> BTreeMap<PathBuf, (String, Vec<u8>, u32)> {
@@ -1085,7 +1231,15 @@ mod tests {
         .unwrap();
         assert_eq!(*server.whole_downloads.lock().unwrap(), 0);
         assert_eq!(*server.range_requests.lock().unwrap(), plan.ranges);
-        assert_eq!(tree(staged.path()), f.full());
+        // The kept files stay in the install, not copied into the update;
+        // with them, it is the whole archive.
+        for path in plan.reuse.values() {
+            let name = path.file_name().unwrap();
+            assert!(!tree(staged.path())
+                .keys()
+                .any(|k| k.file_name() == Some(name)));
+        }
+        assert_eq!(whole(&staged), f.full());
         assert_eq!(
             heard.last(),
             Some(&(plan.download_size(), plan.download_size()))
@@ -1165,7 +1319,7 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, dir.join("data/same.bin")).unwrap();
         let staged = f.stage_with(&update, &server).unwrap();
         assert_eq!(*server.whole_downloads.lock().unwrap(), 1);
-        assert_eq!(tree(staged.path()), f.full());
+        assert_eq!(whole(&staged), f.full());
     }
 
     /// A plan that names the wrong file to keep (another entry's bytes)
@@ -1183,7 +1337,7 @@ mod tests {
         plan.reuse.insert(kept, dir.join("data/changed.bin"));
         let staged = f.stage_with(&update, &server).unwrap();
         assert_eq!(*server.whole_downloads.lock().unwrap(), 1);
-        assert_eq!(tree(staged.path()), f.full());
+        assert_eq!(whole(&staged), f.full());
     }
 
     #[test]
@@ -1227,7 +1381,7 @@ mod tests {
         let update = f.planned(&server);
         let staged = f.stage_with(&update, &server).unwrap();
         assert_eq!(*server.whole_downloads.lock().unwrap(), 0);
-        assert_eq!(tree(staged.path()), f.full());
+        assert_eq!(whole(&staged), f.full());
     }
 
     #[test]
@@ -1293,7 +1447,7 @@ mod tests {
         let staged = f.stage_with(&f.update, &server).unwrap();
         assert!(server.range_requests.lock().unwrap().is_empty());
         assert_eq!(*server.whole_downloads.lock().unwrap(), 1);
-        assert_eq!(tree(staged.path()), f.full());
+        assert_eq!(whole(&staged), f.full());
     }
 
     #[test]
