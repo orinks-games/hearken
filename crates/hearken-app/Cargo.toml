@@ -36,6 +36,7 @@ update = ["dep:hearken-update", "hearken-update/http"]
 ab_glyph = { version = "0.2", optional = true }
 memmap2 = { version = "0.9", optional = true }
 hearken-speech.workspace = true
+hearken-l10n.workspace = true
 hearken-audio.workspace = true
 hearken-synth.workspace = true
 # Sealed data files (`ctx.vault`) for releases built with `seal = true`.

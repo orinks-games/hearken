@@ -70,6 +70,9 @@ Some of what that gives a game:
   (`ctx.pop_to("routes")`).
 - **Spoken menus.** A `Menu` builds its rows; Hearken speaks them, plays the
   earcons and handles the keys. Rows carry their own help for F1.
+- **Translations (optional).** Drop gettext PO files in `lang/`; `Ctx::say`
+  translates finished English lines, with missing entries left in English.
+  See [`docs/l10n.md`](docs/l10n.md).
 - **Remappable actions.** A game lists its controls as an `Action` enum with
   default keys and controller buttons. `ctx.action_for(event)` and
   `ctx.action_held(action)` read input through the player's bindings, and

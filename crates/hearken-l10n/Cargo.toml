@@ -1,0 +1,18 @@
+[package]
+name = "hearken-l10n"
+description = "Language catalogs for Hearken games: gettext PO files, template matching, and English fallback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+aho-corasick = "1"
+log.workspace = true
+thiserror = "2"
+sys-locale = "0.3"
+
+[dev-dependencies]
+tempfile.workspace = true

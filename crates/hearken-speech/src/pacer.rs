@@ -344,6 +344,13 @@ impl EventSpeechPacer {
         &self.config
     }
 
+    /// Change how heavily kana, CJK ideographs and Hangul count toward
+    /// speaking time. Hearken uses `3.0` while a Chinese or Japanese
+    /// catalog is active, and the game's ordinary weight otherwise.
+    pub fn set_wide_char_weight(&mut self, weight: f64) {
+        self.config.wide_char_weight = weight;
+    }
+
     /// Swap the clock under a live pacer (tests, or a caller re-driving the
     /// same clock the pacer runs on).
     pub fn set_clock(&mut self, clock: Clock) {

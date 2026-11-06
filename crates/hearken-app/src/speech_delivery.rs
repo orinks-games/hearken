@@ -106,6 +106,9 @@ impl<C> SayEvent<C> {
 /// The context's gameplay-speech state.
 pub(crate) struct Delivery<C: 'static> {
     pub(crate) pacer: Option<EventSpeechPacer>,
+    /// The game's ordinary [`PacerConfig::wide_char_weight`], restored when
+    /// the spoken language is not Chinese or Japanese.
+    pub(crate) base_wide_char_weight: f64,
     pub(crate) verbosity: Verbosity<C>,
     /// `(key, text)` of every first-time line already said.
     pub(crate) first_times: HashSet<(String, String)>,
@@ -122,18 +125,37 @@ impl<C: Category> Delivery<C> {
             log::warn!("verbosity table: {problem}");
         }
         let clock = Rc::new(Cell::new(PACER_CLOCK_OFFSET));
+        let base_wide_char_weight = pacer
+            .as_ref()
+            .map(|config| config.wide_char_weight)
+            .unwrap_or(PacerConfig::DEFAULT.wide_char_weight);
         let pacer = pacer.map(|config| {
             let clock = clock.clone();
             EventSpeechPacer::with_clock(config, Box::new(move || clock.get()))
         });
         Delivery {
             pacer,
+            base_wide_char_weight,
             verbosity,
             first_times: HashSet::new(),
             ducked: false,
             duck_until: 0.0,
             clock,
         }
+    }
+
+    /// Raise wide-character pacing for Chinese and Japanese; restore the
+    /// game's ordinary weight for every other language.
+    pub(crate) fn apply_language_pacing(&mut self, language: &str) {
+        let Some(pacer) = self.pacer.as_mut() else {
+            return;
+        };
+        let weight = if crate::language::uses_cjk_pacing(language) {
+            crate::language::CJK_WIDE_CHAR_WEIGHT
+        } else {
+            self.base_wide_char_weight
+        };
+        pacer.set_wide_char_weight(weight);
     }
 }
 
@@ -180,6 +202,9 @@ impl<G: Game> Ctx<G> {
                 .rule(&self.settings.speech.verbosity, c),
             _ => Rule::Full,
         };
+        // Pick the English rendering first (normal or terse), then translate
+        // once — pick then translate — so a terse line is not left in
+        // English beside a translated full line.
         let text = match rule {
             Rule::Silent | Rule::Earcon(_) => {
                 if let Some(pacer) = self.delivery.pacer.as_mut() {
@@ -207,6 +232,10 @@ impl<G: Game> Ctx<G> {
             Rule::Full => text,
         };
         // A terse line of nothing says nothing.
+        if text.trim().is_empty() {
+            return;
+        }
+        let text = self.tr(&text);
         if text.trim().is_empty() {
             return;
         }
