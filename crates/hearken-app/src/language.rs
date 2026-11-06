@@ -252,18 +252,10 @@ mod tests {
 
     #[test]
     fn auto_following_system_chinese_raises_wide_char_weight() {
-        use std::sync::Mutex;
-        static LOCK: Mutex<()> = Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        let prev_lang = std::env::var("LANG").ok();
-        let prev_lc_all = std::env::var("LC_ALL").ok();
         let prev_override = std::env::var("HEARKEN_L10N_AUTO_CJK_LANG").ok();
         std::env::remove_var("HEARKEN_L10N_AUTO_CJK_LANG");
-        std::env::set_var("LANG", "zh_CN.UTF-8");
-        std::env::set_var("LC_ALL", "zh_CN.UTF-8");
 
-        let result = std::panic::catch_unwind(|| {
+        hearken_l10n::with_system_locale(Some("zh_CN"), || {
             let h = Headless::<AutoDemo>::new((), AutoTitle);
             assert_eq!(h.app.ctx.settings.language, AUTO);
             assert_eq!(h.app.ctx.translator.language(), "zh_CN");
@@ -282,20 +274,9 @@ mod tests {
             );
         });
 
-        match prev_lang {
-            Some(v) => std::env::set_var("LANG", v),
-            None => std::env::remove_var("LANG"),
-        }
-        match prev_lc_all {
-            Some(v) => std::env::set_var("LC_ALL", v),
-            None => std::env::remove_var("LC_ALL"),
-        }
         match prev_override {
             Some(v) => std::env::set_var("HEARKEN_L10N_AUTO_CJK_LANG", v),
             None => std::env::remove_var("HEARKEN_L10N_AUTO_CJK_LANG"),
-        }
-        if let Err(payload) = result {
-            std::panic::resume_unwind(payload);
         }
     }
 }

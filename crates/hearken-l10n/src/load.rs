@@ -14,8 +14,42 @@ pub const LANG_ENV_SUFFIX: &str = "_LANG";
 pub const MISSES_ENV_SUFFIX: &str = "_L10N_MISSES";
 
 /// The operating system's language tag, e.g. `"es-MX"`.
+///
+/// [`with_system_locale`] can pin a tag for one call stack (tests).
 pub fn system_locale() -> Option<String> {
+    if let Ok(guard) = SYSTEM_LOCALE_OVERRIDE.lock() {
+        if let Some(over) = guard.as_ref() {
+            return over.clone();
+        }
+    }
     sys_locale::get_locale()
+}
+
+static SYSTEM_LOCALE_OVERRIDE: std::sync::Mutex<Option<Option<String>>> =
+    std::sync::Mutex::new(None);
+
+/// Run `f` as if the OS locale were `locale` (`None` = no locale).
+///
+/// Used by Hearken's own tests so Automatic → Chinese pacing can be checked
+/// without depending on the machine's real language.
+pub fn with_system_locale<R>(locale: Option<&str>, f: impl FnOnce() -> R) -> R {
+    let previous = {
+        let mut guard = SYSTEM_LOCALE_OVERRIDE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.replace(locale.map(str::to_string))
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    {
+        let mut guard = SYSTEM_LOCALE_OVERRIDE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = previous;
+    }
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 /// Folders to search for override catalogs, first match wins.
