@@ -29,11 +29,12 @@ use kira::info::Info;
 use kira::sound::static_sound::StaticSoundHandle;
 use kira::sound::streaming::StreamingSoundHandle;
 use kira::sound::{FromFileError, PlaybackPosition, PlaybackState, Region, Sound, SoundData};
-use kira::track::{TrackBuilder, TrackHandle};
+use kira::track::{SendTrackBuilder, SendTrackHandle, TrackBuilder, TrackHandle};
 use kira::{
     AudioManager, AudioManagerSettings, Capacities, Decibels, Frame, Panning, Tween, Value,
 };
 
+use crate::acoustic::{AcousticDsp, AcousticGain, ReverbSend, RoomReverbDsp};
 use crate::backend::{Backend, BackendError, Channel, Source};
 use crate::decode::{self, LoopPoints};
 use crate::feed::Feed;
@@ -109,6 +110,8 @@ struct Entry {
     panner: Option<PanningControlHandle>,
     /// The linear gain, the balance, or both, when the backend uses either.
     amp: Option<Arc<AmpControl>>,
+    /// The acoustic insert's reverb send, kept in step with the gain.
+    acoustic: Option<AcousticGain>,
     curve: GainCurve,
     law: PanLaw,
     /// The mix last sent, so a ramped change touches only what moved.
@@ -120,6 +123,9 @@ struct Entry {
 
 impl Entry {
     fn set_gain(&mut self, gain: f32, ms: u32) {
+        if let Some(a) = &self.acoustic {
+            a.set(gain, ms);
+        }
         match (&self.amp, self.curve) {
             (Some(amp), GainCurve::Linear) => amp.gain.store(pack(gain, ms), Ordering::Relaxed),
             _ => self.track.set_volume(decibels(gain), ramp(ms)),
@@ -184,6 +190,11 @@ pub struct KiraBackend<B: kira::backend::Backend = DeviceBackend> {
     next: Channel,
     curve: GainCurve,
     law: PanLaw,
+    /// The shared reverb acoustic sounds send to, on a send track of its
+    /// own (Kira mixes every sound's track before any send track).
+    reverb: Option<(ReverbSend, SendTrackHandle)>,
+    /// The mixer's sample rate, once the audio thread has said; 0 before.
+    rate: Arc<AtomicU32>,
 }
 
 impl KiraBackend {
@@ -209,8 +220,23 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
     pub fn with_settings(mut settings: AudioManagerSettings<B>) -> Result<Self, B::Error> {
         let (tap, capture) = capture::tap();
         settings.main_track_builder.add_effect(tap);
+        let mut manager = AudioManager::new(settings)?;
+        let rate = Arc::new(AtomicU32::new(0));
+        let send = ReverbSend::new();
+        let reverb = match manager.add_send_track(SendTrackBuilder::new().with_built_effect(
+            Box::new(ReverbEffect {
+                dsp: send.processor(),
+                rate: rate.clone(),
+            }),
+        )) {
+            Ok(track) => Some((send, track)),
+            Err(e) => {
+                log::warn!("kira: no shared reverb ({e})");
+                None
+            }
+        };
         Ok(KiraBackend {
-            manager: Some(AudioManager::new(settings)?),
+            manager: Some(manager),
             capture,
             channels: HashMap::new(),
             fading: Vec::new(),
@@ -220,6 +246,8 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
             next: 1,
             curve: GainCurve::default(),
             law: PanLaw::default(),
+            reverb,
+            rate,
         })
     }
 
@@ -257,6 +285,9 @@ impl KiraBackend<kira::backend::mock::MockBackend> {
             .map_err(|()| BackendError("the offline mixer did not start".into()))?;
         backend.whole = true;
         backend.collected = Some(collected);
+        backend
+            .rate
+            .store(sample_rate.max(8_000), Ordering::Relaxed);
         Ok(backend)
     }
 }
@@ -505,6 +536,7 @@ impl Effect for Amp {
 }
 
 impl<B: kira::backend::Backend> KiraBackend<B> {
+    #[allow(clippy::too_many_arguments)]
     /// A channel of its own for `source`: a sub-track carrying `insert`
     /// first, if there is one, then the low-pass, the panner and the gain.
     fn start_channel(
@@ -515,6 +547,7 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
         mix: Mix,
         from_s: f64,
         insert: Option<&Insert>,
+        acoustic: Option<AcousticDsp>,
     ) -> Result<Channel, BackendError> {
         let (curve, law) = (self.curve, self.law);
         let manager = self
@@ -535,6 +568,15 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
         if let Some(insert) = insert {
             builder.add_built_effect(insert_effect(insert));
         }
+        let acoustic_gain = acoustic.map(|mut dsp| {
+            if let Some((send, _)) = &self.reverb {
+                dsp.attach_send(send.clone());
+            }
+            let gain = dsp.gain_control();
+            gain.set(mix.gain.max(0.0), 0);
+            builder.add_built_effect(Box::new(AcousticEffect(dsp)));
+            gain
+        });
         let filter = builder.add_effect(
             FilterBuilder::new()
                 .cutoff(cutoff)
@@ -598,6 +640,7 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
                 filter,
                 panner,
                 amp,
+                acoustic: acoustic_gain,
                 curve,
                 law,
                 sent: mix,
@@ -622,6 +665,53 @@ impl Effect for InsertEffect {
             let (left, right) = self.0.frame(frame.left, frame.right);
             frame.left = left;
             frame.right = right;
+        }
+    }
+}
+
+/// A sound's acoustic processor as a Kira effect, after its insert.
+struct AcousticEffect(AcousticDsp);
+
+impl Effect for AcousticEffect {
+    fn process(&mut self, input: &mut [Frame], dt: f64, _info: &Info) {
+        if !self.0.begin((1.0 / dt) as f32) {
+            for frame in input.iter() {
+                self.0.idle(frame.left, frame.right);
+            }
+            return;
+        }
+        for (i, frame) in input.iter_mut().enumerate() {
+            let (left, right) = self.0.frame(i, frame.left, frame.right);
+            frame.left = left;
+            frame.right = right;
+        }
+    }
+}
+
+/// The shared reverb, on its own send track: it reads what every acoustic
+/// sound sent this block and adds the tail.
+struct ReverbEffect {
+    dsp: RoomReverbDsp,
+    rate: Arc<AtomicU32>,
+}
+
+impl Effect for ReverbEffect {
+    fn init(&mut self, sample_rate: u32, _internal_buffer_size: usize) {
+        self.rate.store(sample_rate, Ordering::Relaxed);
+    }
+
+    fn on_change_sample_rate(&mut self, sample_rate: u32) {
+        self.rate.store(sample_rate, Ordering::Relaxed);
+    }
+
+    fn process(&mut self, input: &mut [Frame], dt: f64, _info: &Info) {
+        if !self.dsp.begin((1.0 / dt) as f32, input.len()) {
+            return;
+        }
+        for (i, frame) in input.iter_mut().enumerate() {
+            let (left, right) = self.dsp.frame(i);
+            frame.left += left;
+            frame.right += right;
         }
     }
 }
@@ -655,7 +745,7 @@ impl<B: kira::backend::Backend + Send + 'static> Backend for KiraBackend<B> {
         mix: Mix,
         from_s: f64,
     ) -> Result<Channel, BackendError> {
-        self.start_channel(key, source, looping, mix, from_s, None)
+        self.start_channel(key, source, looping, mix, from_s, None, None)
     }
 
     fn play_inserted(
@@ -667,7 +757,37 @@ impl<B: kira::backend::Backend + Send + 'static> Backend for KiraBackend<B> {
         from_s: f64,
         insert: &Insert,
     ) -> Result<Channel, BackendError> {
-        self.start_channel(key, source, looping, mix, from_s, Some(insert))
+        self.start_channel(key, source, looping, mix, from_s, Some(insert), None)
+    }
+
+    fn renders_acoustics(&self) -> bool {
+        true
+    }
+
+    fn play_acoustic(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+        insert: Option<&Insert>,
+        acoustic: AcousticDsp,
+    ) -> Result<Channel, BackendError> {
+        self.start_channel(key, source, looping, mix, from_s, insert, Some(acoustic))
+    }
+
+    fn set_room(&mut self, room: Option<&hearken_acoustics::RoomRender>) {
+        if let Some((send, _)) = &self.reverb {
+            send.set_room(room);
+        }
+    }
+
+    fn sample_rate(&self) -> Option<u32> {
+        match self.rate.load(Ordering::Relaxed) {
+            0 => None,
+            rate => Some(rate),
+        }
     }
 
     fn set_mix(&mut self, channel: Channel, mix: Mix, ramp_ms: u32) {

@@ -43,6 +43,8 @@ kira = { version = "0.12", default-features = false, features = ["cpal", "sympho
 # Kira's own versions: hearken-audio opens the device itself.
 cpal = "0.18"
 rtrb = "0.4"
+# HRTF rendering: a pure Rust SOFA reader and partitioned convolution.
+sofar = { version = "0.4", default-features = false, features = ["dsp", "resample"] }
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
 symphonia-adapter-libopus = "0.3"
 symphonia-core = "0.6"

@@ -137,7 +137,17 @@ impl Audio {
                     }
                 },
             };
-            match self.play_with_fallback(&key, source, true, mix, 0.0, bus) {
+            let mut voice = self.slots[index as usize]
+                .live
+                .as_mut()
+                .and_then(|live| live.acoustic.take());
+            let played = self.play_with_fallback(&key, source, true, mix, 0.0, bus, voice.as_mut());
+            if let Some(live) = self.slots[index as usize].live.as_mut() {
+                live.acoustic = voice;
+                // Rendered again on the next update, for the new backend.
+                live.acoustic_key = None;
+            }
+            match played {
                 Some(channel) => {
                     if let Some(region) = region {
                         self.backend.set_loop_region(channel, region);
