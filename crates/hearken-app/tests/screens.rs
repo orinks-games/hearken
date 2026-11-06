@@ -12,8 +12,7 @@ use hearken_speech::{CaptureSpeech, SharedCapture};
 const DOC: &str = "# Test Game\n\nIgnored preamble.\n\n## Getting around\n\nUp and Down move.\nEnter chooses.\n\n## Quitting\n\nPick Quit.\n";
 
 fn settings_count(base: usize) -> usize {
-    // Language is always the first Settings row.
-    base + 1 + if cfg!(feature = "visuals") { 4 } else { 0 }
+    base + if cfg!(feature = "visuals") { 4 } else { 0 }
 }
 
 fn over_root(screen: impl hearken_app::State<TestGame> + 'static) -> Headless<TestGame> {
@@ -58,17 +57,8 @@ fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
         h.spoken(),
         [
             "Settings.".to_string(),
-            format!("Language: Automatic, English. 1 of {}.", settings_count(15))
+            format!("Speech rate: 50 percent. 1 of {}.", settings_count(15))
         ]
-    );
-    h.clear();
-    h.press(Key::Down);
-    assert_eq!(
-        h.spoken(),
-        [format!(
-            "Speech rate: 50 percent. 2 of {}.",
-            settings_count(15)
-        )]
     );
     h.press(Key::Right);
     assert_eq!(h.app.ctx.settings.speech.rate, 0.55);
@@ -86,10 +76,9 @@ fn speech_rate_moves_by_five_percent_clamps_and_reaches_the_voice() {
 #[test]
 fn the_new_rate_is_read_back_through_the_voice_it_changed() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
-    h.press(Key::Down);
     h.clear();
     h.press(Key::Right);
-    let line = format!("Speech rate: 55 percent. 2 of {}.", settings_count(15));
+    let line = format!("Speech rate: 55 percent. 1 of {}.", settings_count(15));
     assert_eq!(
         h.speech.borrow().previews(),
         [("speech_rate".to_string(), line.to_string(), true)]
@@ -116,7 +105,7 @@ fn without_a_voice_that_can_change_rate_there_is_no_rate_row() {
         capture.borrow().main_lines(),
         [
             "Settings.".to_string(),
-            format!("Language: Automatic, English. 1 of {}.", settings_count(14))
+            format!("Speech voice: automatic. 1 of {}.", settings_count(14))
         ]
     );
 }
@@ -139,7 +128,7 @@ fn the_menu_positions_row_toggles_on_enter_left_and_right_and_reads_back_once() 
         h.spoken(),
         [
             "Menu positions: off.".to_string(),
-            format!("Menu positions: on. 13 of {}.", settings_count(15)),
+            format!("Menu positions: on. 12 of {}.", settings_count(15)),
             "Menu positions: off.".to_string()
         ]
     );
@@ -160,7 +149,6 @@ fn enter_on_an_inert_row_plays_nothing() {
 #[test]
 fn escape_on_settings_saves_them_and_goes_back() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
-    h.press(Key::Down);
     h.press(Key::Right);
     h.press(Key::Escape);
     assert_eq!(h.app.top_name(), "root");
@@ -253,7 +241,7 @@ fn a_game_with_nothing_to_rebind_gets_no_shortcut_rows() {
         h.spoken(),
         [
             "Settings.".to_string(),
-            format!("Language: Automatic, English. 1 of {}.", settings_count(11))
+            format!("Speech rate: 50 percent. 1 of {}.", settings_count(11))
         ]
     );
 }
@@ -261,8 +249,7 @@ fn a_game_with_nothing_to_rebind_gets_no_shortcut_rows() {
 #[test]
 fn speech_voice_steps_through_the_built_in_voices_and_back_to_automatic() {
     let mut h = over_root(SettingsScreen::<TestGame>::new());
-    h.press(Key::Down); // Language -> Speech rate
-    h.press(Key::Down); // Speech rate -> Speech voice
+    h.press(Key::Down);
     h.clear();
     h.press(Key::Right);
     assert!(h.app.ctx.settings.speech.self_voicing);
@@ -277,7 +264,7 @@ fn speech_voice_steps_through_the_built_in_voices_and_back_to_automatic() {
     assert_eq!(
         h.spoken(),
         [format!(
-            "Speech volume: 100 percent. 4 of {}.",
+            "Speech volume: 100 percent. 3 of {}.",
             settings_count(16)
         )]
     );

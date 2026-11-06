@@ -136,7 +136,11 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
         }
     };
 
-    let (settings, notice) = Settings::load(&paths);
+    let fresh = !paths.settings_file().exists();
+    let (mut settings, notice) = Settings::load(&paths);
+    if fresh {
+        settings.language = G::default_language().to_string();
+    }
     let mut ctx = Ctx::new(Box::new(start_speech::<G>()), settings, paths, game);
     let sounds = hearken_audio::discover_clips(G::ENV_PREFIX);
     ctx.install_audio(Audio::deferred(

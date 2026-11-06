@@ -75,6 +75,7 @@ fn flush(pending: &mut Pending, entries: &mut Vec<PoEntry>) {
 /// Parse a whole PO file. The header entry (empty `msgid`) is returned like
 /// any other; callers skip it.
 pub fn parse(text: &str) -> Result<Vec<PoEntry>, PoError> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut entries = Vec::new();
     let mut pending = Pending::default();
     let mut field = Field::None;

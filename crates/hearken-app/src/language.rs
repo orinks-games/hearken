@@ -8,11 +8,15 @@ use std::sync::Arc;
 
 use hearken_l10n::{
     self as l10n, discover_languages, load_translator, offered_codes, override_folders,
-    system_locale, Translator, AUTO, LANG_ENV_SUFFIX, MISSES_ENV_SUFFIX,
+    system_locale, Translator, AUTO, ENGLISH, LANG_ENV_SUFFIX, MISSES_ENV_SUFFIX,
 };
 
 use crate::ctx::Ctx;
 use crate::game::Game;
+
+/// Wide-character speaking weight used while a Chinese or
+/// Japanese catalog is active (`PacerConfig::wide_char_weight`).
+pub const CJK_WIDE_CHAR_WEIGHT: f64 = 3.0;
 
 /// Folders a translator's file is looked for in: beside the executable,
 /// then the data folder. First match wins.
@@ -21,6 +25,16 @@ pub fn lang_folders(data_dir: &Path) -> Vec<PathBuf> {
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
     override_folders(game_root.as_deref(), Some(data_dir))
+}
+
+/// True when the game has at least one non-English catalog that translates
+/// something (built-in or drop-in). The Language Settings row is shown only
+/// then.
+pub fn has_catalogs<G: Game>(data_dir: &Path) -> bool {
+    let folders = lang_folders(data_dir);
+    offered_codes(&folders, G::translation_catalogs())
+        .into_iter()
+        .any(|code| code != ENGLISH)
 }
 
 /// Register languages from catalogs, then resolve `setting` (`auto` or a
@@ -69,13 +83,23 @@ pub fn language_label(setting: &str, system: Option<&str>) -> String {
     }
 }
 
+/// Whether `code` should use the heavier wide-character pacing.
+pub fn uses_cjk_pacing(code: &str) -> bool {
+    let base = code.split(['_', '-']).next().unwrap_or(code);
+    matches!(base, "zh" | "ja")
+}
+
 impl<G: Game> Ctx<G> {
     /// Load the catalog the language setting asks for. Called at launch and
-    /// when the player changes Language in Settings.
+    /// when the player changes Language in Settings. Raises the event
+    /// pacer's wide-character weight for Chinese and Japanese, and restores
+    /// the game's ordinary weight otherwise.
     pub fn apply_language(&mut self) {
         let setting = self.settings.language.clone();
         let code = resolve_setting::<G>(&setting, &self.paths.data_dir);
         self.translator = load_for_game::<G>(&setting, &self.paths.data_dir);
+        self.delivery
+            .apply_language_pacing(self.translator.language());
         log::info!("Language setting {setting:?} resolves to {code}");
     }
 
@@ -89,5 +113,110 @@ impl<G: Game> Ctx<G> {
         self.settings.language = setting.to_string();
         self.apply_language();
         let _ = self.settings.save(&self.paths);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sound::SoundConfig;
+    use crate::testing::Headless;
+    use crate::{Game, NoAction, NoCategory, State};
+    use hearken_speech::PacerConfig;
+
+    struct Demo;
+    struct Title;
+
+    impl Game for Demo {
+        const TITLE: &'static str = "Demo";
+        const DATA_DIR: &'static str = "hearken-l10n-cjk";
+        const ENV_PREFIX: &'static str = "HEARKEN_L10N_CJK";
+        type Event = ();
+        type Data = ();
+        type Settings = ();
+        type Action = NoAction;
+        type Category = NoCategory;
+
+        fn translation_catalogs() -> &'static [(&'static str, &'static str)] {
+            &[(
+                "zh_CN",
+                concat!(
+                    "msgid \"\"
+",
+                    "msgstr \"X-Language-Name: Simplified Chinese\n",
+                    "X-Language-Autonym: 简体中文\n\"
+
+",
+                    "msgid \"New screen.\"
+",
+                    "msgstr \"新画面。\"
+",
+                ),
+            )]
+        }
+
+        fn sound() -> SoundConfig {
+            SoundConfig {
+                pacer: Some(PacerConfig::default()),
+                ..SoundConfig::default()
+            }
+        }
+    }
+
+    impl State<Demo> for Title {
+        fn name(&self) -> &'static str {
+            "title"
+        }
+        fn help(&self, _ctx: &Ctx<Demo>) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn chinese_raises_wide_char_weight_and_english_restores_it() {
+        let mut h = Headless::<Demo>::new((), Title);
+        let base = h
+            .app
+            .ctx
+            .delivery
+            .pacer
+            .as_ref()
+            .expect("pacer")
+            .config()
+            .wide_char_weight;
+        assert!((base - 1.0).abs() < 1e-9);
+
+        h.app.ctx.set_language("zh_CN");
+        let raised = h
+            .app
+            .ctx
+            .delivery
+            .pacer
+            .as_ref()
+            .expect("pacer")
+            .config()
+            .wide_char_weight;
+        assert!((raised - CJK_WIDE_CHAR_WEIGHT).abs() < 1e-9);
+
+        h.app.ctx.set_language(ENGLISH);
+        let restored = h
+            .app
+            .ctx
+            .delivery
+            .pacer
+            .as_ref()
+            .expect("pacer")
+            .config()
+            .wide_char_weight;
+        assert!((restored - base).abs() < 1e-9);
+    }
+
+    #[test]
+    fn uses_cjk_pacing_for_chinese_and_japanese_only() {
+        assert!(uses_cjk_pacing("zh_CN"));
+        assert!(uses_cjk_pacing("ja"));
+        assert!(!uses_cjk_pacing("ko"));
+        assert!(!uses_cjk_pacing("en"));
+        assert!(!uses_cjk_pacing("es"));
     }
 }

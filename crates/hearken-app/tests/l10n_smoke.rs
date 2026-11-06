@@ -62,3 +62,28 @@ fn missing_entry_stays_english() {
         "spoken={spoken:?}"
     );
 }
+
+#[test]
+fn language_row_appears_only_when_a_catalog_exists() {
+    use hearken_app::screens::SettingsScreen;
+    let mut h = Headless::<Demo>::new((), SettingsScreen::<Demo>::new());
+    h.frame(0.0);
+    let without = h.spoken().join(" ");
+    assert!(!without.contains("Language:"), "no catalog yet: {without}");
+
+    let dir = tempfile::tempdir().expect("tmp");
+    let lang = dir.path().join("lang");
+    std::fs::create_dir_all(&lang).expect("lang");
+    std::fs::write(
+        lang.join("es.po"),
+        "msgid \"\"\nmsgstr \"X-Language-Name: Spanish\\nX-Language-Autonym: Español\\n\"\n\nmsgid \"New screen.\"\nmsgstr \"Nueva pantalla.\"\n",
+    )
+    .expect("po");
+    h.app.ctx.paths = hearken_app::Paths::at(dir.path());
+    // Rebuild settings screen so build_items sees the catalog.
+    h.app.ctx.pop();
+    h.app.ctx.push(SettingsScreen::<Demo>::new());
+    h.frame(0.0);
+    let with = h.spoken().join(" ");
+    assert!(with.contains("Language:"), "catalog present: {with}");
+}

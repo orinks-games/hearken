@@ -42,8 +42,8 @@ msgstr "Móvil"
 msgid "Bad hole {a}."
 msgstr "Mal {b}."
 
-msgid "Dispatch board"
-msgstr "Tablón de cargas"
+msgid "Score board"
+msgstr "Tablero de puntuación"
 
 msgid "{label} {index} of {count}."
 msgstr "{label} {index} de {count}."
@@ -57,8 +57,8 @@ msgstr "{prefix}{tons} toneladas de {cargo}"
 msgid "Nuts. We sell them. Next exit."
 msgstr "Nueces. Las vendemos. Próxima salida."
 
-msgid "Billboard"
-msgstr "Valla"
+msgid "Notice"
+msgstr "Aviso"
 
 msgid "Multi"
 "line."
@@ -221,8 +221,8 @@ fn po_round_trips_escapes() {
 fn menu_items_with_their_position_translate() {
     let tr = spanish();
     assert_eq!(
-        tr.translate("Dispatch board. 3 of 16."),
-        "Tablón de cargas. 3 de 16."
+        tr.translate("Score board. 3 of 16."),
+        "Tablero de puntuación. 3 de 16."
     );
     // A numbers-only template never takes words into its holes.
     assert_eq!(tr.translate("Out of fuel."), "Out of fuel.");
@@ -241,8 +241,8 @@ fn an_empty_hole_and_side_by_side_holes_match() {
 fn a_known_passage_inside_a_longer_line_translates_whole() {
     let tr = spanish();
     assert_eq!(
-        tr.translate("Billboard: Nuts. We sell them. Next exit. It is 3:15 PM."),
-        "Valla: Nueces. Las vendemos. Próxima salida. Son las 3:15 PM."
+        tr.translate("Notice: Nuts. We sell them. Next exit. It is 3:15 PM."),
+        "Aviso: Nueces. Las vendemos. Próxima salida. Son las 3:15 PM."
     );
 }
 
@@ -276,13 +276,13 @@ fn a_captured_number_takes_the_languages_separators() {
 fn a_the_hole_drops_the_english_article() {
     let catalog = Catalog::from_po(
         "de",
-        "msgid \"{the_city} metro freight market\"\nmsgstr \"Frachtmarkt Großraum {the_city}\"\n",
+        "msgid \"{the_city} metro local market\"\nmsgstr \"Lokalmarkt Großraum {the_city}\"\n",
     )
     .expect("parses");
     let tr = Translator::new(catalog);
     assert_eq!(
-        tr.translate("the Chicago metro freight market"),
-        "Frachtmarkt Großraum Chicago"
+        tr.translate("the Chicago metro local market"),
+        "Lokalmarkt Großraum Chicago"
     );
 }
 
@@ -291,7 +291,7 @@ fn a_fragment_opening_a_sentence_or_trimmed_still_matches() {
     let catalog = Catalog::from_po(
         "es",
         "msgid \"confirmed truck parking\"\nmsgstr \"aparcamiento confirmado\"\n\n\
-         msgid \"Billboard: \"\nmsgstr \"Valla: \"\n",
+         msgid \"Notice: \"\nmsgstr \"Aviso: \"\n",
     )
     .expect("parses");
     let tr = Translator::new(catalog);
@@ -299,7 +299,7 @@ fn a_fragment_opening_a_sentence_or_trimmed_still_matches() {
         tr.translate("Confirmed truck parking."),
         "Aparcamiento confirmado."
     );
-    assert_eq!(tr.translate("Billboard:"), "Valla:");
+    assert_eq!(tr.translate("Notice:"), "Aviso:");
 }
 
 #[test]
@@ -548,14 +548,14 @@ msgstr "{f} por ciento de {what}."
 }
 
 #[test]
-fn eld_status_translates_as_whole_sentences() {
+fn status_line_translates_as_whole_sentences() {
     let po = r#"
 msgid ""
 msgstr ""
 "Language: es\n"
 
-msgid "ELD status on duty not driving."
-msgstr "Estado del ELD: en servicio sin conducir."
+msgid "Status ready to continue."
+msgstr "Estado: listo para continuar."
 
 msgid "Hours of service: {duration_text} of driving left, {duration_text2} of duty window left."
 msgstr "Horas de servicio: quedan {duration_text} de conducción y {duration_text2} de ventana de servicio."
@@ -566,9 +566,9 @@ msgstr "Mantén {up} para acelerar y {down} para frenar."
     let t = Translator::new(Catalog::from_po("es", po).expect("parses"));
     assert_eq!(
         t.translate(
-            "ELD status on duty not driving. Hours of service: 9 hours of driving left, 3 hours of duty window left."
+            "Status ready to continue. Hours of service: 9 hours of driving left, 3 hours of duty window left."
         ),
-        "Estado del ELD: en servicio sin conducir. Horas de servicio: quedan 9 hours de conducción y 3 hours de ventana de servicio."
+        "Estado: listo para continuar. Horas de servicio: quedan 9 hours de conducción y 3 hours de ventana de servicio."
     );
     // A sentence the catalog lacks stays whole English beside one it has.
     assert_eq!(
@@ -640,11 +640,11 @@ msgstr " Objetivo de carrera: {terminal_text}"
 msgid "You have {grouped} dollars."
 msgstr "Tienes {grouped} dólares."
 
-msgid "ELD: {summary}"
+msgid "Status: {summary}"
 msgstr "{summary}"
 
-msgid "ELD status on duty not driving."
-msgstr "Estado del ELD: en servicio sin conducir."
+msgid "Status ready to continue."
+msgstr "Estado: listo para continuar."
 
 msgid "Driver: {driver_name}"
 msgstr "Conductor: {driver_name}"
@@ -711,9 +711,9 @@ fn a_sentence_opens_with_a_capital_and_names_need_few_letters_of_frame() {
 fn a_joined_piece_and_a_name_with_a_label_still_translate() {
     assert_eq!(
         listen().translate(
-            "You have 5,000 dollars.  Career objective: Northstar Freight Lines is looking for steady service."
+            "You have 5,000 dollars.  Career objective: Northstar Shipping Co is looking for steady service."
         ),
-        "Tienes 5.000 dólares.  Objetivo de carrera: Northstar Freight Lines busca un servicio constante."
+        "Tienes 5.000 dólares.  Objetivo de carrera: Northstar Shipping Co busca un servicio constante."
     );
 }
 
@@ -721,8 +721,8 @@ fn a_joined_piece_and_a_name_with_a_label_still_translate() {
 fn a_summary_without_its_full_stop_finds_its_sentence() {
     let tr = listen();
     assert_eq!(
-        tr.translate("ELD: ELD status on duty not driving."),
-        "Estado del ELD: en servicio sin conducir."
+        tr.translate("Status: Status ready to continue."),
+        "Estado: listo para continuar."
     );
     assert_eq!(tr.translate("Driver: Playtest."), "Conductor: Playtest.");
 }
@@ -791,4 +791,12 @@ fn demo_catalog_translates_exact_and_template_lines() {
 fn missing_entries_stay_english() {
     let tr = Translator::new(Catalog::from_po("xx", DEMO_PO).expect("demo parses"));
     assert_eq!(tr.translate("No matching entry."), "No matching entry.");
+}
+
+#[test]
+fn bom_is_stripped_when_parsing_a_po_file() {
+    let with_bom = "\u{feff}msgid \"Hi.\"\nmsgstr \"Hola.\"\n";
+    let catalog = Catalog::from_po("es", with_bom).expect("parses with BOM");
+    let tr = Translator::new(catalog);
+    assert_eq!(tr.translate("Hi."), "Hola.");
 }

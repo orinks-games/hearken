@@ -245,19 +245,22 @@ impl<G: Game> Menu for SettingsScreen<G> {
     fn build_items(&mut self, ctx: &mut Ctx<G>) -> Vec<MenuItem<Self, G>> {
         let mut rows = Vec::new();
 
-        rows.push(
-            SettingsRow::new(
-                "language",
-                MenuItem::inert(Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
-                    format!("Language: {}", language_value(ctx))
-                }))
-                .help(
-                    "Automatic follows your system language. Left and Right choose a language.                      Lines with no translation stay in English.",
+        if crate::language::has_catalogs::<G>(&ctx.paths.data_dir) {
+            rows.push(
+                SettingsRow::new(
+                    "language",
+                    MenuItem::inert(Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        format!("Language: {}", language_value(ctx))
+                    }))
+                    .help(
+                        "Automatic follows your system language. Left and Right choose a language. \
+                         Lines with no translation stay in English.",
+                    )
+                    .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_language(ctx, delta)),
                 )
-                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_language(ctx, delta)),
-            )
-            .value_first(language_value),
-        );
+                .value_first(language_value),
+            );
+        }
 
         if ctx.speech.supports_rate() {
             rows.push(SettingsRow::new(

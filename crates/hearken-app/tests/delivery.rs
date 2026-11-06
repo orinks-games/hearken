@@ -124,6 +124,34 @@ fn terse_says_the_short_line_and_silent_says_and_plays_nothing() {
 }
 
 #[test]
+fn terse_line_is_translated_after_verbosity_picks_it() {
+    use hearken_l10n::{Catalog, Translator};
+    let mut h = start();
+    h.app.ctx.settings.speech.verbosity = "minimal".into();
+    let po = r#"
+msgid "Brake!"
+msgstr "¡Freno!"
+msgid "Brake now, the pier is close."
+msgstr "Frena ya, el muelle está cerca."
+"#;
+    h.app.ctx.translator = std::sync::Arc::new(Translator::new(
+        Catalog::from_po("es", po).expect("catalog"),
+    ));
+    say(
+        &mut h,
+        "Brake now, the pier is close.",
+        SayEvent::new()
+            .category(TestCategory::Safety)
+            .terse("Brake!"),
+    );
+    assert_eq!(
+        events(&h),
+        ["¡Freno!"],
+        "terse English must be translated, not left beside a skipped full line"
+    );
+}
+
+#[test]
 fn a_first_time_line_waits_for_reset_first_times() {
     let mut h = start();
     let hint = || SayEvent::new().category(TestCategory::Hint);

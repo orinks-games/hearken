@@ -172,8 +172,8 @@ pub fn language(code: &str) -> Option<&'static Language> {
 /// "zh-Hans-CN"), or `None` when the game has no catalog for it.
 ///
 /// Any Portuguese gets the Brazilian catalog and any Chinese the simplified
-/// one: closer than English for the player, and a screen reader set to
-/// either reads them.
+/// one: closer than English for the player, and a voice set to either
+/// reads them.
 pub fn match_locale(tag: &str) -> Option<&'static str> {
     let tag = tag.split(['.', '@']).next().unwrap_or(tag);
     let base = tag
@@ -212,7 +212,7 @@ pub fn resolve(setting: &str, system: Option<&str>) -> &'static str {
 const PROPER_NAME_HOLES: &[&str] = &[
     "city", "town", "village", "county", "state", "road", "street", "highway", "route", "exit",
     "where", "dest", "origin", "home", "station", "place", "artist", "song", "handle", "driver",
-    "shipper", "receiver", "brand", "chain", "carrier", "company", "landmark", "rcity",
+    "brand", "chain", "carrier", "company", "landmark", "rcity",
 ];
 
 /// A last word that makes a hole a value about a place, not its name:
@@ -353,7 +353,7 @@ impl Catalog {
                 ));
                 continue;
             }
-            // "{flavor} Dispatch starts you on a short standard load." is
+            // "{flavor} The match starts on a short practice run." is
             // also the sentence after the lead-in: a line split into
             // sentences reaches it without its hole.
             if let ([Seg::Hole(a), Seg::Lit(tail)], [Part::Hole(b), Part::Lit(out)]) =
@@ -377,7 +377,7 @@ impl Catalog {
         for (key, value) in tails {
             exact.entry(key).or_insert(value);
         }
-        // A fragment like "Billboard: " is also found by its bare words,
+        // A fragment like "Notice: " is also found by its bare words,
         // the way a piece reaches it after trimming.
         let trimmed: Vec<(String, String)> = exact
             .iter()
@@ -497,7 +497,12 @@ impl Translator {
         let Some(catalog) = &self.catalog else {
             return Cow::Borrowed(line);
         };
-        if let Some(hit) = self.cache.lock().unwrap().get(line) {
+        if let Some(hit) = self
+            .cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(line)
+        {
             return Cow::Owned(hit.clone());
         }
         let mut missed = Vec::new();
@@ -532,9 +537,11 @@ impl Translator {
         };
         let out = contract_articles(&catalog.language, out);
         if let Some(log) = &self.misses {
-            log.lock().unwrap().record(&missed);
+            log.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .record(&missed);
         }
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if cache.len() >= CACHE_LIMIT {
             cache.clear();
         }
@@ -620,7 +627,7 @@ impl Pass<'_, '_> {
         if let Some(hit) = self.catalog.exact.get(core) {
             return Some(wrap(hit.clone()));
         }
-        // "ELD status on duty not driving" inside "ELD: {summary}" is the
+        // "Status ready to continue" inside "Status: {summary}" is the
         // catalog's whole sentence without its full stop. A whole sentence
         // beats any template a loose fragment of it fills ("{driven} driving").
         if !core.ends_with(['.', '!', '?', ':', ';', ',']) {
@@ -644,9 +651,9 @@ impl Pass<'_, '_> {
             return Some(wrap(out));
         }
         let direct = self.lookup(core, depth);
-        // "Dispatch board." is the catalog's "Dispatch board" with the full
+        // "Score board." is the catalog's "Score board" with the full
         // stop a menu adds after an item.
-        // A lead-in like "Billboard:" keeps its colon the same way.
+        // A lead-in like "Notice:" keeps its colon the same way.
         // The heavier of the two wins: "Deliveries: 1, 0 percent on time."
         // is the catalog's "Deliveries: {deliveries}, {f} percent on time"
         // with a stop, not a looser template that ends in one.
@@ -678,7 +685,7 @@ impl Pass<'_, '_> {
         if depth >= MAX_DEPTH {
             return None;
         }
-        // "ELD status on duty not driving" after "ELD: " is the catalog's
+        // "Status ready to continue" after "Status: " is the catalog's
         // sentence without its full stop.
         if !core.ends_with(['.', '!', '?', ':', ';', ',']) {
             if let Some((_, out)) = self.lookup(&format!("{core}."), depth) {
@@ -750,8 +757,8 @@ impl Pass<'_, '_> {
         self.lead_in(core, depth).map(wrap)
     }
 
-    /// "Job 2 of 7: 19 tons of general freight from ... in Pendleton,
-    /// Oregon to ..." is a lead-in the catalog has ("Job {index} of
+    /// "Level 2 of 7: 19 crates of supplies from ... in Riverton,
+    /// Oregon to ..." is a lead-in the catalog has ("Level {index} of
     /// {total}: ") before a sentence it has. The clause split breaks that
     /// sentence at the commas inside its place names, so the lead-in and
     /// the rest are each tried whole: both translate, or neither does.
@@ -891,7 +898,7 @@ impl Pass<'_, '_> {
     /// The best template the line fills, rendered with its captures, and
     /// that template's literal weight.
     /// A name with a catalog frame of its own whose every hole is a name
-    /// ("freight terminal Macon Terminal in Macon"): the frame translated,
+    /// ("station Central Depot in Midland"): the frame translated,
     /// the names kept.
     fn place_phrase(&self, raw: &str) -> Option<String> {
         if !raw.contains(' ') {
@@ -933,7 +940,7 @@ impl Pass<'_, '_> {
             // "{place}{state} on {highway}" has few letters of its own, but
             // its holes are names: it matches when what fills them reads as
             // names ("Groton", ", South Dakota", "US-12"), never words a loose
-            // match would swallow ("ELD status on duty not driving").
+            // match would swallow ("Status ready to continue").
             if template.numbers_only()
                 && !caps.iter().all(|(name, value)| {
                     is_number(value) || (is_proper_name_hole(name) && reads_as_name(value))
@@ -942,7 +949,7 @@ impl Pass<'_, '_> {
                 return false;
             }
             // A name never holds a lead-in: "{carrier} is looking for ..."
-            // must not take "Career objective: Northstar Freight Lines" as
+            // must not take "Career objective: Northstar Shipping Co" as
             // the carrier and leave the label English; nor does a hole that
             // opens a template: "{name} Company Yard" must not take
             // "company yard: Chicago" and say the label twice.
@@ -955,8 +962,8 @@ impl Pass<'_, '_> {
                 return false;
             }
             // A name that opens a template reads as one: "{the_city} metro
-            // freight market" must not take "12 tons of general freight
-            // from Aberdeen yard in Aberdeen to the Fargo" as its city.
+            // local market" must not take "12 crates of general goods
+            // from Harbor yard in Harbor to the Capital" as its city.
             if let Some(Seg::Hole(first)) = template.segs.first() {
                 if is_proper_name_hole(first)
                     && caps
@@ -967,7 +974,7 @@ impl Pass<'_, '_> {
                 }
             }
             // Only a hole that ends the template or opens a sentence of it
-            // may hold sentences of its own ("ELD: {summary}", "How to play.
+            // may hold sentences of its own ("Status: {summary}", "How to play.
             // {controls} {page_title}"): "{pct} percent {direction}
             // ahead{length}. {advice}" must not take a whole help text as
             // its percent and leave it English.
@@ -1148,8 +1155,8 @@ fn reads_as_name(text: &str) -> bool {
     })
 }
 
-/// Reads as a place's name with its small words: "Amazon Fulfillment
-/// Center KRB1 in Kenosha", "the Fargo", never "12 tons of general freight".
+/// Reads as a place's name with its small words: "Central Depot
+/// North in Midland", "the Capital", never "12 crates of general goods".
 fn reads_as_place(text: &str) -> bool {
     const SMALL: &[&str] = &[
         "the", "of", "in", "near", "and", "at", "on", "de", "la", "du",
@@ -1203,7 +1210,7 @@ fn holds_sentences(segs: &[Seg], hole: &str) -> bool {
     if at + 1 == segs.len() {
         return true;
     }
-    // "{flavor} Dispatch starts you on ...": a sentence of the template
+    // "{flavor} The match starts on ...": a sentence of the template
     // opens right after it.
     if let Some(Seg::Lit(text)) = segs.get(at + 1) {
         if text.starts_with(char::is_whitespace)

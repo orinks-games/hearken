@@ -902,6 +902,24 @@ fn test_wide_characters_count_by_their_weight() {
 }
 
 #[test]
+fn set_wide_char_weight_changes_spoken_length() {
+    let mut pacer = EventSpeechPacer::new(PacerConfig {
+        wide_char_weight: 1.0,
+        ..PacerConfig::DEFAULT
+    });
+    let base = PacerConfig::DEFAULT.base_utterance_s;
+    let rate = PacerConfig::DEFAULT.chars_per_s;
+    let light = pacer.duration_s("漢字");
+    assert!((light - (base + 2.0 / rate)).abs() < 1e-9);
+    pacer.set_wide_char_weight(3.0);
+    let heavy = pacer.duration_s("漢字");
+    assert!((heavy - (base + 6.0 / rate)).abs() < 1e-9);
+    assert!(heavy > light, "light={light} heavy={heavy}");
+    pacer.set_wide_char_weight(1.0);
+    assert!((pacer.duration_s("漢字") - light).abs() < 1e-9);
+}
+
+#[test]
 fn test_the_default_pacer_uses_the_default_tuning() {
     let pacer = EventSpeechPacer::default();
     assert_eq!(*pacer.config(), PacerConfig::default());

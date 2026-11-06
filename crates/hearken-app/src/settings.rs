@@ -13,21 +13,23 @@ use crate::bindings::SavedBindings;
 use crate::paths::Paths;
 
 fn default_language() -> String {
-    hearken_l10n::AUTO.to_string()
+    hearken_l10n::ENGLISH.to_string()
 }
 
 /// What the player hears when their settings file could not be read.
 pub const UNREADABLE_NOTICE: &str =
     "Your settings file could not be read, so the game is using its default settings.";
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(bound(
     serialize = "GS: Serialize",
     deserialize = "GS: DeserializeOwned + Default"
 ))]
 pub struct Settings<GS> {
-    /// Spoken language: `"auto"` follows the system locale, or a catalog
-    /// code such as `"es"`. Missing entries stay English.
+    /// Spoken language: a catalog code such as `"es"`, or `"auto"` to follow
+    /// the system locale. Defaults to English. Missing catalog entries stay
+    /// English. Games that want Automatic on a fresh install return
+    /// [`hearken_l10n::AUTO`] from [`crate::Game::default_language`].
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(default)]
@@ -53,6 +55,24 @@ pub struct Settings<GS> {
     pub updates: UpdateSettings,
     #[serde(default)]
     pub game: GS,
+}
+
+impl<GS: Default> Default for Settings<GS> {
+    fn default() -> Self {
+        Settings {
+            language: default_language(),
+            speech: SpeechSettings::default(),
+            menus: MenuSettings::default(),
+            controller: ControllerSettings::default(),
+            bindings: SavedBindings::default(),
+            audio: AudioSettings::default(),
+            display: DisplaySettings::default(),
+            online: OnlineSettings::default(),
+            discord: DiscordSettings::default(),
+            updates: UpdateSettings::default(),
+            game: GS::default(),
+        }
+    }
 }
 
 /// Whether Discord shows what the player is doing, for a game that offers

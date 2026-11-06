@@ -134,6 +134,13 @@ pub trait Game: Sized + 'static {
         &[]
     }
 
+    /// Language written into a brand-new settings file. Defaults to English.
+    /// Return [`hearken_l10n::AUTO`] so a first launch follows the system
+    /// locale instead.
+    fn default_language() -> &'static str {
+        hearken_l10n::ENGLISH
+    }
+
     /// The Settings screen's rows, built-in ones first: a chance to hide,
     /// reorder or add to them. The default keeps every built-in row as is.
     fn settings_rows(_ctx: &Ctx<Self>, rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {

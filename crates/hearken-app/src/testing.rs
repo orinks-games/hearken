@@ -29,9 +29,11 @@ impl<G: Game> Headless<G> {
     pub fn new(game: G::Data, first: impl State<G> + 'static) -> Self {
         let dir = tempfile::tempdir().expect("a temporary data folder");
         let speech = Rc::new(RefCell::new(CaptureSpeech::full_voice()));
+        let mut settings = Settings::default();
+        settings.language = G::default_language().to_string();
         let mut ctx = Ctx::new(
             Box::new(SharedCapture(speech.clone())),
-            Settings::default(),
+            settings,
             Paths::at(dir.path()),
             game,
         );
