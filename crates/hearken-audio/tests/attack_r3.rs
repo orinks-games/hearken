@@ -1,4 +1,5 @@
-//! Attack round 3 repros for the rendering side. Run in release:
+//! Attack round 3 regression tests for the rendering side: the frame
+//! allowance holds. Run in release:
 //! `cargo test --release -p hearken-audio --test attack_r3 -- --nocapture --test-threads=1`.
 
 #![cfg(feature = "kira")]
@@ -54,12 +55,11 @@ fn audio_in(scene: &Arc<Scene>) -> Audio {
     audio
 }
 
-/// Currently fails: a newly started sound runs its full query at once,
-/// outside the frame allowance (its cost is only charged to the next
-/// frame). Starting 16 sounds in one frame (a burst of footsteps, an
-/// explosion's debris) runs 16 full queries in that frame.
+/// Sounds started in one frame (a burst of footsteps, an explosion's
+/// debris) share the frame allowance; those past it start on the plain
+/// spatial model and are worked out later.
 #[test]
-fn starting_many_sounds_skips_the_frame_allowance() {
+fn starting_many_sounds_keeps_the_frame_allowance() {
     let scene = pole_stack();
     let mut audio = audio_in(&scene);
     let t = Instant::now();
@@ -77,11 +77,10 @@ fn starting_many_sounds_skips_the_frame_allowance() {
     assert!(e < Duration::from_millis(50), "{e:?}");
 }
 
-/// Currently fails: turning on the spot changes no path, but the cache
-/// key holds the listener's facing, so every turning frame re-runs every
-/// sound's query and spends the whole frame allowance.
+/// Turning on the spot changes no path, so it re-renders each sound's
+/// last query instead of running it again.
 #[test]
-fn turning_on_the_spot_reruns_every_query() {
+fn turning_on_the_spot_runs_no_query() {
     let scene = pole_stack();
     let mut audio = audio_in(&scene);
     for k in 0..16 {
@@ -137,12 +136,11 @@ fn lane_with_wall() -> Arc<Scene> {
     Arc::new(b.build())
 }
 
-/// Currently fails: the frame allowance (500 000) is smaller than one
-/// query's own cap (1 000 000), and one sound is always worked out, so a
-/// single sound overruns the allowance by 2x and takes ~70 ms a frame
-/// while the listener walks.
+/// No query gets more than is left of the frame allowance, so one sound
+/// whose path search never succeeds stays within a frame while the
+/// listener walks.
 #[test]
-fn one_query_overruns_the_frame_allowance() {
+fn one_query_stays_within_the_frame_allowance() {
     let scene = lane_with_wall();
     let mut audio = Audio::new(
         Box::new(KiraBackend::offline(RATE).unwrap()),
@@ -170,13 +168,11 @@ fn one_query_overruns_the_frame_allowance() {
     assert!(worst < Duration::from_millis(33), "worst frame {worst:?}");
 }
 
-/// Currently fails: 20 000 small boxes below the floor, inside the
-/// reflection radius. The reflection search gathers and sorts all their
-/// faces for every sound without charging it, so the frame allowance
-/// sees ~1 test per sound and works out all 16 sounds every walking
-/// frame (~430 ms).
+/// 20 000 small boxes below the floor, inside the reflection radius. The
+/// reflection search charges their faces, so the frame allowance limits
+/// how many of the 16 sounds are worked out in a walking frame.
 #[test]
-fn uncharged_reflection_search_defeats_frame_allowance() {
+fn reflection_search_is_held_by_the_frame_allowance() {
     let mut b = SceneBuilder::new();
     for i in 0..20_000 {
         let x = (i % 141) as f64 * 0.14 - 10.0;

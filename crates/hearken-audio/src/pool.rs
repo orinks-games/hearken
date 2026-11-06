@@ -9,6 +9,7 @@ use crate::silent::SilentBackend;
 use crate::spatial::{place, SpatialConfig};
 use crate::types::{Bus, Listener, LoopRegion, Mix, Ramps, Start, Vec3};
 use crate::voicing::Insert;
+use hearken_acoustics::Propagation;
 use hearken_synth::{builtin_wav, Params, Recipe, Voice};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::Receiver;
@@ -119,6 +120,9 @@ pub(crate) struct Live {
     /// The mix the acoustic path gives in place of the spatial model's.
     pub(crate) acoustic_mix: Option<AcousticMix>,
     pub(crate) acoustic_key: Option<AcousticKey>,
+    /// The last propagation worked out, and the facing it was rendered
+    /// for, so a turn re-renders it without a new query.
+    pub(crate) acoustic_prop: Option<(Propagation, f64)>,
 }
 
 impl Live {
@@ -145,6 +149,7 @@ impl Live {
             acoustic: None,
             acoustic_mix: None,
             acoustic_key: None,
+            acoustic_prop: None,
         }
     }
 }
@@ -738,8 +743,7 @@ impl Audio {
                 #[cfg(feature = "hrtf")]
                 if live.acoustic.as_ref().is_some_and(|v| v.hrtf.is_some()) {
                     // The HRTF link only exists now; aim it.
-                    live.acoustic_key = None;
-                    self.first_render(&mut live);
+                    self.reaim_acoustic(&mut live);
                 }
                 live.channel = channel;
                 live.sent = mix;

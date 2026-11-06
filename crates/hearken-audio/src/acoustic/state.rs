@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use hearken_acoustics::{
-    estimate_reverb, propagate, ReverbEstimate, Scene, SoundRender, BAND_CENTRES_HZ,
+    estimate_reverb, propagate, Propagation, QueryOptions, ReverbEstimate, Scene, SoundRender,
+    BAND_CENTRES_HZ,
 };
 
 use super::sense::{ObstacleSense, Sector, FULL_LEVEL, SECTORS};
@@ -32,14 +33,18 @@ impl AcousticMix {
     };
 }
 
-/// What a sound's last render was worked out from, so an unchanged one is
-/// not worked out again.
+/// What a sound's last query was worked out from, so an unchanged one is
+/// not worked out again. The listener's facing is not part of it: a turn
+/// only re-renders the last query.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct AcousticKey {
     pos: Vec3,
-    listener: Listener,
+    listener: Vec3,
     scene: usize,
     generation: u64,
+    /// False when the frame allowance cut the query short, so it runs
+    /// again with its full allowance.
+    settled: bool,
 }
 
 pub(crate) struct AcousticState {
@@ -58,8 +63,8 @@ pub(crate) struct AcousticState {
     /// The slot the next frame's sound queries start from, so sounds left
     /// over by the frame allowance go first next time.
     cursor: usize,
-    /// Shape tests sounds started since the last frame used; taken from
-    /// the next frame's allowance.
+    /// Shape tests sounds started since the last frame used; they share
+    /// the frame allowance with the next frame's queries.
     carry: usize,
     #[cfg(feature = "hrtf")]
     hrtf: HrtfState,
@@ -182,58 +187,35 @@ fn plain_mix(r: &SoundRender, cfg: &SpatialConfig) -> AcousticMix {
 enum Refresh {
     /// Nothing it depends on moved.
     Fresh,
+    /// Only the facing changed: the last query was rendered again.
+    Aimed,
     /// Worked out again, with this many shape tests.
     Ran(usize),
-    /// Out of date, but not allowed to run.
+    /// Out of date, but no allowance was left to run it.
     Waiting,
 }
 
-/// Works out `live`'s render again if anything it depends on moved and
-/// `allowed`.
-fn refresh(
-    live: &mut Live,
-    scene: &Arc<Scene>,
-    listener: Listener,
-    st: &AcousticState,
-    renders: bool,
-    spatial: &SpatialConfig,
-    allowed: bool,
-) -> Refresh {
-    let Some(pos) = live.pos else {
-        return Refresh::Fresh;
-    };
-    let key = AcousticKey {
-        pos,
-        listener,
-        scene: ptr(scene),
-        generation: st.generation,
-    };
-    if live.acoustic_key == Some(key) {
-        return Refresh::Fresh;
-    }
-    let Some(voice) = live.acoustic.as_mut() else {
-        return Refresh::Fresh;
-    };
-    if !allowed {
-        return Refresh::Waiting;
-    }
-    // How far the main arrival's delay can move from source and listener
-    // motion alone; a bigger change means a new path.
-    let glide_s = live.acoustic_key.map(|k| {
-        let moved = (pos - k.pos).length() + (listener.pos - k.listener.pos).length();
-        moved / scene.speed_of_sound().max(1.0) as f32
-    });
-    let prop = propagate(
-        scene,
-        to_model(pos),
-        to_model(listener.pos),
-        &st.settings.query,
-    );
-    let facing = if listener.facing.is_finite() {
+/// The listener's facing as the render takes it.
+fn facing_of(listener: &Listener) -> f64 {
+    if listener.facing.is_finite() {
         f64::from(listener.facing)
     } else {
         0.0
-    };
+    }
+}
+
+/// Renders `prop` for `facing` and posts it to the voice.
+#[allow(clippy::too_many_arguments)]
+fn show(
+    voice: &mut AcousticVoice,
+    mix: &mut Option<AcousticMix>,
+    prop: &Propagation,
+    facing: f64,
+    st: &AcousticState,
+    renders: bool,
+    spatial: &SpatialConfig,
+    glide_s: Option<f32>,
+) {
     let r = prop.render(facing, st.room());
     #[allow(unused_mut)]
     let mut hrtf = false;
@@ -252,13 +234,95 @@ fn refresh(
         ramp_ms: s.ramp_ms,
     };
     voice.post(&r, post, spatial, glide_s);
-    live.acoustic_mix = Some(if renders {
+    *mix = Some(if renders {
         AcousticMix::NEUTRAL
     } else {
         plain_mix(&r, spatial)
     });
-    live.acoustic_key = Some(key);
-    Refresh::Ran(prop.shape_tests)
+}
+
+/// Works out `live`'s render again if anything it depends on moved, with
+/// at most `budget` shape tests (none when it is 0). A turn alone, or a
+/// query that has to wait, re-renders the last query for the new facing.
+fn refresh(
+    live: &mut Live,
+    scene: &Arc<Scene>,
+    listener: Listener,
+    st: &AcousticState,
+    renders: bool,
+    spatial: &SpatialConfig,
+    budget: usize,
+) -> Refresh {
+    let Some(pos) = live.pos else {
+        return Refresh::Fresh;
+    };
+    let key = AcousticKey {
+        pos,
+        listener: listener.pos,
+        scene: ptr(scene),
+        generation: st.generation,
+        settled: true,
+    };
+    let current = live.acoustic_key == Some(key);
+    let Some(voice) = live.acoustic.as_mut() else {
+        return Refresh::Fresh;
+    };
+    let facing = facing_of(&listener);
+    if current || budget == 0 {
+        let mut aimed = false;
+        if let Some((prop, at)) = live.acoustic_prop.as_mut() {
+            if *at != facing {
+                // Nothing moved for this render, so the delay stays put.
+                show(
+                    voice,
+                    &mut live.acoustic_mix,
+                    prop,
+                    facing,
+                    st,
+                    renders,
+                    spatial,
+                    Some(0.0),
+                );
+                *at = facing;
+                aimed = true;
+            }
+        }
+        return match (current, aimed) {
+            (true, false) => Refresh::Fresh,
+            (true, true) => Refresh::Aimed,
+            (false, _) => Refresh::Waiting,
+        };
+    }
+    // How far the main arrival's delay can move from source and listener
+    // motion alone; a bigger change means a new path.
+    let glide_s = live.acoustic_key.map(|k| {
+        let moved = (pos - k.pos).length() + (listener.pos - k.listener).length();
+        moved / scene.speed_of_sound().max(1.0) as f32
+    });
+    let want = st.settings.query.clamped().max_shape_tests;
+    let cap = want.min(budget);
+    let query = QueryOptions {
+        max_shape_tests: cap,
+        ..st.settings.query
+    };
+    let prop = propagate(scene, to_model(pos), to_model(listener.pos), &query);
+    show(
+        voice,
+        &mut live.acoustic_mix,
+        &prop,
+        facing,
+        st,
+        renders,
+        spatial,
+        glide_s,
+    );
+    let used = prop.shape_tests;
+    live.acoustic_key = Some(AcousticKey {
+        settled: cap == want || !prop.truncated,
+        ..key
+    });
+    live.acoustic_prop = Some((prop, facing));
+    Refresh::Ran(used)
 }
 
 impl Audio {
@@ -332,19 +396,49 @@ impl Audio {
     }
 
     /// Renders a just-started sound, now that its voice has its processor.
+    /// It shares the frame allowance with the other sounds started since
+    /// the last frame and with that frame's queries. Once that is spent it
+    /// starts on the plain spatial model and is worked out by a later
+    /// [`Audio::update_acoustic`].
     pub(crate) fn first_render(&mut self, live: &mut Live) {
         let renders = self.backend.renders_acoustics();
         let (listener, spatial) = (self.listener, self.spatial);
         if let Some(st) = self.acoustic.as_mut() {
             if let Some(scene) = st.scene.clone() {
-                // A new sound renders at once; its cost comes out of the
-                // next frame's allowance.
+                let budget = st.frame_allowance().saturating_sub(st.carry);
                 if let Refresh::Ran(n) =
-                    refresh(live, &scene, listener, st, renders, &spatial, true)
+                    refresh(live, &scene, listener, st, renders, &spatial, budget)
                 {
                     st.carry = st.carry.saturating_add(n);
                 }
             }
+        }
+    }
+
+    /// Renders a sound's last query again, for a voice whose HRTF link
+    /// has just been made.
+    #[cfg(feature = "hrtf")]
+    pub(crate) fn reaim_acoustic(&mut self, live: &mut Live) {
+        let renders = self.backend.renders_acoustics();
+        let (listener, spatial) = (self.listener, self.spatial);
+        let Some(st) = self.acoustic.as_ref() else {
+            return;
+        };
+        if let (Some(voice), Some((prop, at))) =
+            (live.acoustic.as_mut(), live.acoustic_prop.as_mut())
+        {
+            let facing = facing_of(&listener);
+            show(
+                voice,
+                &mut live.acoustic_mix,
+                prop,
+                facing,
+                st,
+                renders,
+                &spatial,
+                Some(0.0),
+            );
+            *at = facing;
         }
     }
 
@@ -377,8 +471,8 @@ impl Audio {
     /// [`Audio::set_acoustics`] has not.
     ///
     /// Pass the same `Arc` while the scene is unchanged: a sound whose
-    /// position, listener and scene are all as they were is not worked out
-    /// again. To change the scene, make a new `Arc` (`Arc::make_mut` does,
+    /// position, listener position and scene are all as they were is not
+    /// worked out again (a turn on the spot only re-renders it). To change the scene, make a new `Arc` (`Arc::make_mut` does,
     /// since the pool holds a clone). The sounds worked out in one frame
     /// share [`AcousticSettings::frame_shape_tests`]; those left over keep
     /// their last render and go first next frame.
@@ -418,12 +512,12 @@ impl Audio {
                 continue;
             };
             if live.acoustic.is_some() {
-                match refresh(live, scene, listener, st, renders, &spatial, left > 0) {
+                match refresh(live, scene, listener, st, renders, &spatial, left) {
                     Refresh::Ran(used) => left = left.saturating_sub(used),
                     Refresh::Waiting => {
                         waiting.get_or_insert(i);
                     }
-                    Refresh::Fresh => {}
+                    Refresh::Fresh | Refresh::Aimed => {}
                 }
             } else {
                 live.acoustic_mix = None;
@@ -575,6 +669,7 @@ pub(crate) fn bypass(live: &mut Live) {
     }
     live.acoustic_mix = None;
     live.acoustic_key = None;
+    live.acoustic_prop = None;
 }
 
 #[cfg(test)]

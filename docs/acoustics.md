@@ -143,10 +143,12 @@ their material by the same cut name. Numbers are read back to the exact
 bits they were written with, so a scene saved and loaded again is the
 same scene on every machine.
 
-The searches are capped too. `QueryOptions::max_shape_tests` (default one
-million) bounds the shapes the path search, and again the reflection
-search, may test, so many shapes crowded into one spot cannot stall a
-frame. The room estimate, `nearby_surfaces` and `navigate` have their own
+The searches are capped too. `QueryOptions::max_shape_tests` (default
+100 000) bounds the shapes one `propagate` query may test, gathering the
+shapes near the path and the faces near the listener included, so many
+shapes crowded into one spot cannot stall a frame. The direct line goes
+first, the path search gets at most three quarters of what is left, and
+the reflection search the rest. The room estimate, `nearby_surfaces` and `navigate` have their own
 allowances; a `navigate` retry without clearance gets what the first try
 left. A search that hits a cap sets `truncated`. The shapes sit in a
 balanced box tree, so a far-off shape does not slow queries elsewhere.
@@ -215,7 +217,7 @@ clicks.
 | `obstacle_sense` | `0` | strength of the obstacle-sense floor, 0 to 1 |
 | `sense_radius_m` | `4` | how far obstacle sense reaches |
 | `room_move_m` | `0.5` | how far the listener moves before the room is estimated again, 0.05 to 1000 m |
-| `frame_shape_tests` | `500000` | shape tests all sound queries in one frame share; sounds past it keep their last render and go first next frame |
+| `frame_shape_tests` | `250000` | shape tests all sound queries in one frame share, sounds started since the last frame included; no query gets more than is left, sounds past it keep their last render and go first next frame, and a new sound past it starts on the plain spatial model |
 
 Physical spreading falls faster than the plain spatial model's default
 rolloff. If a game's mix was tuned on the plain model, raise

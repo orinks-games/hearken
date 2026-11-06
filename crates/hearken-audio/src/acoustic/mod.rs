@@ -76,9 +76,12 @@ pub struct AcousticSettings {
     /// metres (0.05 to 1000), or the scene changes.
     pub room_move_m: f64,
     /// Most shape tests the sound queries of one frame make together (see
-    /// [`QueryOptions::max_shape_tests`]). Once it is spent, sounds that
-    /// still need working out keep their last render and go first next
-    /// frame. At least one sound is worked out each frame.
+    /// [`QueryOptions::max_shape_tests`]), counting sounds started since
+    /// the last frame. No query gets more than is left of it. Once it is
+    /// spent, sounds that still need working out keep their last render
+    /// (re-aimed if the listener turned) and go first next frame; a new
+    /// sound starts on the plain spatial model until it is worked out. A
+    /// query cut short by it runs again in full later.
     pub frame_shape_tests: usize,
 }
 
@@ -98,7 +101,7 @@ impl Default for AcousticSettings {
             obstacle_sense: 0.0,
             sense_radius_m: 4.0,
             room_move_m: 0.5,
-            frame_shape_tests: 500_000,
+            frame_shape_tests: 250_000,
         }
     }
 }
