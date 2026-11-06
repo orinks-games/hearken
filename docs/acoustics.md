@@ -28,6 +28,10 @@ The work is split over two crates:
 - `hearken-audio` renders the model's answers. It is re-exported as
   `hearken_audio::acoustics` (and so `hearken_app::audio::acoustics`).
 
+Both are pure Rust with no native libraries. Steam Audio was considered
+and left out for now: it needs a native library per platform and clang at
+build time, and its results are not bit-identical across machines.
+
 ## Turning it on
 
 In a `hearken-app` game, give the engine a scene:
@@ -345,3 +349,22 @@ online runs replay.
 - Cost, in release builds on the test scene: about 26 µs per sound per
   frame for the propagation query (skipped when nothing moved), and about
   93 µs for each room estimate.
+
+### Accepted limits in hostile scenes
+
+Scene files from players or mods were attacked on purpose (nested and
+stacked shapes, far-off shapes, huge files, broken SOFA files). Nothing
+found panics, hangs or runs out of memory, and every search is capped. These
+costs of the caps are accepted:
+
+- In a scene built to be slow (thousands of shapes crowded round the
+  player), queries hit their caps and set `truncated`, so the result is
+  less complete. With many sounds in such a scene, the frame allowance
+  means each sound is refreshed only every few frames.
+- `navigate` is not held to a frame: with default `NavOptions` it can take
+  about 20 ms in such a scene, and nearly a second with every cap at its
+  highest. Call it on demand, not every frame.
+- A sound farther than `max_delay_s` of travel arrives at that delay, with
+  its full distance loss. This is not reported at run time.
+- A new sound started when the frame allowance is spent plays on the plain
+  spatial model until the next `update_acoustic` works it out.
