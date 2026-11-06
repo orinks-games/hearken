@@ -34,7 +34,10 @@ pub(crate) mod word {
     pub const SEND: usize = PAN + 2;
     /// How long changes ramp, ms.
     pub const RAMP_MS: usize = SEND + 1;
-    pub const TAPS: usize = RAMP_MS + 1;
+    /// A count the game thread bumps when the paths changed rather than
+    /// moved: every delay then crossfades to its new value, never glides.
+    pub const JUMP: usize = RAMP_MS + 1;
+    pub const TAPS: usize = JUMP + 1;
     /// Per tap: delay s, low, mid, high gains, left, right.
     pub const TAP_WORDS: usize = 6;
     pub const COUNT: usize = TAPS + TAP_WORDS * MAX_TAPS;
@@ -117,8 +120,17 @@ impl Head {
         }
     }
 
-    /// Moves toward `target` samples. `silent` paths jump there at once.
-    fn retarget(&mut self, target: f32, glide: bool, ramp: u32, rate: f32, silent: bool) {
+    /// Moves toward `target` samples. `silent` paths jump there at once;
+    /// `jump` crossfades to it.
+    fn retarget(
+        &mut self,
+        target: f32,
+        glide: bool,
+        jump: bool,
+        ramp: u32,
+        rate: f32,
+        silent: bool,
+    ) {
         let diff = target - self.cur;
         if silent {
             *self = Head {
@@ -127,7 +139,12 @@ impl Head {
             };
             return;
         }
-        if glide && diff.abs() <= MAX_GLIDE_S * rate {
+        if jump && diff != 0.0 {
+            self.from = self.read_pos();
+            self.cur = target;
+            self.left = 0;
+            self.fade = 1.0;
+        } else if glide && diff.abs() <= MAX_GLIDE_S * rate {
             if diff == 0.0 {
                 self.left = 0;
                 return;
@@ -313,6 +330,8 @@ pub struct AcousticDsp {
     /// Whether a block has run yet: a sound rendered before it starts
     /// begins in the model, not fading into it.
     started: bool,
+    /// The last [`word::JUMP`] count seen.
+    jump: f32,
     #[cfg(feature = "hrtf")]
     pub(crate) hrtf: Option<super::hrtf::HrtfDsp>,
 }
@@ -354,6 +373,7 @@ impl AcousticDsp {
             fade_step: 0.0,
             smooth: 1.0,
             started: false,
+            jump: 0.0,
             #[cfg(feature = "hrtf")]
             hrtf: None,
             shared,
@@ -418,6 +438,7 @@ impl AcousticDsp {
     fn settle(&mut self) {
         let rate = self.rate;
         let p = self.p;
+        self.jump = p[word::JUMP];
         self.direct.head = Head {
             cur: (p[word::DELAY] * rate).clamp(
                 0.0,
@@ -474,6 +495,8 @@ impl AcousticDsp {
             1.0 - (-(BLOCK as f32) / (ramp_ms / 1000.0 * rate / 3.0)).exp()
         };
         let glide = p[word::DOPPLER] > 0.5;
+        let jump = p[word::JUMP] != self.jump;
+        self.jump = p[word::JUMP];
         let a = self.smooth;
         // The line is sized for the highest rate; hold the reach to the
         // asked seconds so it is the same at every rate.
@@ -493,6 +516,7 @@ impl AcousticDsp {
         d.head.retarget(
             (delay(p[word::DELAY]) - hrtf_latency).max(0.0),
             glide,
+            jump,
             ramp,
             rate,
             silent,
@@ -526,7 +550,8 @@ impl AcousticDsp {
         for (i, tap) in self.taps.iter_mut().enumerate() {
             let o = word::TAPS + i * word::TAP_WORDS;
             let silent = tap.low_mid_high.iter().all(|&g| g < SILENT);
-            tap.head.retarget(delay(p[o]), glide, ramp, rate, silent);
+            tap.head
+                .retarget(delay(p[o]), glide, jump, ramp, rate, silent);
             for k in 0..3 {
                 let t = p[o + 1 + k];
                 tap.low_mid_high[k] += (t - tap.low_mid_high[k]) * a;
@@ -699,7 +724,7 @@ mod tests {
                 gains: [v; 7],
                 direction: [v; 3],
             }; 8];
-            voice.post(&r, POST, &cfg);
+            voice.post(&r, POST, &cfg, None);
             for (i, f) in block.iter_mut().enumerate() {
                 let x = if (i + k) % 37 == 0 { 1.0 } else { 0.0 };
                 *f = [x, x];
@@ -743,7 +768,7 @@ mod tests {
             direction: [0.0, 1.0, 0.0],
             ..SoundRender::default()
         };
-        voice.post(&r, POST, &SpatialConfig::default());
+        voice.post(&r, POST, &SpatialConfig::default(), None);
         let mut dsp = voice.processor();
         let mut block = vec![[0.0f32; 2]; 1024];
         block[0] = [1.0, 1.0];

@@ -138,10 +138,18 @@ the `Limits` is dropped. The `Report` that comes back lists what was
 dropped and why, up to 64 entries plus a count. The file size and the
 object and material counts are capped. Unknown fields are skipped.
 
+Material names are trimmed and cut to 64 characters, and objects find
+their material by the same cut name. Numbers are read back to the exact
+bits they were written with, so a scene saved and loaded again is the
+same scene on every machine.
+
 The searches are capped too. `QueryOptions::max_shape_tests` (default one
 million) bounds the shapes the path search, and again the reflection
 search, may test, so many shapes crowded into one spot cannot stall a
-frame. A search that hits a cap sets `truncated`.
+frame. The room estimate, `nearby_surfaces` and `navigate` have their own
+allowances; a `navigate` retry without clearance gets what the first try
+left. A search that hits a cap sets `truncated`. The shapes sit in a
+balanced box tree, so a far-off shape does not slow queries elsewhere.
 
 ## What each sound gets
 
@@ -153,7 +161,10 @@ the result to the sound's insert:
   With `doppler` on (the default), the delay glides as distances change.
   The pitch then shifts by `1 + v / c` for a source approaching at `v`.
   That is first order: a sound coming straight at you at 30 m/s is shifted
-  by 8.7 %, where the exact moving-source value is 9.6 %. With `doppler`
+  by 8.7 %, where the exact moving-source value is 9.6 %. Only motion
+  glides: when the delay changes by more than the source and listener
+  moved (a wall appears, the scene changes, the sound now comes round a
+  corner), it crossfades instead, so a still sound keeps its pitch. With `doppler`
   off, the delay is held and crossfades to the new value once it is 30 ms
   out, so the pitch never shifts. With `delay` off, the main arrival plays
   at once and the reflections keep their lag behind it.
@@ -203,7 +214,8 @@ clicks.
 | `max_delay_s` | `0.5` | longest delay a sound holds, 0.01 to 2 s (0.5 s is about 170 m); farther sounds arrive at this delay |
 | `obstacle_sense` | `0` | strength of the obstacle-sense floor, 0 to 1 |
 | `sense_radius_m` | `4` | how far obstacle sense reaches |
-| `room_move_m` | `0.5` | how far the listener moves before the room is estimated again |
+| `room_move_m` | `0.5` | how far the listener moves before the room is estimated again, 0.05 to 1000 m |
+| `frame_shape_tests` | `500000` | shape tests all sound queries in one frame share; sounds past it keep their last render and go first next frame |
 
 Physical spreading falls faster than the plain spatial model's default
 rolloff. If a game's mix was tuned on the plain model, raise
@@ -249,8 +261,9 @@ frequencies from its direction.
 
 `AcousticSettings::obstacle_sense` (0 to 1) renders this over a quiet
 generated noise floor: eight noise sources round the head, one per 45
-degrees. Each frame, a ray along each sector finds walls and boxes within
-`sense_radius_m`, and nearby poles shadow the sector they stand in. The
+degrees. Whenever the listener moves or turns, a ray along each sector
+finds walls and boxes within `sense_radius_m`, and nearby poles shadow the
+sector they stand in. The
 floor plays as a feed on the ambience bus, so the ambience volume applies.
 At full strength it is about 45 dB below full scale (RMS, each ear). It works on any
 backend that plays feeds.

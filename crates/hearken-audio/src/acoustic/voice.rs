@@ -71,6 +71,8 @@ pub struct AcousticVoice {
     /// The delay each tap slot last carried, seconds; negative is empty.
     slots: [f32; MAX_TAPS],
     words: [f32; WORDS],
+    /// The main delay last posted, seconds.
+    delay_s: Option<f32>,
     #[cfg(feature = "hrtf")]
     pub(crate) hrtf: Option<super::hrtf::HrtfLink>,
 }
@@ -100,6 +102,7 @@ impl AcousticVoice {
             }),
             slots: [-1.0; MAX_TAPS],
             words,
+            delay_s: None,
             #[cfg(feature = "hrtf")]
             hrtf: None,
         }
@@ -120,8 +123,27 @@ impl AcousticVoice {
     }
 
     /// Posts `render`; `cfg` gives the speaker cues for sounds behind.
-    pub(crate) fn post(&mut self, r: &SoundRender, post: Post, cfg: &SpatialConfig) {
+    /// `glide_s` is how far the main delay can have moved through source
+    /// and listener motion since the last post (`None` for the first). A
+    /// bigger change is a new path, not motion: it crossfades instead of
+    /// gliding, so it does not bend the pitch.
+    pub(crate) fn post(
+        &mut self,
+        r: &SoundRender,
+        post: Post,
+        cfg: &SpatialConfig,
+        glide_s: Option<f32>,
+    ) {
         let mut w = [0.0f32; WORDS];
+        w[word::JUMP] = self.words[word::JUMP];
+        if let (Some(bound), Some(last)) = (glide_s, self.delay_s) {
+            // A little slack for rounding.
+            let slack = 1e-5 + 0.01 * bound;
+            if (finite(r.delay_s) - last).abs() > bound + slack {
+                w[word::JUMP] = (self.words[word::JUMP] + 1.0) % 1_000_000.0;
+            }
+        }
+        self.delay_s = Some(finite(r.delay_s));
         w[word::ENGAGED] = 1.0;
         w[word::DOPPLER] = if post.doppler { 1.0 } else { 0.0 };
         w[word::HRTF] = if post.hrtf { 1.0 } else { 0.0 };

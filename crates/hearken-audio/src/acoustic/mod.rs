@@ -73,8 +73,13 @@ pub struct AcousticSettings {
     /// How far obstacle sense reaches, metres.
     pub sense_radius_m: f64,
     /// The room is estimated again when the listener moves this far,
-    /// metres, or the scene changes.
+    /// metres (0.05 to 1000), or the scene changes.
     pub room_move_m: f64,
+    /// Most shape tests the sound queries of one frame make together (see
+    /// [`QueryOptions::max_shape_tests`]). Once it is spent, sounds that
+    /// still need working out keep their last render and go first next
+    /// frame. At least one sound is worked out each frame.
+    pub frame_shape_tests: usize,
 }
 
 impl Default for AcousticSettings {
@@ -93,6 +98,7 @@ impl Default for AcousticSettings {
             obstacle_sense: 0.0,
             sense_radius_m: 4.0,
             room_move_m: 0.5,
+            frame_shape_tests: 500_000,
         }
     }
 }

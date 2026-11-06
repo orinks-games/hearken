@@ -7,7 +7,7 @@ use hearken_acoustics::{
     estimate_reverb, propagate, ReverbEstimate, Scene, SoundRender, BAND_CENTRES_HZ,
 };
 
-use super::sense::{ObstacleSense, FULL_LEVEL};
+use super::sense::{ObstacleSense, Sector, FULL_LEVEL, SECTORS};
 use super::voice::{speaker_cue, AcousticVoice, Post};
 use super::{sense_sectors, to_model, AcousticSettings};
 use crate::pool::{Audio, Live, Sound};
@@ -51,6 +51,16 @@ pub(crate) struct AcousticState {
     room: Option<ReverbEstimate>,
     room_at: Option<(Vec3, usize)>,
     sense: Option<(Arc<ObstacleSense>, Sound)>,
+    /// What the obstacle-sense sectors were last worked out from, and
+    /// them, so a still listener does not query again.
+    sense_at: Option<(Listener, usize, f64)>,
+    sectors: [Sector; SECTORS],
+    /// The slot the next frame's sound queries start from, so sounds left
+    /// over by the frame allowance go first next time.
+    cursor: usize,
+    /// Shape tests sounds started since the last frame used; taken from
+    /// the next frame's allowance.
+    carry: usize,
     #[cfg(feature = "hrtf")]
     hrtf: HrtfState,
 }
@@ -73,6 +83,10 @@ impl AcousticState {
             room: None,
             room_at: None,
             sense: None,
+            sense_at: None,
+            sectors: [Sector::CLEAR; SECTORS],
+            cursor: 0,
+            carry: 0,
             #[cfg(feature = "hrtf")]
             hrtf: HrtfState::default(),
         }
@@ -80,6 +94,23 @@ impl AcousticState {
 
     pub(crate) fn wants(&self, bus: Bus, pos: Option<Vec3>) -> bool {
         pos.is_some() && self.settings.buses.contains(&bus)
+    }
+
+    /// How far the listener moves before the room is estimated again,
+    /// checked: a negative or NaN setting would re-estimate every frame or
+    /// never.
+    fn room_move_m(&self) -> f64 {
+        let m = self.settings.room_move_m;
+        if m.is_finite() {
+            m.clamp(MIN_ROOM_MOVE_M, 1000.0)
+        } else {
+            AcousticSettings::default().room_move_m
+        }
+    }
+
+    /// The shape tests one frame's sound queries may make, at least one.
+    fn frame_allowance(&self) -> usize {
+        self.settings.frame_shape_tests.max(1)
     }
 
     fn room(&self) -> Option<&ReverbEstimate> {
@@ -99,6 +130,9 @@ impl AcousticState {
         }
     }
 }
+
+/// Least `room_move_m` used, metres.
+const MIN_ROOM_MOVE_M: f64 = 0.05;
 
 fn ptr(scene: &Arc<Scene>) -> usize {
     Arc::as_ptr(scene) as usize
@@ -143,7 +177,19 @@ fn plain_mix(r: &SoundRender, cfg: &SpatialConfig) -> AcousticMix {
     }
 }
 
-/// Works out `live`'s render again if anything it depends on moved.
+/// What [`refresh`] did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Refresh {
+    /// Nothing it depends on moved.
+    Fresh,
+    /// Worked out again, with this many shape tests.
+    Ran(usize),
+    /// Out of date, but not allowed to run.
+    Waiting,
+}
+
+/// Works out `live`'s render again if anything it depends on moved and
+/// `allowed`.
 fn refresh(
     live: &mut Live,
     scene: &Arc<Scene>,
@@ -151,9 +197,10 @@ fn refresh(
     st: &AcousticState,
     renders: bool,
     spatial: &SpatialConfig,
-) {
+    allowed: bool,
+) -> Refresh {
     let Some(pos) = live.pos else {
-        return;
+        return Refresh::Fresh;
     };
     let key = AcousticKey {
         pos,
@@ -162,11 +209,20 @@ fn refresh(
         generation: st.generation,
     };
     if live.acoustic_key == Some(key) {
-        return;
+        return Refresh::Fresh;
     }
     let Some(voice) = live.acoustic.as_mut() else {
-        return;
+        return Refresh::Fresh;
     };
+    if !allowed {
+        return Refresh::Waiting;
+    }
+    // How far the main arrival's delay can move from source and listener
+    // motion alone; a bigger change means a new path.
+    let glide_s = live.acoustic_key.map(|k| {
+        let moved = (pos - k.pos).length() + (listener.pos - k.listener.pos).length();
+        moved / scene.speed_of_sound().max(1.0) as f32
+    });
     let prop = propagate(
         scene,
         to_model(pos),
@@ -195,13 +251,14 @@ fn refresh(
         hrtf,
         ramp_ms: s.ramp_ms,
     };
-    voice.post(&r, post, spatial);
+    voice.post(&r, post, spatial, glide_s);
     live.acoustic_mix = Some(if renders {
         AcousticMix::NEUTRAL
     } else {
         plain_mix(&r, spatial)
     });
     live.acoustic_key = Some(key);
+    Refresh::Ran(prop.shape_tests)
 }
 
 impl Audio {
@@ -278,9 +335,15 @@ impl Audio {
     pub(crate) fn first_render(&mut self, live: &mut Live) {
         let renders = self.backend.renders_acoustics();
         let (listener, spatial) = (self.listener, self.spatial);
-        if let Some(st) = &self.acoustic {
+        if let Some(st) = self.acoustic.as_mut() {
             if let Some(scene) = st.scene.clone() {
-                refresh(live, &scene, listener, st, renders, &spatial);
+                // A new sound renders at once; its cost comes out of the
+                // next frame's allowance.
+                if let Refresh::Ran(n) =
+                    refresh(live, &scene, listener, st, renders, &spatial, true)
+                {
+                    st.carry = st.carry.saturating_add(n);
+                }
             }
         }
     }
@@ -316,7 +379,9 @@ impl Audio {
     /// Pass the same `Arc` while the scene is unchanged: a sound whose
     /// position, listener and scene are all as they were is not worked out
     /// again. To change the scene, make a new `Arc` (`Arc::make_mut` does,
-    /// since the pool holds a clone).
+    /// since the pool holds a clone). The sounds worked out in one frame
+    /// share [`AcousticSettings::frame_shape_tests`]; those left over keep
+    /// their last render and go first next frame.
     pub fn update_acoustic(&mut self, scene: &Arc<Scene>) {
         self.poll_open();
         self.backend.update();
@@ -336,8 +401,13 @@ impl Audio {
         let mut freed = Vec::new();
         let mut sends = Vec::new();
         let lis = to_model(listener.pos);
-        for (i, slot) in self.slots.iter_mut().enumerate() {
-            let Some(live) = slot.live.as_mut() else {
+        let mut left = st.frame_allowance().saturating_sub(st.carry);
+        let mut waiting = None;
+        let n = self.slots.len();
+        let start = if st.cursor < n { st.cursor } else { 0 };
+        for k in 0..n {
+            let i = (start + k) % n;
+            let Some(live) = self.slots[i].live.as_mut() else {
                 continue;
             };
             if !live.paused && !self.backend.is_playing(live.channel) {
@@ -348,7 +418,13 @@ impl Audio {
                 continue;
             };
             if live.acoustic.is_some() {
-                refresh(live, scene, listener, st, renders, &spatial);
+                match refresh(live, scene, listener, st, renders, &spatial, left > 0) {
+                    Refresh::Ran(used) => left = left.saturating_sub(used),
+                    Refresh::Waiting => {
+                        waiting.get_or_insert(i);
+                    }
+                    Refresh::Fresh => {}
+                }
             } else {
                 live.acoustic_mix = None;
                 live.occluded = !scene.line_of_sight(lis, to_model(pos));
@@ -370,6 +446,8 @@ impl Audio {
         self.update_sense(scene);
         if let Some(st) = self.acoustic.as_mut() {
             st.scene = Some(scene.clone());
+            st.cursor = waiting.unwrap_or(0);
+            st.carry = 0;
         }
     }
 
@@ -388,9 +466,7 @@ impl Audio {
             return;
         }
         let stale = match st.room_at {
-            Some((at, p)) => {
-                p != ptr(scene) || f64::from((at - pos).length()) > st.settings.room_move_m
-            }
+            Some((at, p)) => p != ptr(scene) || f64::from((at - pos).length()) > st.room_move_m(),
             None => true,
         };
         if !stale {
@@ -453,6 +529,7 @@ impl Audio {
         let radius = st.settings.sense_radius_m;
         let current = st.sense.take();
         if strength == 0.0 {
+            st.sense_at = None;
             if let Some((_, sound)) = current {
                 self.stop(sound, 200);
             }
@@ -471,8 +548,16 @@ impl Audio {
                 sense
             }
         };
-        let sectors = sense_sectors(scene, listener.pos, listener.facing, radius);
-        sense.set(&sectors, FULL_LEVEL * strength);
+        let Some(st) = self.acoustic.as_mut() else {
+            return;
+        };
+        // Worked out again only when the listener or scene changed.
+        let at = (listener, ptr(scene), radius);
+        if st.sense_at != Some(at) {
+            st.sectors = sense_sectors(scene, listener.pos, listener.facing, radius);
+            st.sense_at = Some(at);
+        }
+        sense.set(&st.sectors, FULL_LEVEL * strength);
     }
 
     fn set_sense(&mut self, sense: Arc<ObstacleSense>, sound: Sound) {
