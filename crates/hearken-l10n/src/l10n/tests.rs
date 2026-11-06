@@ -17,8 +17,8 @@ msgstr "tráfico denso"
 msgid "It is {tod}."
 msgstr "Son las {tod}."
 
-msgid "Truck damage is {damage_pct} percent."
-msgstr "El camión tiene un {damage_pct} por ciento de daños."
+msgid "Hull damage is {damage_pct} percent."
+msgstr "El casco tiene un {damage_pct} por ciento de daños."
 
 msgid "{distance}: {condition} ahead."
 msgstr "{distance}: {condition} más adelante."
@@ -89,8 +89,8 @@ fn templates_carry_their_captures() {
     let tr = spanish();
     assert_eq!(tr.translate("It is 3:15 PM."), "Son las 3:15 PM.");
     assert_eq!(
-        tr.translate("Truck damage is 12 percent."),
-        "El camión tiene un 12 por ciento de daños."
+        tr.translate("Hull damage is 12 percent."),
+        "El casco tiene un 12 por ciento de daños."
     );
 }
 
@@ -120,8 +120,8 @@ fn plural_choices_follow_the_number() {
 fn sentences_translate_one_at_a_time() {
     let tr = spanish();
     assert_eq!(
-        tr.translate("It is 9:00 AM. Truck damage is 3 percent."),
-        "Son las 9:00 AM. El camión tiene un 3 por ciento de daños."
+        tr.translate("It is 9:00 AM. Hull damage is 3 percent."),
+        "Son las 9:00 AM. El casco tiene un 3 por ciento de daños."
     );
     // An unknown sentence stays English beside a known one.
     assert_eq!(
@@ -290,15 +290,12 @@ fn a_the_hole_drops_the_english_article() {
 fn a_fragment_opening_a_sentence_or_trimmed_still_matches() {
     let catalog = Catalog::from_po(
         "es",
-        "msgid \"confirmed truck parking\"\nmsgstr \"aparcamiento confirmado\"\n\n\
+        "msgid \"confirmed spare seat\"\nmsgstr \"asiento confirmado\"\n\n\
          msgid \"Notice: \"\nmsgstr \"Aviso: \"\n",
     )
     .expect("parses");
     let tr = Translator::new(catalog);
-    assert_eq!(
-        tr.translate("Confirmed truck parking."),
-        "Aparcamiento confirmado."
-    );
+    assert_eq!(tr.translate("Confirmed spare seat."), "Asiento confirmado.");
     assert_eq!(tr.translate("Notice:"), "Aviso:");
 }
 
@@ -342,8 +339,8 @@ fn side_by_side_holes_split_before_a_comma_tail() {
     .expect("parses");
     let tr = Translator::new(catalog);
     assert_eq!(
-        tr.translate("Merge onto I-90 East toward Rochester, New York, then 74 miles on it."),
-        "Auf I-90 East Richtung Rochester, New York auffahren, dann 74 miles darauf."
+        tr.translate("Merge onto Route 7 North toward Millbrook, Vermont, then 74 miles on it."),
+        "Auf Route 7 North Richtung Millbrook, Vermont auffahren, dann 74 miles darauf."
     );
 }
 
@@ -557,8 +554,8 @@ msgstr ""
 msgid "Status ready to continue."
 msgstr "Estado: listo para continuar."
 
-msgid "Hours of service: {duration_text} of driving left, {duration_text2} of duty window left."
-msgstr "Horas de servicio: quedan {duration_text} de conducción y {duration_text2} de ventana de servicio."
+msgid "Session timer: {duration_text} of play left, {duration_text2} of stretch left."
+msgstr "Temporizador de sesión: quedan {duration_text} de juego y {duration_text2} de tramo."
 
 msgid "Hold {up} to accelerate, {down} to brake."
 msgstr "Mantén {up} para acelerar y {down} para frenar."
@@ -566,9 +563,9 @@ msgstr "Mantén {up} para acelerar y {down} para frenar."
     let t = Translator::new(Catalog::from_po("es", po).expect("parses"));
     assert_eq!(
         t.translate(
-            "Status ready to continue. Hours of service: 9 hours of driving left, 3 hours of duty window left."
+            "Status ready to continue. Session timer: 9 hours of play left, 3 hours of stretch left."
         ),
-        "Estado: listo para continuar. Horas de servicio: quedan 9 hours de conducción y 3 hours de ventana de servicio."
+        "Estado: listo para continuar. Temporizador de sesión: quedan 9 hours de juego y 3 hours de tramo."
     );
     // A sentence the catalog lacks stays whole English beside one it has.
     assert_eq!(
@@ -631,11 +628,11 @@ msgstr "{place}{state} en {highway}"
 msgid "Next place in {ahead_text}: {text}."
 msgstr "Próximo lugar en {ahead_text}: {text}."
 
-msgid "{carrier} is looking for steady service."
-msgstr "{carrier} busca un servicio constante."
+msgid "{studio} is looking for steady players."
+msgstr "{studio} busca jugadores constantes."
 
-msgid " Career objective: {terminal_text}"
-msgstr " Objetivo de carrera: {terminal_text}"
+msgid " Mission brief: {terminal_text}"
+msgstr " Informe de misión: {terminal_text}"
 
 msgid "You have {grouped} dollars."
 msgstr "Tienes {grouped} dólares."
@@ -702,8 +699,8 @@ fn a_sentence_opens_with_a_capital_and_names_need_few_letters_of_frame() {
         "Son las 8 AM. Quedan 451 miles de 451."
     );
     assert_eq!(
-        tr.translate("Next place in 20 miles: Groton, South Dakota on US-12."),
-        "Próximo lugar en 20 miles: Groton, South Dakota en US-12."
+        tr.translate("Next place in 20 miles: Groton, South Dakota on Ring Road."),
+        "Próximo lugar en 20 miles: Groton, South Dakota en Ring Road."
     );
 }
 
@@ -711,9 +708,9 @@ fn a_sentence_opens_with_a_capital_and_names_need_few_letters_of_frame() {
 fn a_joined_piece_and_a_name_with_a_label_still_translate() {
     assert_eq!(
         listen().translate(
-            "You have 5,000 dollars.  Career objective: Northstar Shipping Co is looking for steady service."
+            "You have 5,000 dollars.  Mission brief: Aurora Studios is looking for steady players."
         ),
-        "Tienes 5.000 dólares.  Objetivo de carrera: Northstar Shipping Co busca un servicio constante."
+        "Tienes 5.000 dólares.  Informe de misión: Aurora Studios busca jugadores constantes."
     );
 }
 

@@ -212,7 +212,7 @@ pub fn resolve(setting: &str, system: Option<&str>) -> &'static str {
 const PROPER_NAME_HOLES: &[&str] = &[
     "city", "town", "village", "county", "state", "road", "street", "highway", "route", "exit",
     "where", "dest", "origin", "home", "station", "place", "artist", "song", "handle", "driver",
-    "brand", "chain", "carrier", "company", "landmark", "rcity",
+    "brand", "chain", "studio", "company", "landmark", "rcity",
 ];
 
 /// A last word that makes a hole a value about a place, not its name:
@@ -333,7 +333,7 @@ impl Catalog {
                 continue;
             }
             // A template is matched against a trimmed piece, so a piece of a
-            // longer line (" Career objective: {terminal_text}") is compiled
+            // longer line (" Mission brief: {terminal_text}") is compiled
             // without the spaces that joined it.
             let segs = parse_source(entry.msgid.trim());
             let translation = parse_translation(entry.msgstr.trim());
@@ -797,7 +797,7 @@ impl Pass<'_, '_> {
     }
 
     /// A line with a whole multi-sentence catalog entry inside it, such as a
-    /// billboard after its lead-in: the entry is translated in place and
+    /// notice after its lead-in: the entry is translated in place and
     /// the text around it piece by piece. Splitting into sentences first
     /// would break the entry into sentences the catalog does not have.
     fn embedded(&mut self, core: &str, depth: usize) -> Option<String> {
@@ -842,7 +842,7 @@ impl Pass<'_, '_> {
     /// one, unless the translation already did.
     /// A whole-piece match: exact, then a template, then the same with the
     /// first letter's case flipped, since a fragment that opens a sentence
-    /// ("Confirmed truck parking.") is the catalog's lowercase fragment.
+    /// ("Confirmed spare seat.") is the catalog's lowercase fragment.
     /// With the match's weight: a template's literal letters, or
     /// `usize::MAX` for an exact entry.
     fn lookup(&mut self, core: &str, depth: usize) -> Option<(usize, String)> {
@@ -948,9 +948,9 @@ impl Pass<'_, '_> {
             {
                 return false;
             }
-            // A name never holds a lead-in: "{carrier} is looking for ..."
-            // must not take "Career objective: Northstar Shipping Co" as
-            // the carrier and leave the label English; nor does a hole that
+            // A name never holds a lead-in: "{studio} is looking for ..."
+            // must not take "Mission brief: Aurora Studios" as
+            // the studio and leave the label English; nor does a hole that
             // opens a template: "{name} Company Yard" must not take
             // "company yard: Chicago" and say the label twice.
             if caps.iter().any(|(name, value)| {
