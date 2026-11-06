@@ -147,6 +147,9 @@ pub struct OnlineSettings {
     /// The name the server knows the player by.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// A guest: a player with no account, named by the server.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guest: bool,
 }
 
 impl OnlineSettings {

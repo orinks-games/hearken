@@ -32,6 +32,9 @@ pub struct OnlineConfig {
     pub url: String,
     /// The site's name as the player hears it: "orinks.net".
     pub site: String,
+    /// Whether players can play as guests, with no account: the server
+    /// names them from word lists (`activate/guest`).
+    pub guests: bool,
 }
 
 impl OnlineConfig {
@@ -39,7 +42,14 @@ impl OnlineConfig {
         OnlineConfig {
             url: url.into(),
             site: site.into(),
+            guests: false,
         }
+    }
+
+    /// Lets players play as guests, with no account.
+    pub fn with_guests(mut self) -> Self {
+        self.guests = true;
+        self
     }
 
     /// Whether the URL is one the game will send a token to.
@@ -83,6 +93,13 @@ pub trait Transport: Send + Sync + 'static {
     /// POSTs `body` to `url`, with the token as `Authorization: Bearer`.
     /// `Err` only when no answer came at all (no network, a timeout).
     fn post(&self, url: &str, token: Option<&str>, body: Body) -> Result<Reply, String>;
+
+    /// GETs `url`, with the token when there is one. A transport that
+    /// cannot answers `Err`, as if offline.
+    fn get(&self, url: &str, token: Option<&str>) -> Result<Reply, String> {
+        let _ = (url, token);
+        Err("this transport cannot read".into())
+    }
 }
 
 /// The longest answer read from a server.
@@ -126,17 +143,32 @@ impl Transport for HttpTransport {
             Err(ureq::Error::Status(_, response)) => response,
             Err(e) => return Err(e.kind().to_string()),
         };
-        let status = response.status();
-        let mut text = String::new();
-        use std::io::Read;
-        let _ = response
-            .into_reader()
-            .take(MAX_REPLY_BYTES)
-            .read_to_string(&mut text);
-        Ok(Reply {
-            status,
-            body: serde_json::from_str(&text).unwrap_or(Value::Null),
-        })
+        Ok(read_reply(response))
+    }
+
+    fn get(&self, url: &str, token: Option<&str>) -> Result<Reply, String> {
+        let mut request = self.agent.get(url).set("Accept", "application/json");
+        if let Some(token) = token {
+            request = request.set("Authorization", &format!("Bearer {token}"));
+        }
+        match request.call() {
+            Ok(response) | Err(ureq::Error::Status(_, response)) => Ok(read_reply(response)),
+            Err(e) => Err(e.kind().to_string()),
+        }
+    }
+}
+
+fn read_reply(response: ureq::Response) -> Reply {
+    let status = response.status();
+    let mut text = String::new();
+    use std::io::Read;
+    let _ = response
+        .into_reader()
+        .take(MAX_REPLY_BYTES)
+        .read_to_string(&mut text);
+    Reply {
+        status,
+        body: serde_json::from_str(&text).unwrap_or(Value::Null),
     }
 }
 
@@ -314,6 +346,10 @@ pub enum Connect {
     Connected {
         name: String,
     },
+    /// A guest's new name, from [`Online::new_guest_name`].
+    Renamed {
+        name: String,
+    },
     Failed(OnlineError),
 }
 
@@ -338,7 +374,8 @@ const MAX_CONNECT: Duration = Duration::from_secs(15 * 60);
 enum Msg {
     Done(Ticket, u64, Result<Value, OnlineError>),
     Code(u64, String, String),
-    Connected(u64, String, String),
+    Connected(u64, String, String, bool),
+    Renamed(u64, String),
     ConnectFailed(u64, OnlineError),
 }
 
@@ -348,6 +385,7 @@ pub struct Online {
     transport: Arc<dyn Transport>,
     token: Option<Secret>,
     name: Option<String>,
+    guest: bool,
     /// Counts tokens, so a late "signed out" for an old token cannot
     /// disconnect the account the player has connected since.
     token_gen: u64,
@@ -380,6 +418,7 @@ impl Online {
             transport: Arc::new(HttpTransport::default()),
             token: saved.token.clone().filter(|t| !t.0.is_empty()),
             name: saved.name.clone(),
+            guest: saved.guest,
             token_gen: 0,
             tx,
             rx,
@@ -418,6 +457,16 @@ impl Online {
         self.name.as_deref()
     }
 
+    /// Whether the server lets players play as guests.
+    pub fn offers_guests(&self) -> bool {
+        self.config.as_ref().is_some_and(|c| c.guests)
+    }
+
+    /// Whether the player is connected as a guest, with no account.
+    pub fn is_guest(&self) -> bool {
+        self.guest && self.token.is_some()
+    }
+
     /// Sends `run` as a run of `kind` in the background. The answer comes
     /// later, through [`Online::result`].
     pub fn submit(&mut self, kind: &str, run: &Run) -> Result<Ticket, OnlineError> {
@@ -452,6 +501,48 @@ impl Online {
         }
         let url = config.endpoint(&format!("start?kind={kind}"));
         Ok(self.send(url, token, Body::Json(json!({})), Answer::Whole))
+    }
+
+    /// Reads `path` from the server, such as `"safecracker-daily/top"`: a
+    /// handler's `read`, a board or a total. The answer, through
+    /// [`Online::result`], is the whole JSON body. The token goes along
+    /// when an account is connected, so a board can say where you are.
+    pub fn read(&mut self, path: &str) -> Result<Ticket, OnlineError> {
+        let config = self.config.clone().ok_or(OnlineError::NotOffered)?;
+        let mut parts = path.split('/');
+        if !parts.next().is_some_and(valid_kind)
+            || !parts.all(|p| {
+                !p.is_empty()
+                    && p.len() <= 64
+                    && p.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+        {
+            return Err(OnlineError::BadKind);
+        }
+        if self.in_flight.len() >= MAX_IN_FLIGHT {
+            return Err(OnlineError::Busy);
+        }
+        let url = config.endpoint(path);
+        let token = self.token.clone();
+        let ticket = Ticket(self.next);
+        self.next += 1;
+        self.in_flight.insert(ticket);
+        let transport = self.transport.clone();
+        let tx = self.tx.clone();
+        let generation = self.token_gen;
+        std::thread::spawn(move || {
+            let answer = match transport.get(&url, token.as_ref().map(|t| t.0.as_str())) {
+                Err(e) => {
+                    log::info!("online: no answer from the server: {e}");
+                    Err(OnlineError::Offline)
+                }
+                Ok(reply) if reply.status == 200 => Ok(reply.body),
+                Ok(reply) => Err(OnlineError::from_reply(&reply)),
+            };
+            let _ = tx.send(Msg::Done(ticket, generation, answer));
+        });
+        Ok(ticket)
     }
 
     fn send(&mut self, url: String, token: Secret, body: Body, answer: Answer) -> Ticket {
@@ -508,11 +599,87 @@ impl Online {
         self.connect = Connect::Asking;
         let transport = self.transport.clone();
         let tx = self.tx.clone();
+        // A guest's token goes with the request, so its scores follow it to
+        // the account.
+        let guest = self.is_guest().then(|| self.token.clone()).flatten();
         std::thread::spawn(move || {
-            let msg = match activate(&*transport, &config, &cancel, &tx, generation) {
-                Ok(Some((token, name))) => Msg::Connected(generation, token, name),
+            let msg = match activate(
+                &*transport,
+                &config,
+                guest.as_ref(),
+                &cancel,
+                &tx,
+                generation,
+            ) {
+                Ok(Some((token, name))) => Msg::Connected(generation, token, name, false),
                 Ok(None) => return,
                 Err(e) => Msg::ConnectFailed(generation, e),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    /// Starts playing as a guest: the server makes a player with a name
+    /// of its choosing. Watch [`Online::connect_state`].
+    pub fn play_as_guest(&mut self) {
+        let Some(config) = self.config.clone().filter(|c| c.guests) else {
+            self.connect = Connect::Failed(OnlineError::NotOffered);
+            return;
+        };
+        self.cancel_connect();
+        self.connect_gen += 1;
+        let generation = self.connect_gen;
+        self.connect = Connect::Asking;
+        let transport = self.transport.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let msg = match transport.post(
+                &config.endpoint("activate/guest"),
+                None,
+                Body::Json(json!({})),
+            ) {
+                Err(_) => Msg::ConnectFailed(generation, OnlineError::Offline),
+                Ok(reply) if reply.status == 200 => match read_token(&reply) {
+                    Some((token, name)) => Msg::Connected(generation, token, name, true),
+                    None => Msg::ConnectFailed(generation, OnlineError::Unavailable),
+                },
+                Ok(reply) => Msg::ConnectFailed(generation, OnlineError::from_reply(&reply)),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    /// Asks the server for another guest name. Watch
+    /// [`Online::connect_state`] for [`Connect::Renamed`].
+    pub fn new_guest_name(&mut self) {
+        let (Some(config), Some(token)) = (self.config.clone(), self.token.clone()) else {
+            self.connect = Connect::Failed(OnlineError::NotConnected);
+            return;
+        };
+        if !self.guest {
+            self.connect = Connect::Failed(OnlineError::NotConnected);
+            return;
+        }
+        self.cancel_connect();
+        self.connect_gen += 1;
+        let generation = self.connect_gen;
+        self.connect = Connect::Asking;
+        let transport = self.transport.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let msg = match transport.post(
+                &config.endpoint("activate/rename"),
+                Some(&token.0),
+                Body::Json(json!({})),
+            ) {
+                Err(_) => Msg::ConnectFailed(generation, OnlineError::Offline),
+                Ok(reply) if reply.status == 200 => match reply.body["name"].as_str() {
+                    Some(name) if !clean_text(name, 32).is_empty() => {
+                        Msg::Renamed(generation, clean_name(Some(name)))
+                    }
+                    _ => Msg::ConnectFailed(generation, OnlineError::Unavailable),
+                },
+                Ok(reply) => Msg::ConnectFailed(generation, OnlineError::from_reply(&reply)),
             };
             let _ = tx.send(msg);
         });
@@ -523,7 +690,10 @@ impl Online {
         if let Some(cancel) = self.cancel.take() {
             cancel.store(true, Ordering::Relaxed);
         }
-        if !matches!(self.connect, Connect::Connected { .. }) {
+        if !matches!(
+            self.connect,
+            Connect::Connected { .. } | Connect::Renamed { .. }
+        ) {
             self.connect = Connect::Idle;
         }
     }
@@ -544,6 +714,7 @@ impl Online {
         if self.token.is_some() || self.name.is_some() {
             self.token = None;
             self.name = None;
+            self.guest = false;
             self.token_gen += 1;
             self.changed = true;
         }
@@ -569,14 +740,24 @@ impl Online {
                         self.connect = Connect::Waiting { code, url };
                     }
                 }
-                Msg::Connected(generation, token, name) if generation == self.connect_gen => {
+                Msg::Connected(generation, token, name, guest)
+                    if generation == self.connect_gen =>
+                {
                     if !matches!(self.connect, Connect::Idle) {
                         self.token = Some(Secret(token));
                         self.name = Some(name.clone());
+                        self.guest = guest;
                         self.token_gen += 1;
                         self.changed = true;
                         self.cancel = None;
                         self.connect = Connect::Connected { name };
+                    }
+                }
+                Msg::Renamed(generation, name) if generation == self.connect_gen => {
+                    if !matches!(self.connect, Connect::Idle) && self.guest {
+                        self.name = Some(name.clone());
+                        self.changed = true;
+                        self.connect = Connect::Renamed { name };
                     }
                 }
                 Msg::ConnectFailed(generation, e)
@@ -596,6 +777,7 @@ impl Online {
         OnlineSettings {
             token: self.token.clone(),
             name: self.name.clone(),
+            guest: self.guest && self.token.is_some(),
         }
     }
 }
@@ -654,11 +836,20 @@ fn clean_name(name: Option<&str>) -> String {
     }
 }
 
+/// The token and name in a "ready" answer, when the token is sensible.
+fn read_token(reply: &Reply) -> Option<(String, String)> {
+    let token = reply.body["token"]
+        .as_str()
+        .filter(|t| (16..=512).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_graphic()))?;
+    Some((token.to_string(), clean_name(reply.body["name"].as_str())))
+}
+
 /// The connect flow: a code from `activate/start`, then `activate/poll`
 /// until the player has entered it. `Ok(None)` when cancelled.
 fn activate(
     transport: &dyn Transport,
     config: &OnlineConfig,
+    guest: Option<&Secret>,
     cancel: &AtomicBool,
     tx: &Sender<Msg>,
     generation: u64,
@@ -666,7 +857,7 @@ fn activate(
     let started = transport
         .post(
             &config.endpoint("activate/start"),
-            None,
+            guest.map(|t| t.0.as_str()),
             Body::Json(json!({})),
         )
         .map_err(|_| OnlineError::Offline)?;
@@ -723,13 +914,7 @@ fn activate(
         };
         match (reply.status, reply.body["status"].as_str()) {
             (200, Some("ready")) => {
-                let Some(token) = reply.body["token"].as_str().filter(|t| {
-                    (16..=512).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_graphic())
-                }) else {
-                    return Err(OnlineError::Unavailable);
-                };
-                let name = clean_name(reply.body["name"].as_str());
-                return Ok(Some((token.to_string(), name)));
+                return read_token(&reply).map(Some).ok_or(OnlineError::Unavailable);
             }
             (200, _) => {}
             (429, _) => interval = (interval * 2).min(Duration::from_secs(30)),
@@ -789,6 +974,10 @@ pub(crate) mod tests {
                 .pop_front()
                 .unwrap_or_else(|| Err("no more replies".into()))
         }
+
+        fn get(&self, url: &str, token: Option<&str>) -> Result<Reply, String> {
+            self.post(url, token, Body::Json(Value::Null))
+        }
     }
 
     pub fn reply(status: u16, body: Value) -> Result<Reply, String> {
@@ -806,6 +995,7 @@ pub(crate) mod tests {
         OnlineSettings {
             token: Some(Secret("t".repeat(32))),
             name: Some("Ada".into()),
+            guest: false,
         }
     }
 
@@ -829,6 +1019,24 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("no answer");
+    }
+
+    #[test]
+    fn a_read_gets_the_path_with_the_token() {
+        let script = Scripted::answering(vec![reply(200, json!({ "entries": [] }))]);
+        let mut online = Online::new(config(), &connected());
+        online.set_transport(script.clone());
+        let ticket = online.read("safecracker-daily/top").unwrap();
+        assert_eq!(wait(&mut online, ticket), Ok(json!({ "entries": [] })));
+        let sent = script.sent.lock().unwrap();
+        assert_eq!(
+            sent[0].0,
+            "https://example.test/api/games/g/safecracker-daily/top"
+        );
+        assert_eq!(sent[0].1.as_deref(), Some("t".repeat(32).as_str()));
+        drop(sent);
+        assert_eq!(online.read("Bad Kind/top"), Err(OnlineError::BadKind));
+        assert_eq!(online.read("ok/../x"), Err(OnlineError::BadKind));
     }
 
     #[test]

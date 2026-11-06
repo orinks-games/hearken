@@ -11,18 +11,56 @@ use crate::sound::UiSound;
 use crate::state::State;
 
 pub struct OnlineAccountScreen {
-    /// Whether the player arrived connected: then Enter disconnects.
+    /// Whether the player arrived connected to an account: then Enter
+    /// disconnects.
     connected: bool,
+    /// The choices on offer when guests are allowed, and the one heard.
+    choices: Vec<Choice>,
+    at: usize,
+    /// Whether a choice has been made and its answer is awaited.
+    waiting: bool,
     /// The connect state last spoken, so each change is spoken once.
     heard: Connect,
+}
+
+/// What a player can do here when the server allows guests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Choice {
+    Guest,
+    NewName,
+    Account,
+    Disconnect,
+}
+
+impl Choice {
+    fn label(self, site: &str) -> String {
+        match self {
+            Choice::Guest => "Play as a guest".into(),
+            Choice::NewName => "New guest name".into(),
+            Choice::Account => format!("Connect a {site} account"),
+            Choice::Disconnect => "Stop playing online on this computer".into(),
+        }
+    }
 }
 
 impl OnlineAccountScreen {
     pub fn new() -> Self {
         OnlineAccountScreen {
             connected: false,
+            choices: Vec::new(),
+            at: 0,
+            waiting: false,
             heard: Connect::Idle,
         }
+    }
+
+    fn choice_line(&self, site: &str) -> String {
+        let n = self.choices.len();
+        format!(
+            "{}, {} of {n}",
+            self.choices[self.at].label(site),
+            self.at + 1
+        )
     }
 }
 
@@ -86,7 +124,14 @@ impl<G: Game> State<G> for OnlineAccountScreen {
 
     fn enter(&mut self, ctx: &mut Ctx<G>) {
         let site = ctx.online.site().to_string();
-        if ctx.online.is_connected() {
+        if ctx.online.is_guest() {
+            self.choices = vec![Choice::NewName, Choice::Account, Choice::Disconnect];
+            let name = ctx.online.player_name().unwrap_or("a guest").to_string();
+            ctx.say(format!(
+                "Playing as guest {name}. {}",
+                self.choice_line(&site)
+            ));
+        } else if ctx.online.is_connected() {
             self.connected = true;
             let name = ctx
                 .online
@@ -96,8 +141,12 @@ impl<G: Game> State<G> for OnlineAccountScreen {
             ctx.say(format!(
                 "Connected to {site} as {name}. Enter disconnects this computer, Escape keeps it."
             ));
+        } else if ctx.online.offers_guests() {
+            self.choices = vec![Choice::Guest, Choice::Account];
+            ctx.say(format!("Not playing online. {}", self.choice_line(&site)));
         } else {
             ctx.online.connect();
+            self.waiting = true;
             self.heard = Connect::Asking;
             ctx.say(format!("Asking {site} for a code."));
         }
@@ -110,7 +159,7 @@ impl<G: Game> State<G> for OnlineAccountScreen {
     }
 
     fn update(&mut self, ctx: &mut Ctx<G>, _dt: f64) {
-        if self.connected {
+        if self.connected || !self.waiting {
             return;
         }
         let state = ctx.online.connect_state().clone();
@@ -121,11 +170,23 @@ impl<G: Game> State<G> for OnlineAccountScreen {
         let site = ctx.online.site().to_string();
         match state {
             Connect::Waiting { code, url } => ctx.say(code_line(&site, &code, &url)),
+            Connect::Connected { name } if ctx.online.is_guest() => {
+                ctx.play_ui(UiSound::Select);
+                ctx.pop_with(format!("Playing as guest {name}."));
+            }
             Connect::Connected { name } => {
                 ctx.play_ui(UiSound::Select);
                 ctx.pop_with(format!("Connected to {site} as {name}."));
             }
+            Connect::Renamed { name } => {
+                self.waiting = false;
+                ctx.play_ui(UiSound::Select);
+                ctx.say(format!("You are now {name}. Enter again for another."));
+            }
             Connect::Failed(e) => {
+                if !self.choices.is_empty() {
+                    self.waiting = false;
+                }
                 ctx.play_ui(UiSound::Error);
                 ctx.say(failed_line(&site, &e));
             }
@@ -143,6 +204,49 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 ctx.play_ui(UiSound::Back);
                 ctx.pop();
             }
+            Key::Up | Key::Down if !self.choices.is_empty() && !self.waiting => {
+                let n = self.choices.len();
+                self.at = if key == Key::Up {
+                    (self.at + n - 1) % n
+                } else {
+                    (self.at + 1) % n
+                };
+                ctx.play_ui(UiSound::Move);
+                ctx.say(self.choice_line(&site));
+            }
+            Key::Return if event.is_repeat() && !self.choices.is_empty() => {}
+            Key::Return if !self.choices.is_empty() && !self.waiting => {
+                match self.choices[self.at] {
+                    Choice::Guest => {
+                        ctx.online.play_as_guest();
+                        self.waiting = true;
+                        self.heard = Connect::Asking;
+                        ctx.say(format!("Asking {site} for a guest name."));
+                    }
+                    Choice::NewName => {
+                        ctx.online.new_guest_name();
+                        self.waiting = true;
+                        self.heard = Connect::Asking;
+                        ctx.say("Asking for a new name.");
+                    }
+                    Choice::Account => {
+                        // Codes are what the rest of this screen speaks.
+                        self.choices.clear();
+                        ctx.online.connect();
+                        self.waiting = true;
+                        self.heard = Connect::Asking;
+                        ctx.say(format!("Asking {site} for a code."));
+                    }
+                    Choice::Disconnect => {
+                        ctx.online.disconnect();
+                        ctx.play_ui(UiSound::Select);
+                        ctx.pop_with("Stopped playing online on this computer.");
+                    }
+                }
+            }
+            Key::Return if !self.choices.is_empty() => {
+                ctx.say(format!("Still asking {site}."));
+            }
             // A held Enter repeats; only a fresh press disconnects.
             Key::Return if self.connected && event.is_repeat() => {}
             Key::Return if self.connected => {
@@ -154,11 +258,12 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 Connect::Waiting { code, url } => ctx.say(code_line(&site, &code, &url)),
                 Connect::Failed(_) | Connect::Idle => {
                     ctx.online.connect();
+                    self.waiting = true;
                     self.heard = Connect::Asking;
                     ctx.say(format!("Asking {site} for a code."));
                 }
                 Connect::Asking => ctx.say(format!("Still asking {site} for a code.")),
-                Connect::Connected { .. } => {}
+                Connect::Connected { .. } | Connect::Renamed { .. } => {}
             },
             _ => {}
         }
@@ -166,6 +271,14 @@ impl<G: Game> State<G> for OnlineAccountScreen {
 
     fn lines(&self, ctx: &Ctx<G>) -> Vec<String> {
         let site = ctx.online.site();
+        if !self.choices.is_empty() && self.at < self.choices.len() {
+            let mut lines: Vec<String> = Vec::new();
+            if let Some(name) = ctx.online.player_name().filter(|_| ctx.online.is_guest()) {
+                lines.push(format!("Playing as guest {name}."));
+            }
+            lines.extend(self.choices.iter().map(|c| c.label(site)));
+            return lines;
+        }
         match ctx.online.connect_state() {
             _ if self.connected => vec![format!(
                 "Connected to {site} as {}.",
@@ -176,7 +289,9 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 vec![format!("Code: {code}"), format!("Enter it at {place}")]
             }
             Connect::Asking | Connect::Idle => vec![format!("Asking {site} for a code.")],
-            Connect::Connected { name } => vec![format!("Connected as {name}.")],
+            Connect::Connected { name } | Connect::Renamed { name } => {
+                vec![format!("Connected as {name}.")]
+            }
             Connect::Failed(e) => vec![failed_line(site, e)],
         }
     }
@@ -185,6 +300,12 @@ impl<G: Game> State<G> for OnlineAccountScreen {
         let site = ctx.online.site();
         if self.connected {
             format!("Enter disconnects this computer from {site}. Escape goes back and stays connected.")
+        } else if !self.choices.is_empty() {
+            format!(
+                "A guest plays with no account, under a name {site} picks. \
+                 Connect an account to keep your scores on any computer. \
+                 Up and Down choose, Enter picks, Escape goes back."
+            )
         } else {
             format!(
                 "Sign in on {site}, open its page for connecting a game, and enter the code. \

@@ -3,6 +3,7 @@
 // Convex, a key-value store or SQL must do the same way.
 
 import { toHex, sha256Hex } from "./rules.js";
+import { guestName } from "./names.js";
 
 function randomHex(bytes) {
   const out = new Uint8Array(bytes);
@@ -88,6 +89,13 @@ export function normalizeUserCode(text) {
  * signed in (`approve`), and the game's `pollActivation` then collects a
  * token. `autoApprove` approves every code as the named player at once, for
  * tests.
+ *
+ * Guests play with no sign-up: `createGuest` makes a player whose name the
+ * server picks (see `names.js`), and `renameGuest` picks another. A guest
+ * who later connects an account sends its guest token with
+ * `activate/start`; once the code is approved, `pollActivation` answers
+ * with `linked` (the guest's id), and the guest's tokens stop working, so
+ * the game's boards can move its scores to the account.
  */
 export function memoryAccounts({
   verifyUrl = "http://localhost:8787/activate",
@@ -111,7 +119,7 @@ export function memoryAccounts({
     async player(token) {
       return tokens.get(await sha256Hex(new TextEncoder().encode(token))) ?? null;
     },
-    async startActivation() {
+    async startActivation({ guest } = {}) {
       if (activations.size >= maxPending) {
         for (const [hash, row] of activations) {
           if (now() > row.expires || row.collected) {
@@ -126,7 +134,13 @@ export function memoryAccounts({
       const hash = await sha256Hex(new TextEncoder().encode(deviceCode));
       let userCode = mintUserCode();
       while (byCode.has(userCode)) userCode = mintUserCode();
-      activations.set(hash, { userCode, expires: now() + ttlMs, player: null, collected: false });
+      activations.set(hash, {
+        userCode,
+        expires: now() + ttlMs,
+        player: null,
+        collected: false,
+        guest: guest?.guest ? guest.id : null,
+      });
       byCode.set(userCode, hash);
       if (autoApprove) await accounts.approve(userCode, autoApprove);
       return {
@@ -145,7 +159,22 @@ export function memoryAccounts({
       // A token is handed out once; the row is spent.
       row.collected = true;
       byCode.delete(row.userCode);
+      if (row.guest && row.guest !== row.player.id) {
+        for (const [hash, player] of tokens) if (player.id === row.guest) tokens.delete(hash);
+        return { status: "ready", token: await issue(row.player), name: row.player.name, linked: row.guest };
+      }
       return { status: "ready", token: await issue(row.player), name: row.player.name };
+    },
+    /** A new guest, with a name the server picked. */
+    async createGuest() {
+      const player = { id: `g${nextId++}`, name: guestName(), guest: true };
+      return { token: await issue(player), name: player.name, player };
+    },
+    /** Another name for a guest; its tokens keep working. */
+    async renameGuest(player) {
+      if (!player?.guest) return null;
+      player.name = guestName();
+      return player.name;
     },
     /** The site's side: a signed-in player entered `userCode`. */
     async approve(userCode, name) {

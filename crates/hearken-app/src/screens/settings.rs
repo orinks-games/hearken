@@ -567,6 +567,9 @@ impl<G: Game> Menu for SettingsScreen<G> {
                             .player_name()
                             .filter(|_| ctx.online.is_connected())
                         {
+                            Some(name) if ctx.online.is_guest() => {
+                                format!("Online account: guest {name}")
+                            }
                             Some(name) => format!("Online account: {name}"),
                             None => "Online account: not connected".to_string(),
                         }
@@ -577,7 +580,12 @@ impl<G: Game> Menu for SettingsScreen<G> {
                 )
                 .help(Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
                     format!(
-                        "Connect an account on {} to send your runs there, or disconnect it.",
+                        "{} an account on {} to send your runs there, or disconnect it.",
+                        if ctx.online.offers_guests() {
+                            "Play as a guest or connect"
+                        } else {
+                            "Connect"
+                        },
                         ctx.online.site()
                     )
                 })),
