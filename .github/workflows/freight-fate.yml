@@ -95,12 +95,24 @@ jobs:
         run: |
           mv _hearken "$RUNNER_TEMP/hearken"
           root="$RUNNER_TEMP/hearken/crates"
-          if [ "$RUNNER_OS" = "Windows" ]; then root="$(cygpath -m "$root")"; fi
+          game="$GITHUB_WORKSPACE"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            root="$(cygpath -m "$root")"
+            game="$(cygpath -m "$game")"
+          fi
+          # Freight Fate patches hearken-seal to its own copy in vendor/.
+          # This Hearken's crates take it by path, so they must take that
+          # same copy, or Cargo finds two hearken-seal crates.
+          if [ -f vendor/hearken-seal/Cargo.toml ]; then
+            sed -i.bak "s#^hearken-seal = { path = \"crates/hearken-seal\" }#hearken-seal = { path = \"$game/vendor/hearken-seal\" }#" \
+              "$RUNNER_TEMP/hearken/Cargo.toml"
+            grep -n '^hearken-seal' "$RUNNER_TEMP/hearken/Cargo.toml"
+          fi
           home="${CARGO_HOME:-$HOME/.cargo}"
           mkdir -p "$home"
           {
             echo '[patch."https://github.com/orinks-games/hearken"]'
-            for c in hearken hearken-app hearken-speech hearken-audio hearken-radio hearken-synth; do
+            for c in hearken hearken-app hearken-speech hearken-audio hearken-radio hearken-synth hearken-update; do
               echo "$c = { path = \"$root/$c\" }"
             done
           } >> "$home/config.toml"
