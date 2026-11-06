@@ -152,6 +152,7 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     #[cfg(feature = "update")]
     ctx.notices.extend(recovered);
     ctx.apply_speech_settings();
+    ctx.apply_language();
 
     // An agent session plays in a sandbox and never shows on the player's
     // Discord.

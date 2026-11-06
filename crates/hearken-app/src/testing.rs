@@ -42,6 +42,7 @@ impl<G: Game> Headless<G> {
             Box::new(backend),
             crate::sound::clip_source::<G>(MemoryClips::default()),
         ));
+        ctx.apply_language();
         Headless {
             app: App::new(ctx, Box::new(first)),
             speech,

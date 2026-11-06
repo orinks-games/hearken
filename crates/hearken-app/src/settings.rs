@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use crate::bindings::SavedBindings;
 use crate::paths::Paths;
 
+fn default_language() -> String {
+    hearken_l10n::AUTO.to_string()
+}
+
 /// What the player hears when their settings file could not be read.
 pub const UNREADABLE_NOTICE: &str =
     "Your settings file could not be read, so the game is using its default settings.";
@@ -22,6 +26,10 @@ pub const UNREADABLE_NOTICE: &str =
     deserialize = "GS: DeserializeOwned + Default"
 ))]
 pub struct Settings<GS> {
+    /// Spoken language: `"auto"` follows the system locale, or a catalog
+    /// code such as `"es"`. Missing entries stay English.
+    #[serde(default = "default_language")]
+    pub language: String,
     #[serde(default)]
     pub speech: SpeechSettings,
     #[serde(default)]

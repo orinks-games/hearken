@@ -156,7 +156,7 @@ impl<G: Game> Ctx<G> {
     /// that cuts off an important line mid-sentence says that line again
     /// right after it.
     pub fn say_event_with(&mut self, text: impl Into<String>, opts: SayEvent<G::Category>) {
-        let text = text.into();
+        let text = self.tr(&text.into());
         if text.trim().is_empty() {
             return;
         }

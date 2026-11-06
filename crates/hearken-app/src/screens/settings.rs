@@ -22,6 +22,25 @@ pub fn rate_label(rate: f64) -> String {
     format!("Speech rate: {} percent", (rate * 100.0).round() as i64)
 }
 
+fn step_language<G: Game>(ctx: &mut Ctx<G>, delta: i32) {
+    let options = crate::language::offered_settings::<G>(&ctx.paths.data_dir);
+    if options.is_empty() {
+        return;
+    }
+    let current = &ctx.settings.language;
+    let at = options.iter().position(|c| c == current).unwrap_or(0);
+    let next = (at as i32 + delta).rem_euclid(options.len() as i32) as usize;
+    let code = options[next].clone();
+    ctx.set_language(&code);
+}
+
+fn language_value<G: Game>(ctx: &Ctx<G>) -> String {
+    crate::language::language_label(
+        &ctx.settings.language,
+        hearken_l10n::system_locale().as_deref(),
+    )
+}
+
 fn toggle_positions<G: Game>(ctx: &mut Ctx<G>) {
     let menus = &mut ctx.settings.menus;
     menus.announce_position = !menus.announce_position;
@@ -225,6 +244,20 @@ impl<G: Game> Menu for SettingsScreen<G> {
 
     fn build_items(&mut self, ctx: &mut Ctx<G>) -> Vec<MenuItem<Self, G>> {
         let mut rows = Vec::new();
+
+        rows.push(
+            SettingsRow::new(
+                "language",
+                MenuItem::inert(Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                    format!("Language: {}", language_value(ctx))
+                }))
+                .help(
+                    "Automatic follows your system language. Left and Right choose a language.                      Lines with no translation stay in English.",
+                )
+                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_language(ctx, delta)),
+            )
+            .value_first(language_value),
+        );
 
         if ctx.speech.supports_rate() {
             rows.push(SettingsRow::new(

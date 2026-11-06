@@ -2,6 +2,8 @@
 
 use hearken_audio::{Audio, Bus, Sound};
 use hearken_speech::SpeechSink;
+use hearken_l10n::Translator;
+use std::sync::Arc;
 
 use crate::bindings::KeyBindings;
 use crate::controller::{ControllerManager, InputDevice};
@@ -24,6 +26,8 @@ pub const TRANSCRIPT_CAP: usize = 2000;
 
 pub struct Ctx<G: Game> {
     pub speech: Box<dyn SpeechSink>,
+    /// Translates finished English lines before they are spoken.
+    pub translator: Arc<Translator>,
     pub settings: Settings<G::Settings>,
     pub paths: Paths,
     /// The game's data folder, read and written through the seal: the
@@ -109,6 +113,7 @@ impl<G: Game> Ctx<G> {
             #[cfg(feature = "update")]
             updates: crate::updates::Updates::new(G::updates()),
             speech,
+            translator: Arc::new(Translator::english()),
             discord: crate::discord::Discord::dormant(),
             settings,
             vault,
@@ -251,7 +256,7 @@ impl<G: Game> Ctx<G> {
     /// speech rate is heard at that rate; on the main channel when no voice
     /// can be adjusted that way. `setting` is a key such as `"speech_rate"`.
     pub fn say_preview(&mut self, setting: &str, text: impl Into<String>) {
-        let text = text.into();
+        let text = self.tr(&text.into());
         if text.trim().is_empty() {
             return;
         }
@@ -272,6 +277,10 @@ impl<G: Game> Ctx<G> {
     }
 
     fn speak(&mut self, text: String, interrupt: bool) {
+        if text.trim().is_empty() {
+            return;
+        }
+        let text = self.tr(&text);
         if text.trim().is_empty() {
             return;
         }

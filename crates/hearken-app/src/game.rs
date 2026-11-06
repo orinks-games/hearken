@@ -127,6 +127,13 @@ pub trait Game: Sized + 'static {
         None
     }
 
+    /// Built-in translation catalogs compiled into the game: `(code, po text)`.
+    /// Empty by default. Drop-in files under `lang/` still override these.
+    /// See `docs/l10n.md`.
+    fn translation_catalogs() -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+
     /// The Settings screen's rows, built-in ones first: a chance to hide,
     /// reorder or add to them. The default keeps every built-in row as is.
     fn settings_rows(_ctx: &Ctx<Self>, rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {

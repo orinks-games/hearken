@@ -14,6 +14,7 @@ pub mod discord;
 pub mod game;
 pub mod held_keys;
 pub mod input;
+pub mod language;
 pub mod logging;
 pub mod menu;
 #[cfg(feature = "online")]
@@ -52,6 +53,7 @@ pub use hearken_audio::{
     LiveSound, LoopRegion, LooseClips, MadeClips, MemoryClips, Mix, Recorder, RecordingBackend,
     SilentBackend, Sound, Source, SpatialConfig, Vec3,
 };
+pub use hearken_l10n as l10n;
 pub use hearken_seal as seal;
 pub use hearken_seal::{Opened, Tamper, Vault};
 pub use hearken_speech::{
