@@ -225,3 +225,44 @@ fn a_failed_open_speaks_the_no_sound_notice_exactly_once() {
     h.frame(0.01);
     assert_eq!(h.spoken(), [hearken_audio::NO_SOUND_NOTICE]);
 }
+
+#[test]
+fn a_game_with_an_acoustic_scene_is_heard_through_it() {
+    use hearken_app::audio::acoustics::{Builtin, SceneBuilder, Shape};
+    let mut h = start();
+    h.app.ctx.audio.set_listener(Vec3::new(0.0, 0.0, 1.5), 0.0);
+    // A concrete wall far wider than any way round it.
+    let mut b = SceneBuilder::new();
+    b.add(
+        Shape::wall_between(-5000.0, 3.0, 5000.0, 3.0, -100.0, 500.0),
+        Builtin::Concrete.id(),
+    )
+    .unwrap();
+    h.app.ctx.game.scene = Some(std::sync::Arc::new(b.build()));
+    // Not asked while the scene answers.
+    h.app.ctx.game.occluded = true;
+    h.frame(0.016);
+    assert!(h.app.ctx.audio.acoustics().is_some());
+    let audio = &mut h.app.ctx.audio;
+    audio.play_at("sfx/near", Vec3::new(2.0, 0.0, 1.5), Bus::EFFECTS);
+    audio.play_at("sfx/beyond", Vec3::new(0.0, 6.0, 1.5), Bus::EFFECTS);
+    h.frame(0.016);
+    let near = h
+        .sounds
+        .last_mix(h.sounds.channel_of("sfx/near").unwrap())
+        .unwrap();
+    let beyond = h
+        .sounds
+        .last_mix(h.sounds.channel_of("sfx/beyond").unwrap())
+        .unwrap();
+    // The recording backend runs no insert, so it gets the plain mix: 2 m
+    // away is half the level at the 1 m reference, panned right; through
+    // concrete is far quieter and muffled.
+    assert!((near.gain / 0.8 - 0.5).abs() < 0.02, "{near:?}");
+    assert!(near.pan > 0.99 && near.lowpass_hz.is_none(), "{near:?}");
+    assert!(beyond.gain < near.gain * 0.001, "{beyond:?}");
+    assert!(
+        beyond.lowpass_hz.is_some_and(|hz| hz < 8000.0),
+        "{beyond:?}"
+    );
+}

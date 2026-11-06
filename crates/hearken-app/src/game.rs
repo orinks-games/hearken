@@ -1,9 +1,11 @@
 //! What the engine needs to know about one game.
 
+use hearken_audio::acoustics::Scene;
 use hearken_audio::{Backend, ClipSource, Vec3};
 use hearken_speech::Verbosity;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::sync::Arc;
 
 use crate::bindings::Action;
 use crate::ctx::Ctx;
@@ -91,6 +93,16 @@ pub trait Game: Sized + 'static {
     /// muffle it. Asked every frame for every positioned sound.
     fn occluded(_data: &Self::Data, _listener: Vec3, _pos: Vec3) -> bool {
         false
+    }
+
+    /// The game's acoustic scene (walls, materials, weather), for the
+    /// acoustic path: when this gives a scene, positioned sounds are
+    /// rendered through it each frame (`Audio::update_acoustic`) and
+    /// [`Game::occluded`] is not asked. `None`, the default, keeps the plain
+    /// spatial model and `occluded`. Return the same `Arc` while the scene
+    /// is unchanged; see `docs/acoustics.md`.
+    fn acoustic_scene(_data: &Self::Data) -> Option<Arc<Scene>> {
+        None
     }
 
     /// The game's server for verified runs (`ctx.online`), or `None` for

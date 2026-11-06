@@ -12,6 +12,7 @@ pub struct TestData {
     pub log: Vec<String>,
     pub queued_events: Vec<u32>,
     pub occluded: bool,
+    pub scene: Option<std::sync::Arc<hearken_app::audio::acoustics::Scene>>,
 }
 
 impl Game for TestGame {
@@ -30,6 +31,12 @@ impl Game for TestGame {
 
     fn observe(ctx: &mut Ctx<Self>, event: &u32) {
         ctx.game.log.push(format!("observe {event}"));
+    }
+
+    fn acoustic_scene(
+        data: &TestData,
+    ) -> Option<std::sync::Arc<hearken_app::audio::acoustics::Scene>> {
+        data.scene.clone()
     }
 
     fn occluded(data: &TestData, _listener: Vec3, _pos: Vec3) -> bool {
