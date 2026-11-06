@@ -338,7 +338,8 @@ handlers.
 
 `GET <kind>/<path...>` reaches the handler's `read`, when it has one: a
 leaderboard's top ten, a ghost to download, an event's total. The token is
-optional there.
+optional there. `ctx.online.read("<kind>/<path>")` sends it, with the token
+when an account is connected, and its answer is the whole JSON body.
 
 ## Writing a server
 

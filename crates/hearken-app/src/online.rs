@@ -93,6 +93,13 @@ pub trait Transport: Send + Sync + 'static {
     /// POSTs `body` to `url`, with the token as `Authorization: Bearer`.
     /// `Err` only when no answer came at all (no network, a timeout).
     fn post(&self, url: &str, token: Option<&str>, body: Body) -> Result<Reply, String>;
+
+    /// GETs `url`, with the token when there is one. A transport that
+    /// cannot answers `Err`, as if offline.
+    fn get(&self, url: &str, token: Option<&str>) -> Result<Reply, String> {
+        let _ = (url, token);
+        Err("this transport cannot read".into())
+    }
 }
 
 /// The longest answer read from a server.
@@ -136,17 +143,32 @@ impl Transport for HttpTransport {
             Err(ureq::Error::Status(_, response)) => response,
             Err(e) => return Err(e.kind().to_string()),
         };
-        let status = response.status();
-        let mut text = String::new();
-        use std::io::Read;
-        let _ = response
-            .into_reader()
-            .take(MAX_REPLY_BYTES)
-            .read_to_string(&mut text);
-        Ok(Reply {
-            status,
-            body: serde_json::from_str(&text).unwrap_or(Value::Null),
-        })
+        Ok(read_reply(response))
+    }
+
+    fn get(&self, url: &str, token: Option<&str>) -> Result<Reply, String> {
+        let mut request = self.agent.get(url).set("Accept", "application/json");
+        if let Some(token) = token {
+            request = request.set("Authorization", &format!("Bearer {token}"));
+        }
+        match request.call() {
+            Ok(response) | Err(ureq::Error::Status(_, response)) => Ok(read_reply(response)),
+            Err(e) => Err(e.kind().to_string()),
+        }
+    }
+}
+
+fn read_reply(response: ureq::Response) -> Reply {
+    let status = response.status();
+    let mut text = String::new();
+    use std::io::Read;
+    let _ = response
+        .into_reader()
+        .take(MAX_REPLY_BYTES)
+        .read_to_string(&mut text);
+    Reply {
+        status,
+        body: serde_json::from_str(&text).unwrap_or(Value::Null),
     }
 }
 
@@ -479,6 +501,48 @@ impl Online {
         }
         let url = config.endpoint(&format!("start?kind={kind}"));
         Ok(self.send(url, token, Body::Json(json!({})), Answer::Whole))
+    }
+
+    /// Reads `path` from the server, such as `"safecracker-daily/top"`: a
+    /// handler's `read`, a board or a total. The answer, through
+    /// [`Online::result`], is the whole JSON body. The token goes along
+    /// when an account is connected, so a board can say where you are.
+    pub fn read(&mut self, path: &str) -> Result<Ticket, OnlineError> {
+        let config = self.config.clone().ok_or(OnlineError::NotOffered)?;
+        let mut parts = path.split('/');
+        if !parts.next().is_some_and(valid_kind)
+            || !parts.all(|p| {
+                !p.is_empty()
+                    && p.len() <= 64
+                    && p.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+        {
+            return Err(OnlineError::BadKind);
+        }
+        if self.in_flight.len() >= MAX_IN_FLIGHT {
+            return Err(OnlineError::Busy);
+        }
+        let url = config.endpoint(path);
+        let token = self.token.clone();
+        let ticket = Ticket(self.next);
+        self.next += 1;
+        self.in_flight.insert(ticket);
+        let transport = self.transport.clone();
+        let tx = self.tx.clone();
+        let generation = self.token_gen;
+        std::thread::spawn(move || {
+            let answer = match transport.get(&url, token.as_ref().map(|t| t.0.as_str())) {
+                Err(e) => {
+                    log::info!("online: no answer from the server: {e}");
+                    Err(OnlineError::Offline)
+                }
+                Ok(reply) if reply.status == 200 => Ok(reply.body),
+                Ok(reply) => Err(OnlineError::from_reply(&reply)),
+            };
+            let _ = tx.send(Msg::Done(ticket, generation, answer));
+        });
+        Ok(ticket)
     }
 
     fn send(&mut self, url: String, token: Secret, body: Body, answer: Answer) -> Ticket {
@@ -910,6 +974,10 @@ pub(crate) mod tests {
                 .pop_front()
                 .unwrap_or_else(|| Err("no more replies".into()))
         }
+
+        fn get(&self, url: &str, token: Option<&str>) -> Result<Reply, String> {
+            self.post(url, token, Body::Json(Value::Null))
+        }
     }
 
     pub fn reply(status: u16, body: Value) -> Result<Reply, String> {
@@ -951,6 +1019,24 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("no answer");
+    }
+
+    #[test]
+    fn a_read_gets_the_path_with_the_token() {
+        let script = Scripted::answering(vec![reply(200, json!({ "entries": [] }))]);
+        let mut online = Online::new(config(), &connected());
+        online.set_transport(script.clone());
+        let ticket = online.read("safecracker-daily/top").unwrap();
+        assert_eq!(wait(&mut online, ticket), Ok(json!({ "entries": [] })));
+        let sent = script.sent.lock().unwrap();
+        assert_eq!(
+            sent[0].0,
+            "https://example.test/api/games/g/safecracker-daily/top"
+        );
+        assert_eq!(sent[0].1.as_deref(), Some("t".repeat(32).as_str()));
+        drop(sent);
+        assert_eq!(online.read("Bad Kind/top"), Err(OnlineError::BadKind));
+        assert_eq!(online.read("ok/../x"), Err(OnlineError::BadKind));
     }
 
     #[test]
