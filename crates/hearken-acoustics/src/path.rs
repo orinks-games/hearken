@@ -10,8 +10,10 @@
 
 use crate::bands::{Bands, BAND_COUNT, BAND_EXACT_HZ};
 use crate::geometry::corner_points;
-use crate::options::{clamp_f, spreading, QueryOptions, MAX_PATH_NODES, MAX_VISIBILITY_TESTS};
-use crate::scene::Scene;
+use crate::options::{
+    clamp_f, spreading, QueryOptions, MAX_PATH_NODES, MAX_SHAPE_TESTS, MAX_VISIBILITY_TESTS,
+};
+use crate::scene::{Probe, Scene};
 use crate::vec::Vec3;
 
 /// How far outside a corner a sound path bends, metres.
@@ -59,6 +61,9 @@ pub struct NavOptions {
     pub max_visibility_tests: usize,
     /// How far beyond the box round start and goal to look, metres.
     pub margin: f64,
+    /// Most shape tests, as in [`QueryOptions::max_shape_tests`]. A retry
+    /// without clearance gets the same again.
+    pub max_shape_tests: usize,
 }
 
 impl Default for NavOptions {
@@ -68,6 +73,7 @@ impl Default for NavOptions {
             max_nodes: 512,
             max_visibility_tests: 50_000,
             margin: 30.0,
+            max_shape_tests: 4_000_000,
         }
     }
 }
@@ -80,6 +86,7 @@ impl NavOptions {
             max_nodes: self.max_nodes.min(MAX_PATH_NODES),
             max_visibility_tests: self.max_visibility_tests.min(MAX_VISIBILITY_TESTS),
             margin: clamp_f(self.margin, 0.0, 1000.0, d.margin),
+            max_shape_tests: self.max_shape_tests.min(MAX_SHAPE_TESTS),
         }
     }
 }
@@ -111,12 +118,12 @@ struct Search {
 struct Graph<'a> {
     scene: &'a Scene,
     clearance: f64,
-    buf: Vec<u32>,
+    probe: Probe,
 }
 
 impl Graph<'_> {
     fn clear(&mut self, a: Vec3, b: Vec3) -> bool {
-        if self.scene.blocked(a, b, &[], false, &mut self.buf) {
+        if self.scene.blocked(a, b, &[], false, &mut self.probe) {
             return false;
         }
         if self.clearance > 0.0 {
@@ -125,7 +132,10 @@ impl Graph<'_> {
             if let Some(d) = d.normalized() {
                 let side = Vec3::new(-d.y, d.x, 0.0) * self.clearance;
                 for s in [side, -side] {
-                    if self.scene.blocked(a + s, b + s, &[], false, &mut self.buf) {
+                    if self
+                        .scene
+                        .blocked(a + s, b + s, &[], false, &mut self.probe)
+                    {
                         return false;
                     }
                 }
@@ -143,6 +153,7 @@ struct Budget {
     max_nodes: usize,
     max_tests: usize,
     margin: f64,
+    max_shape_tests: usize,
 }
 
 fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
@@ -152,11 +163,12 @@ fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
         max_nodes,
         max_tests,
         margin,
+        max_shape_tests,
     } = budget;
     let mut g = Graph {
         scene,
         clearance,
-        buf: Vec::new(),
+        probe: Probe::new(max_shape_tests),
     };
     let mut out = Search {
         corners: Vec::new(),
@@ -165,6 +177,10 @@ fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
     };
     if g.clear(a, b) {
         out.found = true;
+        return out;
+    }
+    if g.probe.spent() {
+        out.truncated = true;
         return out;
     }
     // Corner nodes at the height midway between the ends.
@@ -176,7 +192,8 @@ fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
     scene.candidates_within(lo, hi, &mut ids);
     let mut nodes = vec![a, b];
     let mut pts = Vec::new();
-    let mut near = Vec::new();
+    // Corner checks get a quarter of the shape tests.
+    let corner_budget = g.probe.limit() / 4;
     'objects: for &i in &ids {
         let shape = &scene.objects()[i as usize].shape;
         let Some((smin, smax)) = shape.bounds() else {
@@ -192,13 +209,12 @@ fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
         pts.clear();
         corner_points(shape, offset, z, &mut pts);
         for &p in &pts {
-            // Leave out points inside some other solid.
-            let e = Vec3::new(1e-6, 1e-6, 0.0);
-            scene.candidates_within(p - e, p + e, &mut near);
-            if near
-                .iter()
-                .any(|&j| scene.objects()[j as usize].shape.contains(p))
-            {
+            // Points inside other solids are skipped, but still cost.
+            if g.probe.used() >= corner_budget {
+                out.truncated = true;
+                break 'objects;
+            }
+            if scene.inside_solid(p, &mut g.probe) {
                 continue;
             }
             if nodes.len() >= max_nodes + 2 {
@@ -255,6 +271,9 @@ fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
                     cost[j] = c;
                     parent[j] = cur;
                     open[j] = true;
+                } else if g.probe.spent() {
+                    out.truncated = true;
+                    break 'search;
                 }
             }
         }
@@ -352,6 +371,7 @@ pub fn diffracted_path(
             max_nodes: opts.max_path_nodes,
             max_tests: opts.max_visibility_tests,
             margin: opts.path_margin,
+            max_shape_tests: opts.max_shape_tests,
         },
     );
     let mut result = DiffractionSearch {
@@ -414,6 +434,7 @@ pub fn navigate(scene: &Scene, from: Vec3, to: Vec3, opts: &NavOptions) -> NavPa
         max_nodes: opts.max_nodes,
         max_tests: opts.max_visibility_tests,
         margin: opts.margin,
+        max_shape_tests: opts.max_shape_tests,
     };
     let mut s = search(scene, from, to, budget);
     let mut truncated = s.truncated;

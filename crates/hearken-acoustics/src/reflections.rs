@@ -8,7 +8,7 @@
 use crate::bands::Bands;
 use crate::geometry::{faces, quad_contains, Face};
 use crate::options::{spreading, QueryOptions};
-use crate::scene::{MaterialId, ObjectId, Scene};
+use crate::scene::{MaterialId, ObjectId, Probe, Scene};
 use crate::vec::Vec3;
 
 /// One early reflection.
@@ -111,7 +111,7 @@ pub fn early_reflections(
         out.truncated = true;
     }
 
-    let mut buf = Vec::new();
+    let mut probe = Probe::new(opts.max_shape_tests);
     let mut found: Vec<(Reflection, usize, usize)> = Vec::new();
     for (ai, a) in cands.iter().enumerate() {
         let sa = side(&a.face, source);
@@ -122,8 +122,8 @@ pub fn early_reflections(
         // First order.
         if let Some(p) = a.face.plane_point(img, listener) {
             if a.face.contains(p)
-                && !scene.blocked(source, p, &[a.object], true, &mut buf)
-                && !scene.blocked(p, listener, &[a.object], true, &mut buf)
+                && !scene.blocked(source, p, &[a.object], true, &mut probe)
+                && !scene.blocked(p, listener, &[a.object], true, &mut probe)
             {
                 let len = img.distance(listener);
                 let gain = path_gain(scene, len, &opts).times(scene.specular_gain(a.material));
@@ -155,9 +155,9 @@ pub fn early_reflections(
             if !a.face.contains(p1) || side(&b.face, p1) != sb {
                 continue;
             }
-            if scene.blocked(source, p1, &[a.object], true, &mut buf)
-                || scene.blocked(p1, p2, &[a.object, b.object], true, &mut buf)
-                || scene.blocked(p2, listener, &[b.object], true, &mut buf)
+            if scene.blocked(source, p1, &[a.object], true, &mut probe)
+                || scene.blocked(p1, p2, &[a.object, b.object], true, &mut probe)
+                || scene.blocked(p2, listener, &[b.object], true, &mut probe)
             {
                 continue;
             }
@@ -172,6 +172,7 @@ pub fn early_reflections(
             ));
         }
     }
+    out.truncated |= probe.spent();
     // Strongest first; ties by order then faces, so the order is fixed.
     found.sort_by(|x, y| {
         y.0.gain

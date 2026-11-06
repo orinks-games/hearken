@@ -136,7 +136,12 @@ Scene files may come from players or mods, so loading never trusts them.
 A NaN, an infinity, a negative size, an unknown material or a shape past
 the `Limits` is dropped. The `Report` that comes back lists what was
 dropped and why, up to 64 entries plus a count. The file size and the
-object and material counts are capped.
+object and material counts are capped. Unknown fields are skipped.
+
+The searches are capped too. `QueryOptions::max_shape_tests` (default one
+million) bounds the shapes the path search, and again the reflection
+search, may test, so many shapes crowded into one spot cannot stall a
+frame. A search that hits a cap sets `truncated`.
 
 ## What each sound gets
 
@@ -299,9 +304,10 @@ online runs replay.
   - Scattering values are estimates, not measured data.
   - Metal and rock have no table entry. They use glazed tile and brick
     values as stand-ins.
-  - The grass, soil, gravel, snow and foliage values are attributed to
-    Harris, *Handbook of Noise Control*, and have not yet been checked
-    against the book.
+  - The grass, soil, gravel, snow and foliage values come from the same
+    Everest and Pohlmann table as the indoor ones. The foliage row is
+    balsam firs, each with 20 sq ft (1.9 m2) of ground and 11 ft (3.4 m)
+    high.
 - HRTF: MIT KEMAR, Gardner and Martin (1994), as above.
 
 ## Limits

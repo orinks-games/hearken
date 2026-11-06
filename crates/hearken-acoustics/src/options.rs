@@ -10,6 +10,8 @@ pub const MAX_REFLECTION_FACES: usize = 256;
 pub const MAX_PATH_NODES: usize = 2048;
 /// Most line-of-sight tests a path search makes.
 pub const MAX_VISIBILITY_TESTS: usize = 200_000;
+/// Most shape tests one search makes (see [`QueryOptions::max_shape_tests`]).
+pub const MAX_SHAPE_TESTS: usize = 50_000_000;
 /// Most shapes one straight path is counted as crossing; past this the path
 /// counts as fully blocked.
 pub const MAX_CROSSINGS: u32 = 64;
@@ -39,6 +41,11 @@ pub struct QueryOptions {
     /// How far beyond the box around source and listener the path search
     /// looks for corners, metres.
     pub path_margin: f64,
+    /// Most shape tests the path search makes, and again the reflection
+    /// search. Each line or point test counts the shapes near it, so this
+    /// bounds the work when many shapes crowd one spot. Corner checks in
+    /// the path search use at most a quarter of it.
+    pub max_shape_tests: usize,
 }
 
 impl Default for QueryOptions {
@@ -53,6 +60,7 @@ impl Default for QueryOptions {
             max_path_nodes: 256,
             max_visibility_tests: 20_000,
             path_margin: 20.0,
+            max_shape_tests: 1_000_000,
         }
     }
 }
@@ -79,6 +87,7 @@ impl QueryOptions {
             max_path_nodes: self.max_path_nodes.min(MAX_PATH_NODES),
             max_visibility_tests: self.max_visibility_tests.min(MAX_VISIBILITY_TESTS),
             path_margin: clamp_f(self.path_margin, 0.0, 1000.0, d.path_margin),
+            max_shape_tests: self.max_shape_tests.min(MAX_SHAPE_TESTS),
         }
     }
 }
@@ -104,6 +113,7 @@ mod tests {
             max_path_nodes: usize::MAX,
             max_visibility_tests: usize::MAX,
             path_margin: f64::INFINITY,
+            max_shape_tests: usize::MAX,
         }
         .clamped();
         assert_eq!(o.reference_distance, 1.0);
@@ -112,6 +122,7 @@ mod tests {
         assert_eq!(o.reflection_radius, 0.0);
         assert_eq!(o.max_path_nodes, MAX_PATH_NODES);
         assert_eq!(o.path_margin, 20.0);
+        assert_eq!(o.max_shape_tests, MAX_SHAPE_TESTS);
     }
 
     #[test]

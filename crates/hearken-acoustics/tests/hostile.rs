@@ -161,6 +161,7 @@ fn worst_case_options_stay_bounded() {
         max_visibility_tests: usize::MAX,
         path_margin: f64::MAX,
         reference_distance: 1.0,
+        max_shape_tests: usize::MAX,
     };
     let start = Instant::now();
     let p = propagate(
@@ -189,6 +190,7 @@ fn worst_case_options_stay_bounded() {
             max_nodes: usize::MAX,
             max_visibility_tests: usize::MAX,
             margin: f64::MAX,
+            max_shape_tests: usize::MAX,
         },
     );
     assert!(n.length.is_finite());

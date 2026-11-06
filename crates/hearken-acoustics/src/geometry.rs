@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// A piece of the world. All lengths in metres.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", try_from = "ShapeFields")]
 pub enum Shape {
     /// A thin flat panel: the parallelogram with corners `origin`,
     /// `origin + u`, `origin + v` and `origin + u + v`. Sound reflects off
@@ -24,6 +24,63 @@ pub enum Shape {
     Ground { z: f64 },
     /// An endless ceiling at height `z`; sound below it reflects off it.
     Ceiling { z: f64 },
+}
+
+/// Every field a shape may have, as read from a file. A tagged enum would
+/// make serde buffer each object's fields, unknown ones included, before
+/// it picks the variant; reading into fixed fields skips unknown ones as it
+/// goes.
+#[derive(Deserialize)]
+pub(crate) struct ShapeFields {
+    kind: ShapeKind,
+    origin: Option<Vec3>,
+    u: Option<Vec3>,
+    v: Option<Vec3>,
+    min: Option<Vec3>,
+    max: Option<Vec3>,
+    base: Option<Vec3>,
+    radius: Option<f64>,
+    height: Option<f64>,
+    z: Option<f64>,
+    /// Only used by `ObjectDesc`.
+    pub(crate) material: Option<String>,
+}
+
+impl ShapeFields {
+    pub(crate) fn shape(&self) -> Result<Shape, String> {
+        fn need<T: Copy>(v: Option<T>, name: &str, kind: &str) -> Result<T, String> {
+            v.ok_or_else(|| format!("missing field `{name}` for a {kind}"))
+        }
+        Ok(match self.kind {
+            ShapeKind::Wall => Shape::Wall {
+                origin: need(self.origin, "origin", "wall")?,
+                u: need(self.u, "u", "wall")?,
+                v: need(self.v, "v", "wall")?,
+            },
+            ShapeKind::Box => Shape::Box {
+                min: need(self.min, "min", "box")?,
+                max: need(self.max, "max", "box")?,
+            },
+            ShapeKind::Cylinder => Shape::Cylinder {
+                base: need(self.base, "base", "cylinder")?,
+                radius: need(self.radius, "radius", "cylinder")?,
+                height: need(self.height, "height", "cylinder")?,
+            },
+            ShapeKind::Ground => Shape::Ground {
+                z: need(self.z, "z", "ground")?,
+            },
+            ShapeKind::Ceiling => Shape::Ceiling {
+                z: need(self.z, "z", "ceiling")?,
+            },
+        })
+    }
+}
+
+impl TryFrom<ShapeFields> for Shape {
+    type Error = String;
+    fn try_from(f: ShapeFields) -> Result<Shape, String> {
+        f.shape()
+    }
 }
 
 /// Which kind of shape, without its numbers.

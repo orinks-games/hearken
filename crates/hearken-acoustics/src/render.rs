@@ -7,7 +7,7 @@ use crate::options::QueryOptions;
 use crate::path::{diffracted_path, DiffractedPath};
 use crate::reflections::{early_reflections, Reflection};
 use crate::reverb::ReverbEstimate;
-use crate::scene::Scene;
+use crate::scene::{Probe, Scene};
 use crate::vec::Vec3;
 
 /// Most reflection taps in a [`SoundRender`].
@@ -34,8 +34,7 @@ pub struct Propagation {
 /// Works out how a sound at `source` reaches `listener`.
 pub fn propagate(scene: &Scene, source: Vec3, listener: Vec3, opts: &QueryOptions) -> Propagation {
     let opts = opts.clamped();
-    let mut buf = Vec::new();
-    let direct = direct_with(scene, source, listener, &opts, &mut buf);
+    let direct = direct_with(scene, source, listener, &opts, &mut Probe::unlimited());
     let mut truncated = direct.truncated;
     let diffracted = if direct.is_blocked() {
         let d = diffracted_path(scene, source, listener, &opts);

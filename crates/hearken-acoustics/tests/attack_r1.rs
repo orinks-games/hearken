@@ -1,6 +1,6 @@
-//! Attack round 1: hostile scenes and inputs. Run with
+//! Hostile scenes and inputs found in attack round 1, kept as regression
+//! tests. Run with
 //! `cargo test --release -p hearken-acoustics --test attack_r1 -- --nocapture`.
-//! Tests marked FAILS fail on the build they were written against.
 
 use hearken_acoustics::*;
 use std::time::{Duration, Instant};
@@ -17,12 +17,10 @@ fn time<T>(label: &str, f: impl FnOnce() -> T) -> (T, Duration) {
 const FRAME_BUDGET: Duration = Duration::from_millis(50);
 
 /// Nested boxes round the source: every corner of an inner box lies inside
-/// an outer one, so it is skipped without counting against the node cap.
-/// Each skip costs a grid query over the "always" list, so the node phase
-/// is quadratic in the object count with default options.
-/// FAILS: one diffracted_path call takes seconds.
+/// an outer one. Skipped corners must still count against the work cap, or
+/// the corner phase is quadratic in the object count.
 #[test]
-fn nested_boxes_make_path_search_quadratic() {
+fn nested_boxes_keep_path_search_bounded() {
     let mut b = SceneBuilder::new();
     let n = 20_000;
     for i in 0..n {
@@ -43,10 +41,9 @@ fn nested_boxes_make_path_search_quadratic() {
 }
 
 /// Many identical small poles in one spot: every visibility test walks all
-/// of them. Bounded by the caps but far over a frame with default options.
-/// FAILS.
+/// of them, so the shape-test cap must stop the search within a frame.
 #[test]
-fn stacked_poles_make_each_visibility_test_cost_n() {
+fn stacked_poles_stay_within_a_frame() {
     let mut b = SceneBuilder::new();
     // A wall between the ends so the path search runs.
     b.add(
@@ -72,13 +69,11 @@ fn stacked_poles_make_each_visibility_test_cost_n() {
     assert!(e < FRAME_BUDGET, "{e:?}");
 }
 
-/// Long walls far away each span more than 64 grid cells, so they all go
-/// in the list every query checks, and every line-of-sight test copies and
-/// sorts that list. A pole field between the ends makes the path search
-/// run its default 20 000 tests. Default options.
-/// FAILS: one propagate call takes seconds.
+/// Long walls far away span many grid cells. They must sit in coarse cells,
+/// not in a list every query checks. A pole field between the ends makes
+/// the path search run its default 20 000 tests.
 #[test]
-fn large_shapes_defeat_the_grid() {
+fn far_large_shapes_stay_out_of_queries() {
     let mut b = SceneBuilder::new();
     for i in 0..19_000 {
         let y = 5000.0 + i as f64 * 0.1;
@@ -314,16 +309,13 @@ fn peak_kb() -> u64 {
         .unwrap_or(0)
 }
 
-/// An object's shape is `#[serde(flatten)]`, so serde buffers every field
-/// of the object, unknown ones included, as generic values before picking
-/// the shape. Junk in an object costs about 16 bytes of buffer for each
-/// 2 bytes of text. Under the 16 MB cap that is a few hundred MB.
-/// Run alone for a clean number:
-/// `cargo test --release -p hearken-acoustics --test attack_r1 flatten -- --nocapture --test-threads=1`
-/// FAILS when run alone: peak memory goes past 20 times the file size
+/// Junk in an unknown field of an object must be skipped as it is read,
+/// not buffered (a buffered value costs about 16 bytes per 2 bytes of
+/// text). Run alone for a clean number:
+/// `cargo test --release -p hearken-acoustics --test attack_r1 unknown_fields -- --nocapture --test-threads=1`
 /// (other tests in the same process raise the starting peak and hide it).
 #[test]
-fn flatten_buffers_unknown_fields() {
+fn unknown_fields_are_not_buffered() {
     let mut text =
         String::from(r#"{"objects":[{"kind":"ground","z":0,"material":"grass","junk":["#);
     while text.len() < 15 * 1024 * 1024 {
@@ -340,5 +332,6 @@ fn flatten_buffers_unknown_fields() {
         after / 1024,
         text.len() / (1024 * 1024)
     );
-    assert!(after.saturating_sub(before) < 20 * 16 * 1024, "{after} kB");
+    assert!(r.is_ok());
+    assert!(after.saturating_sub(before) < 4 * 16 * 1024, "{after} kB");
 }

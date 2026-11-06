@@ -2,7 +2,7 @@
 
 use crate::atmosphere::Atmosphere;
 use crate::bands::Bands;
-use crate::geometry::{Shape, ShapeError};
+use crate::geometry::{Shape, ShapeError, ShapeFields};
 use crate::index::Grid;
 use crate::material::{Builtin, Material, MaterialDesc, MaterialError};
 use crate::vec::Vec3;
@@ -145,12 +145,23 @@ pub struct SceneDesc {
     pub objects: Vec<ObjectDesc>,
 }
 
-/// A shape as written in a file, its material named.
+/// A shape as written in a file, its material named. Unknown fields are
+/// skipped.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ShapeFields")]
 pub struct ObjectDesc {
     #[serde(flatten)]
     pub shape: Shape,
     pub material: String,
+}
+
+impl TryFrom<ShapeFields> for ObjectDesc {
+    type Error = String;
+    fn try_from(f: ShapeFields) -> Result<ObjectDesc, String> {
+        let shape = f.shape()?;
+        let material = f.material.ok_or("missing field `material`")?;
+        Ok(ObjectDesc { shape, material })
+    }
 }
 
 /// Why [`Scene::from_json`] could not read a scene at all.
@@ -261,6 +272,57 @@ impl SceneBuilder {
         };
         s.set_atmosphere(self.atmosphere);
         s
+    }
+}
+
+/// Scratch space and an allowance of shape tests for one query. Each line
+/// or point test charges the number of shapes it looks at; once the
+/// allowance is spent, tests give up and the query reports it was cut short.
+#[derive(Clone, Debug)]
+pub(crate) struct Probe {
+    pub buf: Vec<u32>,
+    limit: usize,
+    used: usize,
+    spent: bool,
+}
+
+impl Probe {
+    pub fn new(limit: usize) -> Probe {
+        Probe {
+            buf: Vec::new(),
+            limit,
+            used: 0,
+            spent: false,
+        }
+    }
+
+    pub fn unlimited() -> Probe {
+        Probe::new(usize::MAX)
+    }
+
+    /// Takes `n` from the allowance; false if it does not cover them.
+    pub fn charge(&mut self, n: usize) -> bool {
+        // Every test costs at least one, so empty tests are bounded too.
+        let n = n.max(1);
+        if self.spent || n > self.limit - self.used {
+            self.spent = true;
+            return false;
+        }
+        self.used += n;
+        true
+    }
+
+    pub fn used(&self) -> usize {
+        self.used
+    }
+
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Whether some test was refused.
+    pub fn spent(&self) -> bool {
+        self.spent
     }
 }
 
@@ -396,42 +458,48 @@ impl Scene {
 
     /// Calls `f` with each shape the segment from `p` to `q` passes through
     /// or into, in id order, skipping contact within a hair of either end.
-    /// `f` returns false to stop early.
+    /// `f` returns false to stop early. Returns false, calling `f` for
+    /// nothing, when the probe's allowance runs out.
     pub(crate) fn for_each_crossing(
         &self,
         p: Vec3,
         q: Vec3,
-        buf: &mut Vec<u32>,
+        probe: &mut Probe,
         mut f: impl FnMut(u32, &Object) -> bool,
-    ) {
+    ) -> bool {
         let len = (q - p).length();
         if len <= 0.0 || !len.is_finite() {
-            return;
+            return true;
         }
         let eps = (1e-4 / len).min(0.25);
-        self.candidates_along(p, q, buf);
-        for &i in buf.iter() {
+        self.candidates_along(p, q, &mut probe.buf);
+        if !probe.charge(probe.buf.len()) {
+            return false;
+        }
+        for &i in probe.buf.iter() {
             let o = &self.objects[i as usize];
             if let Some((t0, t1)) = o.shape.segment_overlap(p, q) {
                 if t1 > eps && t0 < 1.0 - eps && !f(i, o) {
-                    return;
+                    break;
                 }
             }
         }
+        true
     }
 
     /// Whether anything at all stands between `p` and `q`, apart from
-    /// shape `skip` (and the endless planes when `planes` is false).
+    /// shape `skip` (and the endless planes when `planes` is false). Counts
+    /// as blocked when the probe's allowance runs out.
     pub(crate) fn blocked(
         &self,
         p: Vec3,
         q: Vec3,
         skip: &[u32],
         planes: bool,
-        buf: &mut Vec<u32>,
+        probe: &mut Probe,
     ) -> bool {
         let mut hit = false;
-        self.for_each_crossing(p, q, buf, |i, o| {
+        let done = self.for_each_crossing(p, q, probe, |i, o| {
             if skip.contains(&i) || (!planes && o.shape.is_unbounded()) {
                 true
             } else {
@@ -439,13 +507,26 @@ impl Scene {
                 false
             }
         });
-        hit
+        hit || !done
+    }
+
+    /// Whether `p` is inside a box or cylinder, charging the probe. Counts
+    /// as inside when the allowance runs out.
+    pub(crate) fn inside_solid(&self, p: Vec3, probe: &mut Probe) -> bool {
+        let e = Vec3::new(1e-6, 1e-6, 0.0);
+        self.candidates_within(p - e, p + e, &mut probe.buf);
+        if !probe.charge(probe.buf.len()) {
+            return true;
+        }
+        probe
+            .buf
+            .iter()
+            .any(|&j| self.objects[j as usize].shape.contains(p))
     }
 
     /// Whether nothing stands between `a` and `b`.
     pub fn line_of_sight(&self, a: Vec3, b: Vec3) -> bool {
-        let mut buf = Vec::new();
-        !self.blocked(a, b, &[], true, &mut buf)
+        !self.blocked(a, b, &[], true, &mut Probe::unlimited())
     }
 
     /// The nearest surface a ray from `p` along unit `dir` meets within
@@ -565,6 +646,30 @@ mod tests {
         assert_eq!(r.dropped[2].error, SceneError::UnknownMaterial);
         assert_eq!(s.atmosphere().temperature_c, 5.0);
         assert_eq!(s.atmosphere().pressure_kpa, 101.325);
+    }
+
+    #[test]
+    fn object_fields_round_trip_and_unknown_ones_are_skipped() {
+        let o = ObjectDesc {
+            shape: Shape::pole(1.0, 2.0, 0.0, 0.3, 3.0),
+            material: "wood".into(),
+        };
+        let text = serde_json::to_string(&o).unwrap();
+        assert!(text.contains("\"kind\":\"cylinder\""), "{text}");
+        assert_eq!(serde_json::from_str::<ObjectDesc>(&text).unwrap(), o);
+        let t = r#"{"junk":[[1],{"a":2}],"kind":"ground","z":1,"material":"grass"}"#;
+        let o: ObjectDesc = serde_json::from_str(t).unwrap();
+        assert_eq!(o.shape, Shape::Ground { z: 1.0 });
+        for bad in [
+            r#"{"kind":"ground","material":"grass"}"#,
+            r#"{"kind":"ground","z":1}"#,
+            r#"{"kind":"blob","z":1,"material":"grass"}"#,
+            r#"{"kind":"ground","z":1,"z":2,"material":"grass"}"#,
+        ] {
+            assert!(serde_json::from_str::<ObjectDesc>(bad).is_err(), "{bad}");
+        }
+        let s: Shape = serde_json::from_str(r#"{"kind":"ceiling","z":3}"#).unwrap();
+        assert_eq!(s, Shape::Ceiling { z: 3.0 });
     }
 
     #[test]

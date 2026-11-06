@@ -245,8 +245,6 @@ impl Builtin {
     //     table of sound absorption coefficients of general building
     //     materials, as reproduced by R. Nave, HyperPhysics, "Sound
     //     absorption coefficients" (Georgia State University).
-    // [H] C. M. Harris (ed.), "Handbook of Noise Control", 2nd ed. (1979),
-    //     table of absorption coefficients of outdoor surfaces.
     // [I] ISO 9613-2:1996, Annex A, Table A.1 (attenuation through foliage).
     fn values(self) -> ([f64; 6], Bands, Bands) {
         match self {
@@ -330,25 +328,25 @@ impl Builtin {
             // [E] acoustic ceiling tile (suspended mineral fibre).
             // TL: ~4 kg/m2.
             Builtin::AcousticTile => ([0.70, 0.66, 0.72, 0.92, 0.88, 0.75], SOFT, mass_law_tl(4.0)),
-            // [H] grass. TL: earth, effectively opaque.
+            // [E] grass. TL: earth, effectively opaque.
             Builtin::Grass => (
                 [0.11, 0.26, 0.60, 0.69, 0.92, 0.99],
                 VEGETATION,
                 Bands::splat(MAX_TRANSMISSION_LOSS_DB),
             ),
-            // [H] soil, rough. TL: earth.
+            // [E] soil, rough. TL: earth.
             Builtin::Soil => (
                 [0.15, 0.25, 0.40, 0.55, 0.60, 0.60],
                 ROUGH,
                 Bands::splat(MAX_TRANSMISSION_LOSS_DB),
             ),
-            // [H] gravel, loose and moist. TL: earth.
+            // [E] gravel, loose and moist. TL: earth.
             Builtin::Gravel => (
                 [0.25, 0.60, 0.65, 0.70, 0.75, 0.80],
                 ROUGH,
                 Bands::splat(MAX_TRANSMISSION_LOSS_DB),
             ),
-            // [H] snow, freshly fallen, 100 mm. TL: the ground beneath.
+            // [E] snow, freshly fallen, 4 in. (100 mm). TL: the ground beneath.
             Builtin::Snow => (
                 [0.45, 0.75, 0.90, 0.95, 0.95, 0.95],
                 ROUGH,
@@ -360,7 +358,8 @@ impl Builtin {
                 SMOOTH,
                 Bands::splat(MAX_TRANSMISSION_LOSS_DB),
             ),
-            // [H] trees, balsam firs, 20 m2 ground area per tree, 3 m high.
+            // [E] trees, balsam firs, 20 sq ft (1.9 m2) ground area per tree,
+            // 11 ft (3.4 m) high.
             // TL per crossing: [I] for 10 to 20 m of dense foliage
             // (0, 1, 1, 1, 1, 2, 3 dB at 125 Hz to 8 kHz).
             Builtin::Foliage => (

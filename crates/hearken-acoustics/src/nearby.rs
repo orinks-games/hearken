@@ -3,7 +3,7 @@
 
 use crate::geometry::ShapeKind;
 use crate::options::clamp_f;
-use crate::scene::{MaterialId, ObjectId, Scene};
+use crate::scene::{MaterialId, ObjectId, Probe, Scene};
 use crate::vec::Vec3;
 
 /// Most surfaces one query returns.
@@ -117,9 +117,9 @@ pub fn nearby_surfaces(scene: &Scene, listener: Vec3, opts: &NearbyOptions) -> N
         found.truncate(opts.max);
         out.truncated = true;
     }
-    let mut buf = Vec::new();
+    let mut probe = Probe::unlimited();
     for s in found.iter_mut() {
-        s.visible = !scene.blocked(listener, s.point, &[s.object.0], true, &mut buf);
+        s.visible = !scene.blocked(listener, s.point, &[s.object.0], true, &mut probe);
     }
     out.surfaces = found;
     out

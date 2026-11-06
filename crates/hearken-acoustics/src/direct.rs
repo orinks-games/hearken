@@ -2,7 +2,7 @@
 
 use crate::bands::Bands;
 use crate::options::{spreading, QueryOptions, MAX_CROSSINGS};
-use crate::scene::Scene;
+use crate::scene::{Probe, Scene};
 use crate::vec::Vec3;
 
 /// The straight line from source to listener and what it loses on the way.
@@ -53,8 +53,7 @@ impl DirectPath {
 /// The straight path from `source` to `listener`.
 pub fn direct_path(scene: &Scene, source: Vec3, listener: Vec3, opts: &QueryOptions) -> DirectPath {
     let opts = opts.clamped();
-    let mut buf = Vec::new();
-    direct_with(scene, source, listener, &opts, &mut buf)
+    direct_with(scene, source, listener, &opts, &mut Probe::unlimited())
 }
 
 pub(crate) fn direct_with(
@@ -62,7 +61,7 @@ pub(crate) fn direct_with(
     source: Vec3,
     listener: Vec3,
     opts: &QueryOptions,
-    buf: &mut Vec<u32>,
+    probe: &mut Probe,
 ) -> DirectPath {
     if !(source.is_usable() && listener.is_usable()) {
         return DirectPath::silent();
@@ -74,7 +73,7 @@ pub(crate) fn direct_with(
     let mut transmission = Bands::ONE;
     let mut obstacles = 0u32;
     let mut truncated = false;
-    scene.for_each_crossing(source, listener, buf, |_, o| {
+    scene.for_each_crossing(source, listener, probe, |_, o| {
         if obstacles >= MAX_CROSSINGS {
             truncated = true;
             return false;
