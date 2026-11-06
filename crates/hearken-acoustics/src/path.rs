@@ -196,11 +196,15 @@ fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
     let lo = a.min(b) - m;
     let hi = a.max(b) + m;
     let mut ids = Vec::new();
-    scene.candidates_within(lo, hi, &mut ids);
+    if !scene.gather_within(lo, hi, &mut g.probe, &mut ids) {
+        out.used = g.probe.used();
+        out.truncated = true;
+        return out;
+    }
     let mut nodes = vec![a, b];
     let mut pts = Vec::new();
-    // Corner checks get a quarter of the shape tests.
-    let corner_budget = g.probe.limit() / 4;
+    // Corner checks get a quarter of the shape tests left.
+    let corner_budget = g.probe.used() + g.probe.left() / 4;
     'objects: for &i in &ids {
         let shape = &scene.objects()[i as usize].shape;
         let Some((smin, smax)) = shape.bounds() else {

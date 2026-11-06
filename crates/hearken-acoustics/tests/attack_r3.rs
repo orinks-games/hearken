@@ -1,4 +1,5 @@
-//! Attack round 3 repros. Run in release:
+//! Attack round 3 regression tests: query and load costs stay bounded.
+//! Run in release:
 //! `cargo test --release -p hearken-acoustics --test attack_r3 -- --nocapture --test-threads=1`.
 
 use hearken_acoustics::*;
@@ -32,11 +33,10 @@ fn lane_with_wall(wall_len: f64) -> Scene {
     b.build()
 }
 
-/// Currently fails: with default options one propagate spends its whole
-/// 1M shape-test allowance (~65 ms in release) and still finds nothing.
-/// hearken-audio works out at least one such sound every frame.
+/// With default options one propagate whose path search finds nothing
+/// stays within a frame: the default allowance is sized for that.
 #[test]
-fn default_query_allowance_is_several_frames() {
+fn default_query_allowance_fits_a_frame() {
     let s = lane_with_wall(3.0);
     let a = Vec3::new(-5.0, 0.0, 1.5);
     let l = Vec3::new(1005.0, 0.0, 1.5);
@@ -82,12 +82,11 @@ fn many_names_json(materials: usize) -> String {
     s
 }
 
-/// Currently fails: each object looks its material up by a linear scan of
-/// every material name. With the highest limits a game may set (4096
-/// materials, 100 000 objects) a 16 MB file takes seconds to load, and the
-/// objects past the object cap are still looked up before being dropped.
+/// Objects find their material through a name map, and objects past the
+/// cap are dropped without a lookup, so a 16 MB file with the highest
+/// limits a game may set (4096 materials, 100 000 objects) loads quickly.
 #[test]
-fn material_lookup_is_linear_per_object() {
+fn material_lookup_stays_fast_with_many_names() {
     let limits = Limits {
         max_objects: usize::MAX,
         max_materials: usize::MAX,
@@ -127,13 +126,11 @@ fn boxes_below() -> Scene {
     b.build()
 }
 
-/// Currently fails: the reflection search gathers every face within the
-/// reflection radius (6 per box) and sorts them all before keeping the
-/// nearest 48, and none of it is charged as shape tests. Each propagate
-/// costs several ms while reporting a few hundred tests, so
-/// hearken-audio's frame allowance lets many such sounds run in a frame.
+/// The reflection search charges a test for each shape and face it
+/// gathers within the reflection radius, so its time stays in line with
+/// the tests it reports and hearken-audio's frame allowance holds.
 #[test]
-fn reflection_face_gathering_is_not_charged() {
+fn reflection_face_gathering_is_charged() {
     let s = boxes_below();
     let a = Vec3::new(-3.0, 0.0, 1.5);
     let l = Vec3::new(3.0, 0.0, 1.5);

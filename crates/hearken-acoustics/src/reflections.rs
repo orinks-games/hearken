@@ -10,6 +10,8 @@ use crate::geometry::{faces, quad_contains, Face};
 use crate::options::{spreading, QueryOptions};
 use crate::scene::{MaterialId, ObjectId, Probe, Scene};
 use crate::vec::Vec3;
+use core::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 /// One early reflection.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,6 +45,36 @@ pub struct Reflections {
     /// Shape tests the search made.
     pub shape_tests: usize,
 }
+
+/// A face in the nearest-faces heap, ordered by distance then by when it
+/// was found: a total order, so the faces kept are the same everywhere.
+struct Near {
+    seq: u32,
+    cand: Candidate,
+}
+
+impl Ord for Near {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.cand
+            .distance
+            .total_cmp(&other.cand.distance)
+            .then(self.seq.cmp(&other.seq))
+    }
+}
+
+impl PartialOrd for Near {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Near {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Near {}
 
 #[derive(Clone, Copy)]
 struct Candidate {
@@ -82,38 +114,62 @@ pub fn early_reflections(
     }
     let r = opts.reflection_radius;
     let rv = Vec3::new(r, r, r);
+    let mut probe = Probe::new(opts.max_shape_tests);
     let mut ids = Vec::new();
-    scene.candidates_within(listener - rv, listener + rv, &mut ids);
-    let mut cands = Vec::new();
+    if !scene.gather_within(listener - rv, listener + rv, &mut probe, &mut ids) {
+        out.truncated = true;
+        out.shape_tests = probe.used();
+        return out;
+    }
+    // The nearest faces, kept in a heap of at most `max_reflection_faces`
+    // so a crowd of shapes costs no memory. Ties go to the earlier face
+    // (id order, then face order).
+    let keep = opts.max_reflection_faces;
+    let mut heap: BinaryHeap<Near> = BinaryHeap::with_capacity(keep.min(64));
+    let mut seq = 0u32;
     let mut fs = Vec::new();
     for &i in &ids {
         let o = &scene.objects()[i as usize];
         fs.clear();
         faces(&o.shape, &mut fs);
+        // Each face looked at costs a test.
+        if !probe.charge(fs.len()) {
+            out.truncated = true;
+            break;
+        }
         for f in &fs {
             let d = if f.unbounded {
                 f.side(listener).abs()
             } else {
                 face_distance(f, listener)
             };
-            if d <= r {
-                cands.push(Candidate {
+            if d > r {
+                continue;
+            }
+            let near = Near {
+                seq,
+                cand: Candidate {
                     face: *f,
                     object: i,
                     material: o.material,
                     distance: d,
-                });
+                },
+            };
+            seq = seq.saturating_add(1);
+            if heap.len() < keep {
+                heap.push(near);
+            } else {
+                out.truncated = true;
+                if let Some(mut top) = heap.peek_mut() {
+                    if near.cmp(&top) == Ordering::Less {
+                        *top = near;
+                    }
+                }
             }
         }
     }
-    // Nearest faces first; the sort is stable so ties keep id order.
-    cands.sort_by(|a, b| a.distance.total_cmp(&b.distance));
-    if cands.len() > opts.max_reflection_faces {
-        cands.truncate(opts.max_reflection_faces);
-        out.truncated = true;
-    }
+    let cands: Vec<Candidate> = heap.into_sorted_vec().into_iter().map(|n| n.cand).collect();
 
-    let mut probe = Probe::new(opts.max_shape_tests);
     let mut found: Vec<(Reflection, usize, usize)> = Vec::new();
     for (ai, a) in cands.iter().enumerate() {
         let sa = side(&a.face, source);

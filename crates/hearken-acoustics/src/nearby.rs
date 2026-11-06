@@ -8,8 +8,9 @@ use crate::vec::Vec3;
 
 /// Most surfaces one query returns.
 pub const MAX_NEARBY: usize = 256;
-/// Most shape tests the visibility checks of one query make. Once spent,
-/// the surfaces left count as hidden and the result is marked truncated.
+/// Most shape tests one query makes, finding the shapes in range and
+/// checking which are visible. Once spent, the surfaces left count as
+/// hidden and the result is marked truncated.
 pub const MAX_NEARBY_SHAPE_TESTS: usize = 200_000;
 
 /// Settings for [`nearby_surfaces`]. Clamped before use.
@@ -83,8 +84,13 @@ pub fn nearby_surfaces(scene: &Scene, listener: Vec3, opts: &NearbyOptions) -> N
     }
     let r = opts.radius;
     let rv = Vec3::new(r, r, r);
+    // The gather is charged too: one test per shape in range.
+    let mut probe = Probe::new(MAX_NEARBY_SHAPE_TESTS);
     let mut ids = Vec::new();
-    scene.candidates_within(listener - rv, listener + rv, &mut ids);
+    if !scene.gather_within(listener - rv, listener + rv, &mut probe, &mut ids) {
+        out.truncated = true;
+        return out;
+    }
     let mut found = Vec::new();
     for &i in &ids {
         let o = &scene.objects()[i as usize];
@@ -129,7 +135,6 @@ pub fn nearby_surfaces(scene: &Scene, listener: Vec3, opts: &NearbyOptions) -> N
         out.truncated = true;
     }
     found.sort_unstable_by(order);
-    let mut probe = Probe::new(MAX_NEARBY_SHAPE_TESTS);
     for s in found.iter_mut() {
         s.visible = !scene.blocked(listener, s.point, &[s.object.0], true, &mut probe);
     }

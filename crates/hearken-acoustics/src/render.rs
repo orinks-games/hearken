@@ -37,26 +37,41 @@ pub struct Propagation {
 /// Works out how a sound at `source` reaches `listener`.
 pub fn propagate(scene: &Scene, source: Vec3, listener: Vec3, opts: &QueryOptions) -> Propagation {
     let opts = opts.clamped();
+    let total = opts.max_shape_tests;
+    // One allowance for the whole query: the direct line first, then the
+    // path search with at most three quarters of what is left, then the
+    // reflections with the rest.
     let mut probe = Probe::unlimited();
     let direct = direct_with(scene, source, listener, &opts, &mut probe);
     let mut shape_tests = probe.used();
     let mut truncated = direct.truncated;
+    let with = |n: usize| QueryOptions {
+        max_shape_tests: n,
+        ..opts
+    };
     let diffracted = if direct.is_blocked() {
-        let d = diffracted_path(scene, source, listener, &opts);
+        let left = total.saturating_sub(shape_tests);
+        let d = diffracted_path(scene, source, listener, &with(left - left / 4));
         truncated |= d.truncated;
         shape_tests = shape_tests.saturating_add(d.shape_tests);
         d.path
     } else {
         None
     };
-    let refl = early_reflections(scene, source, listener, &opts);
+    let refl = early_reflections(
+        scene,
+        source,
+        listener,
+        &with(total.saturating_sub(shape_tests)),
+    );
     truncated |= refl.truncated;
+    let shape_tests = shape_tests.saturating_add(refl.shape_tests);
     Propagation {
         direct,
         diffracted,
         reflections: refl.list,
         truncated,
-        shape_tests: shape_tests.saturating_add(refl.shape_tests),
+        shape_tests,
         source,
         listener,
     }

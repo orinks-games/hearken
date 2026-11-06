@@ -7,6 +7,7 @@ use crate::index::Tree;
 use crate::material::{Builtin, Material, MaterialDesc, MaterialError};
 use crate::vec::Vec3;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A material in a scene. The built-in materials come first, in
 /// [`Builtin::ALL`] order, so [`Builtin::id`] works in every scene.
@@ -186,7 +187,17 @@ pub struct SceneBuilder {
     limits: Limits,
     atmosphere: Atmosphere,
     materials: Vec<Material>,
+    /// Material ids by name, so a lookup does not scan every name.
+    names: BTreeMap<String, u16>,
     objects: Vec<Object>,
+}
+
+fn name_map(materials: &[Material]) -> BTreeMap<String, u16> {
+    let mut names = BTreeMap::new();
+    for (i, m) in materials.iter().enumerate() {
+        names.entry(m.name.clone()).or_insert(i as u16);
+    }
+    names
 }
 
 impl Default for SceneBuilder {
@@ -202,10 +213,12 @@ impl SceneBuilder {
     }
 
     pub fn with_limits(limits: Limits) -> SceneBuilder {
+        let materials: Vec<Material> = Builtin::ALL.iter().map(|b| b.material()).collect();
         SceneBuilder {
             limits: limits.clamped(),
             atmosphere: Atmosphere::default(),
-            materials: Builtin::ALL.iter().map(|b| b.material()).collect(),
+            names: name_map(&materials),
+            materials,
             objects: Vec::new(),
         }
     }
@@ -226,16 +239,20 @@ impl SceneBuilder {
         if self.materials.len() >= self.limits.max_materials {
             return Err(SceneError::TooManyMaterials);
         }
+        let id = self.materials.len() as u16;
+        self.names.insert(m.name.clone(), id);
         self.materials.push(m);
-        Ok(MaterialId((self.materials.len() - 1) as u16))
+        Ok(MaterialId(id))
     }
 
     pub fn material_id(&self, name: &str) -> Option<MaterialId> {
         let name = crate::material::material_name(name);
-        self.materials
-            .iter()
-            .position(|m| m.name == name)
-            .map(|i| MaterialId(i as u16))
+        self.names.get(name).map(|&i| MaterialId(i))
+    }
+
+    /// Whether the object cap is reached.
+    fn full(&self) -> bool {
+        self.objects.len() >= self.limits.max_objects
     }
 
     /// Adds a shape.
@@ -261,6 +278,7 @@ impl SceneBuilder {
             speed: 0.0,
             air_db: Bands::ZERO,
             materials: self.materials.clone(),
+            names: self.names.clone(),
             objects: self.objects.clone(),
             index: Tree::build(&bounds),
             transmission: self
@@ -330,10 +348,6 @@ impl Probe {
         self.spent = true;
     }
 
-    pub fn limit(&self) -> usize {
-        self.limit
-    }
-
     /// Whether some test was refused.
     pub fn spent(&self) -> bool {
         self.spent
@@ -348,6 +362,7 @@ pub struct Scene {
     speed: f64,
     air_db: Bands,
     materials: Vec<Material>,
+    names: BTreeMap<String, u16>,
     objects: Vec<Object>,
     index: Tree,
     transmission: Vec<Bands>,
@@ -377,6 +392,11 @@ impl Scene {
             }
         }
         for (i, o) in desc.objects.iter().enumerate() {
+            // Past the cap nothing more is added, so skip the lookup.
+            if b.full() {
+                report.drop_item(Item::Object(i), SceneError::TooManyObjects);
+                continue;
+            }
             let r = match b.material_id(&o.material) {
                 Some(id) => b.add(o.shape, id),
                 None => Err(SceneError::UnknownMaterial),
@@ -442,10 +462,7 @@ impl Scene {
 
     pub fn material_id(&self, name: &str) -> Option<MaterialId> {
         let name = crate::material::material_name(name);
-        self.materials
-            .iter()
-            .position(|m| m.name == name)
-            .map(|i| MaterialId(i as u16))
+        self.names.get(name).map(|&i| MaterialId(i))
     }
 
     pub(crate) fn transmission_gain(&self, id: MaterialId) -> Bands {
@@ -469,9 +486,25 @@ impl Scene {
         self.index.along_capped(p, q, limit, out) && out.len() <= limit
     }
 
-    pub(crate) fn candidates_within(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
-        self.index
-            .within((lo.x, lo.y), (hi.x, hi.y), usize::MAX, out);
+    /// Shapes that might touch the horizontal box from `lo` to `hi`, in id
+    /// order, charging the probe one test for each. False, with `out`
+    /// empty and the probe marked spent, when the allowance does not cover
+    /// them.
+    pub(crate) fn gather_within(
+        &self,
+        lo: Vec3,
+        hi: Vec3,
+        probe: &mut Probe,
+        out: &mut Vec<u32>,
+    ) -> bool {
+        let room = probe.left();
+        let found = self.index.within((lo.x, lo.y), (hi.x, hi.y), room, out) && out.len() <= room;
+        if !found || !probe.charge(out.len()) {
+            out.clear();
+            probe.refuse();
+            return false;
+        }
+        true
     }
 
     /// Calls `f` with each shape the segment from `p` to `q` passes through
@@ -716,6 +749,34 @@ mod tests {
             Scene::from_json(&big, Limits::default()),
             Err(LoadError::TooLarge)
         ));
+    }
+
+    #[test]
+    fn names_find_materials_and_over_cap_objects_are_dropped() {
+        let text = r#"{
+            "materials": [
+                {"name": " moss ", "absorption": [0.2,0.3,0.4,0.5,0.6,0.7,0.7]},
+                {"name": "moss", "absorption": [0.1,0.1,0.1,0.1,0.1,0.1,0.1]}
+            ],
+            "objects": [
+                {"kind": "ground", "z": 0, "material": "moss"},
+                {"kind": "ground", "z": 1, "material": "brick"},
+                {"kind": "ground", "z": 2, "material": "nope"}
+            ]
+        }"#;
+        let limits = Limits {
+            max_objects: 2,
+            ..Limits::default()
+        };
+        let (s, r) = Scene::from_json(text, limits).unwrap();
+        let moss = s.material_id("moss").unwrap();
+        assert_eq!(moss.0 as usize, Builtin::ALL.len());
+        assert_eq!(s.material(moss).unwrap().absorption.0[0], 0.1);
+        assert_eq!(s.objects()[0].material, moss);
+        assert_eq!(s.objects()[1].material, Builtin::Brick.id());
+        assert_eq!(r.dropped_count, 1);
+        assert_eq!(r.dropped[0].item, Item::Object(2));
+        assert_eq!(r.dropped[0].error, SceneError::TooManyObjects);
     }
 
     #[test]
