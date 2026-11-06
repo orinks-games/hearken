@@ -21,6 +21,11 @@ pub const MIN_REVERB_RAYS: usize = 16;
 pub const MAX_RT60_S: f64 = 30.0;
 /// Highest wet gain reported.
 pub const MAX_WET_GAIN: f64 = 2.0;
+/// Most shape tests one estimate makes. A ray with more shapes near it
+/// than its share is left out, and the estimate uses the rays cast.
+pub const MAX_REVERB_SHAPE_TESTS: usize = 1_000_000;
+/// Most shape tests one ray may use.
+const MAX_RAY_SHAPE_TESTS: usize = MAX_REVERB_SHAPE_TESTS / 16;
 
 /// 24 ln(10): RT60 = 24 ln(10) V / (c A).
 const SABINE: f64 = 55.262_042_231_857_1;
@@ -92,6 +97,9 @@ pub struct ReverbEstimate {
     /// Rays cast and rays that hit.
     pub rays: usize,
     pub hits: usize,
+    /// Whether some rays were left out because the shape-test allowance
+    /// ([`MAX_REVERB_SHAPE_TESTS`]) ran short.
+    pub truncated: bool,
 }
 
 impl ReverbEstimate {
@@ -132,8 +140,19 @@ pub fn estimate_reverb(scene: &Scene, listener: Vec3, opts: &ReverbOptions) -> R
     let mut volume = 0.0;
     let mut surface = 0.0;
     let mut absorbed = [0.0; BAND_COUNT];
+    let mut left = MAX_REVERB_SHAPE_TESTS;
+    let mut cast = 0usize;
     for d in &dirs {
-        if let Some((t, n, id)) = scene.ray_cast_with(listener, *d, opts.max_distance, &mut buf) {
+        let limit = left.min(MAX_RAY_SHAPE_TESTS);
+        let Some(hit) = scene.ray_cast_with(listener, *d, opts.max_distance, &mut buf, limit)
+        else {
+            est.truncated = true;
+            continue;
+        };
+        // Every ray costs at least one.
+        left -= buf.len().max(1).min(left);
+        cast += 1;
+        if let Some((t, n, id)) = hit {
             est.hits += 1;
             volume += omega * t * t * t / 3.0;
             let cos = (-n.dot(*d)).max(MIN_COS);
@@ -149,14 +168,26 @@ pub fn estimate_reverb(scene: &Scene, listener: Vec3, opts: &ReverbOptions) -> R
             }
         }
     }
+    est.rays = cast;
     if est.hits == 0 {
         est.open_fraction = 1.0;
         return est;
     }
+    let mut hits = est.hits as f64;
+    let mut missed = (cast - est.hits) as f64;
+    if cast < opts.rays {
+        // The rays cast stand for the whole sphere.
+        let k = opts.rays as f64 / cast as f64;
+        volume *= k;
+        surface *= k;
+        for s in absorbed.iter_mut() {
+            *s *= k;
+        }
+        hits *= k;
+        missed *= k;
+    }
     // Each ray that met nothing stands for an opening the size of an
     // average hit patch, enclosing an average cone of volume.
-    let hits = est.hits as f64;
-    let missed = (opts.rays - est.hits) as f64;
     let open_area = missed * surface / hits;
     volume += missed * volume / hits;
     surface += open_area;

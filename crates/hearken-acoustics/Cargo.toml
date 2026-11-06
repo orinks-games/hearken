@@ -13,7 +13,9 @@ authors.workspace = true
 [dependencies]
 libm.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# float_roundtrip: parse every float to its exact bits, whatever else
+# is in the build.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 # The determinism test's scene; builds as a WebAssembly module too, so the
 # same hash can be checked on wasm32 (see tests/determinism.rs).

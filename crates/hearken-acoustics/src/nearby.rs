@@ -8,6 +8,9 @@ use crate::vec::Vec3;
 
 /// Most surfaces one query returns.
 pub const MAX_NEARBY: usize = 256;
+/// Most shape tests the visibility checks of one query make. Once spent,
+/// the surfaces left count as hidden and the result is marked truncated.
+pub const MAX_NEARBY_SHAPE_TESTS: usize = 200_000;
 
 /// Settings for [`nearby_surfaces`]. Clamped before use.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,7 +68,8 @@ pub struct NearbySurface {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Nearby {
     pub surfaces: Vec<NearbySurface>,
-    /// Whether more were in range than `max`.
+    /// Whether more were in range than `max`, or the visibility checks
+    /// ran out of shape tests.
     pub truncated: bool,
 }
 
@@ -112,15 +116,24 @@ pub fn nearby_surfaces(scene: &Scene, listener: Vec3, opts: &NearbyOptions) -> N
             visible: false,
         });
     }
-    found.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+    // Nearest first, ties by id: a total order, so picking the nearest
+    // `max` before sorting gives the same list as sorting everything.
+    let order = |a: &NearbySurface, b: &NearbySurface| {
+        a.distance
+            .total_cmp(&b.distance)
+            .then(a.object.cmp(&b.object))
+    };
     if found.len() > opts.max {
+        found.select_nth_unstable_by(opts.max, order);
         found.truncate(opts.max);
         out.truncated = true;
     }
-    let mut probe = Probe::unlimited();
+    found.sort_unstable_by(order);
+    let mut probe = Probe::new(MAX_NEARBY_SHAPE_TESTS);
     for s in found.iter_mut() {
         s.visible = !scene.blocked(listener, s.point, &[s.object.0], true, &mut probe);
     }
+    out.truncated |= probe.spent();
     out.surfaces = found;
     out
 }

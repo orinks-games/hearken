@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 /// Longest material name kept; longer names are cut.
 pub const MAX_MATERIAL_NAME: usize = 64;
 
+/// A material name as a scene keeps it: trimmed and cut to
+/// [`MAX_MATERIAL_NAME`] characters. Lookups by name use the same form.
+pub(crate) fn material_name(name: &str) -> &str {
+    let name = name.trim();
+    match name.char_indices().nth(MAX_MATERIAL_NAME) {
+        Some((i, _)) => &name[..i],
+        None => name,
+    }
+}
+
 /// Highest transmission loss used, dB. Real partitions rarely do better than
 /// this because sound flanks round them.
 pub const MAX_TRANSMISSION_LOSS_DB: f64 = 60.0;
@@ -60,7 +70,7 @@ impl Material {
     /// This material with every value clamped into range and the name cut
     /// to [`MAX_MATERIAL_NAME`] characters. Refuses non-finite values.
     pub fn sanitized(&self) -> Result<Material, MaterialError> {
-        let name: String = self.name.trim().chars().take(MAX_MATERIAL_NAME).collect();
+        let name = material_name(&self.name).to_string();
         if name.is_empty() {
             return Err(MaterialError::EmptyName);
         }

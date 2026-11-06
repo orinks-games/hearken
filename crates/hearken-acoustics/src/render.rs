@@ -27,6 +27,9 @@ pub struct Propagation {
     pub reflections: Vec<Reflection>,
     /// Whether any part of the query hit a cap.
     pub truncated: bool,
+    /// Shape tests the query made, all parts together: a measure of its
+    /// cost.
+    pub shape_tests: usize,
     source: Vec3,
     listener: Vec3,
 }
@@ -34,11 +37,14 @@ pub struct Propagation {
 /// Works out how a sound at `source` reaches `listener`.
 pub fn propagate(scene: &Scene, source: Vec3, listener: Vec3, opts: &QueryOptions) -> Propagation {
     let opts = opts.clamped();
-    let direct = direct_with(scene, source, listener, &opts, &mut Probe::unlimited());
+    let mut probe = Probe::unlimited();
+    let direct = direct_with(scene, source, listener, &opts, &mut probe);
+    let mut shape_tests = probe.used();
     let mut truncated = direct.truncated;
     let diffracted = if direct.is_blocked() {
         let d = diffracted_path(scene, source, listener, &opts);
         truncated |= d.truncated;
+        shape_tests = shape_tests.saturating_add(d.shape_tests);
         d.path
     } else {
         None
@@ -50,6 +56,7 @@ pub fn propagate(scene: &Scene, source: Vec3, listener: Vec3, opts: &QueryOption
         diffracted,
         reflections: refl.list,
         truncated,
+        shape_tests: shape_tests.saturating_add(refl.shape_tests),
         source,
         listener,
     }

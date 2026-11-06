@@ -1,6 +1,6 @@
-//! Attack round 2: hostile scenes and files. Every test here fails on the
-//! current code; each says why. Run with
-//! `cargo test --release -p hearken-acoustics --test attack_r2 -- --nocapture --test-threads=1`.
+//! Hostile scenes and files: queries stay cheap and files read back
+//! exactly. The timing checks are meant for release builds:
+//! `cargo test --release -p hearken-acoustics --test hostile_cost -- --nocapture --test-threads=1`.
 
 use hearken_acoustics::*;
 use std::time::{Duration, Instant};
@@ -37,12 +37,9 @@ const LISTENER: Vec3 = Vec3 {
     z: 1.5,
 };
 
-/// The reverb estimate casts every ray against every shape its path
-/// meets, with no allowance. hearken-audio re-runs it on the game thread
-/// every time the listener moves `room_move_m` (0.5 m by default). With
-/// the most rays the options allow (4096):
-/// Currently fails: about 450-490 ms. (The default 256 rays take 30-55 ms
-/// here, on the edge of a frame.)
+/// The reverb estimate with the most rays the options allow (4096), next
+/// to a pole stack. hearken-audio runs it on the game thread whenever the
+/// listener moves `room_move_m`.
 #[test]
 fn reverb_max_rays_in_stacked_poles() {
     let s = stacked_poles();
@@ -56,9 +53,8 @@ fn reverb_max_rays_in_stacked_poles() {
     assert!(e < FRAME_BUDGET, "{e:?}");
 }
 
-/// The settings hearken-audio's obstacle sense uses every frame (radius 4,
-/// 32 surfaces), with no caching between frames.
-/// Currently fails: about 7 ms every frame (5 ms allowed).
+/// The settings hearken-audio's obstacle sense uses (radius 4, 32
+/// surfaces), next to a pole stack.
 #[test]
 fn nearby_surfaces_sense_settings_in_stacked_poles() {
     let s = stacked_poles();
@@ -73,9 +69,8 @@ fn nearby_surfaces_sense_settings_in_stacked_poles() {
     assert!(e < Duration::from_millis(5), "{e:?}");
 }
 
-/// navigate past a wall and a pole stack, default options. The shape-test
-/// allowance is 4M and a failed clearance search retries with another 4M.
-/// Currently fails: about 165 ms default, 1.6 s at the option caps.
+/// navigate past a wall and a pole stack, with default options and at
+/// the option caps. The retry without clearance shares the allowance.
 #[test]
 fn navigate_in_stacked_poles() {
     let mut b = SceneBuilder::new();
@@ -117,13 +112,9 @@ fn navigate_in_stacked_poles() {
 }
 
 /// A scene written out with `SceneDesc`'s Serialize and read back with
-/// `Scene::from_json` must be the same scene, bit for bit. serde_json
-/// without its `float_roundtrip` feature parses some shortest-form floats
-/// one ulp off (about 9 % of random coordinates in -100..100). The result
-/// also depends on whether any other crate in the build turns that
-/// feature on, so a native game and a wasm verifier can read the same file
-/// differently.
-/// Currently fails: 14.829037328432975 comes back as ...976.
+/// `Scene::from_json` must be the same scene, bit for bit. Without
+/// serde_json's `float_roundtrip` feature, 14.829037328432975 came back
+/// one ulp off.
 #[test]
 fn scene_json_round_trips_bit_exact() {
     let x = f64::from_bits(0x402d_a877_94a9_90d0);
@@ -177,12 +168,9 @@ fn town(outlier: bool) -> Scene {
     b.build()
 }
 
-/// The grid's finest cell is sized from the whole scene's span (span /
-/// 256), so one far-off shape makes every cell 390 m wide and the whole
-/// town lands in one cell: every line, ray and corner test then walks all
-/// 20 000 shapes. The per-frame queries should not depend on a shape
-/// nobody is near.
-/// Currently fails: propagate and estimate_reverb are many times slower.
+/// The per-frame queries should not depend on a shape nobody is near. A
+/// uniform grid sized from the whole scene's span put the whole town in
+/// one cell once one pole stood 100 km away.
 #[test]
 fn one_far_shape_does_not_flatten_the_grid() {
     let lis = Vec3::new(100.3, 100.2, 1.5);
@@ -219,10 +207,7 @@ fn one_far_shape_does_not_flatten_the_grid() {
 }
 
 /// A material name over 64 characters is cut to 64 when the material is
-/// added (`Material::sanitized`), but object references are looked up by
-/// the full name (`SceneBuilder::material_id`), so a self-consistent file
-/// loses every object that uses that material.
-/// Currently fails: the wall is dropped as UnknownMaterial.
+/// added; objects naming it in full must still find it.
 #[test]
 fn long_material_name_still_matches_its_objects() {
     let name = "x".repeat(70);
@@ -234,4 +219,55 @@ fn long_material_name_still_matches_its_objects() {
     eprintln!("{report:?}");
     assert!(report.is_clean(), "{report:?}");
     assert_eq!(scene.objects().len(), 1);
+}
+
+/// 20 000 identical poles at one spot: no index can split them, so the
+/// allowances must hold the work. Rays that cannot be afforded are left
+/// out and the estimate still comes back usable.
+#[test]
+fn identical_poles_stay_within_the_allowances() {
+    let mut b = SceneBuilder::new();
+    for _ in 0..20_000 {
+        b.add(Shape::pole(2.0, 2.0, 0.0, 0.5, 3.0), Builtin::Wood.id())
+            .unwrap();
+    }
+    let s = b.build();
+    let lis = Vec3::new(2.8, 2.0, 1.5);
+    let opts = ReverbOptions {
+        rays: usize::MAX,
+        ..ReverbOptions::default()
+    };
+    let (e, t) = time("estimate_reverb identical poles", || {
+        estimate_reverb(&s, lis, &opts)
+    });
+    assert!(t < FRAME_BUDGET, "{t:?}");
+    assert!(e.truncated && e.rays < 4096 && e.rays > 0, "{e:?}");
+    assert!(e.volume_m3.is_finite() && e.rt60().is_finite(), "{e:?}");
+    let (n, t) = time("nearby_surfaces identical poles", || {
+        nearby_surfaces(
+            &s,
+            lis,
+            &NearbyOptions {
+                radius: 4.0,
+                max: 256,
+                include_planes: false,
+            },
+        )
+    });
+    assert!(t < FRAME_BUDGET, "{t:?}");
+    assert!(n.truncated);
+    // A tiny allowance stops the corner checks at once.
+    let (r, t) = time("navigate identical poles, tiny allowance", || {
+        navigate(
+            &s,
+            Vec3::new(0.0, 2.0, 1.5),
+            Vec3::new(4.0, 2.0, 1.5),
+            &NavOptions {
+                max_shape_tests: 10,
+                ..NavOptions::default()
+            },
+        )
+    });
+    assert!(t < FRAME_BUDGET, "{t:?}");
+    assert!(r.truncated && !r.reached, "{r:?}");
 }

@@ -40,6 +40,8 @@ pub struct Reflections {
     pub list: Vec<Reflection>,
     /// Whether some were dropped by the face or reflection caps.
     pub truncated: bool,
+    /// Shape tests the search made.
+    pub shape_tests: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -173,6 +175,7 @@ pub fn early_reflections(
         }
     }
     out.truncated |= probe.spent();
+    out.shape_tests = probe.used();
     // Strongest first; ties by order then faces, so the order is fixed.
     found.sort_by(|x, y| {
         y.0.gain

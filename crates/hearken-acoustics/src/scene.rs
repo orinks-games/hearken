@@ -3,7 +3,7 @@
 use crate::atmosphere::Atmosphere;
 use crate::bands::Bands;
 use crate::geometry::{Shape, ShapeError, ShapeFields};
-use crate::index::Grid;
+use crate::index::Tree;
 use crate::material::{Builtin, Material, MaterialDesc, MaterialError};
 use crate::vec::Vec3;
 use serde::{Deserialize, Serialize};
@@ -231,7 +231,7 @@ impl SceneBuilder {
     }
 
     pub fn material_id(&self, name: &str) -> Option<MaterialId> {
-        let name = name.trim();
+        let name = crate::material::material_name(name);
         self.materials
             .iter()
             .position(|m| m.name == name)
@@ -262,7 +262,7 @@ impl SceneBuilder {
             air_db: Bands::ZERO,
             materials: self.materials.clone(),
             objects: self.objects.clone(),
-            grid: Grid::build(&bounds),
+            index: Tree::build(&bounds),
             transmission: self
                 .materials
                 .iter()
@@ -316,6 +316,20 @@ impl Probe {
         self.used
     }
 
+    /// What is left of the allowance.
+    pub fn left(&self) -> usize {
+        if self.spent {
+            0
+        } else {
+            self.limit - self.used
+        }
+    }
+
+    /// Marks the allowance as spent: a test was refused.
+    pub fn refuse(&mut self) {
+        self.spent = true;
+    }
+
     pub fn limit(&self) -> usize {
         self.limit
     }
@@ -335,7 +349,7 @@ pub struct Scene {
     air_db: Bands,
     materials: Vec<Material>,
     objects: Vec<Object>,
-    grid: Grid,
+    index: Tree,
     transmission: Vec<Bands>,
     specular: Vec<Bands>,
 }
@@ -427,7 +441,7 @@ impl Scene {
     }
 
     pub fn material_id(&self, name: &str) -> Option<MaterialId> {
-        let name = name.trim();
+        let name = crate::material::material_name(name);
         self.materials
             .iter()
             .position(|m| m.name == name)
@@ -448,12 +462,16 @@ impl Scene {
             .unwrap_or(Bands::ZERO)
     }
 
-    pub(crate) fn candidates_along(&self, p: Vec3, q: Vec3, out: &mut Vec<u32>) {
-        self.grid.along(p, q, out);
+    /// Shapes that might touch the segment from `p` to `q`, in id order;
+    /// false (and `out` empty) as soon as more than `limit` turn up, so a
+    /// refused test costs little.
+    fn candidates_along_capped(&self, p: Vec3, q: Vec3, limit: usize, out: &mut Vec<u32>) -> bool {
+        self.index.along_capped(p, q, limit, out) && out.len() <= limit
     }
 
     pub(crate) fn candidates_within(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
-        self.grid.within(lo.x, lo.y, hi.x, hi.y, out);
+        self.index
+            .within((lo.x, lo.y), (hi.x, hi.y), usize::MAX, out);
     }
 
     /// Calls `f` with each shape the segment from `p` to `q` passes through
@@ -472,8 +490,10 @@ impl Scene {
             return true;
         }
         let eps = (1e-4 / len).min(0.25);
-        self.candidates_along(p, q, &mut probe.buf);
-        if !probe.charge(probe.buf.len()) {
+        let room = probe.left();
+        let found = self.candidates_along_capped(p, q, room, &mut probe.buf);
+        if !found || !probe.charge(probe.buf.len()) {
+            probe.refuse();
             return false;
         }
         for &i in probe.buf.iter() {
@@ -514,8 +534,14 @@ impl Scene {
     /// as inside when the allowance runs out.
     pub(crate) fn inside_solid(&self, p: Vec3, probe: &mut Probe) -> bool {
         let e = Vec3::new(1e-6, 1e-6, 0.0);
-        self.candidates_within(p - e, p + e, &mut probe.buf);
-        if !probe.charge(probe.buf.len()) {
+        let (lo, hi) = (p - e, p + e);
+        let room = probe.left();
+        let found = self
+            .index
+            .within((lo.x, lo.y), (hi.x, hi.y), room, &mut probe.buf)
+            && probe.buf.len() <= room;
+        if !found || !probe.charge(probe.buf.len()) {
+            probe.refuse();
             return true;
         }
         probe
@@ -534,20 +560,28 @@ impl Scene {
     /// which shape. Ties go to the lower id.
     pub fn ray_cast(&self, p: Vec3, dir: Vec3, max_distance: f64) -> Option<(f64, Vec3, ObjectId)> {
         let mut buf = Vec::new();
-        self.ray_cast_with(p, dir, max_distance, &mut buf)
+        self.ray_cast_with(p, dir, max_distance, &mut buf, usize::MAX)
+            .flatten()
     }
 
+    /// As [`Scene::ray_cast`], but gives `None` without testing anything
+    /// when the ray has more than `limit` shapes near it, and `Some(hit)`
+    /// otherwise. `buf` then holds the shapes it tested.
     pub(crate) fn ray_cast_with(
         &self,
         p: Vec3,
         dir: Vec3,
         max_distance: f64,
         buf: &mut Vec<u32>,
-    ) -> Option<(f64, Vec3, ObjectId)> {
+        limit: usize,
+    ) -> Option<Option<(f64, Vec3, ObjectId)>> {
+        buf.clear();
         if !(p.is_finite() && dir.is_finite() && max_distance > 0.0 && max_distance.is_finite()) {
+            return Some(None);
+        }
+        if !self.candidates_along_capped(p, p + dir * max_distance, limit, buf) {
             return None;
         }
-        self.candidates_along(p, p + dir * max_distance, buf);
         let mut best: Option<(f64, Vec3, ObjectId)> = None;
         for &i in buf.iter() {
             if let Some((t, n)) = self.objects[i as usize].shape.ray_hit(p, dir, max_distance) {
@@ -556,7 +590,7 @@ impl Scene {
                 }
             }
         }
-        best
+        Some(best)
     }
 }
 

@@ -48,6 +48,8 @@ pub struct DiffractionSearch {
     /// Whether the search hit a node or test cap, so a path may exist that
     /// was not found or a shorter one was missed.
     pub truncated: bool,
+    /// Shape tests the search made.
+    pub shape_tests: usize,
 }
 
 /// Settings for [`navigate`]. Clamped before use.
@@ -62,7 +64,7 @@ pub struct NavOptions {
     /// How far beyond the box round start and goal to look, metres.
     pub margin: f64,
     /// Most shape tests, as in [`QueryOptions::max_shape_tests`]. A retry
-    /// without clearance gets the same again.
+    /// without clearance gets what the first search left.
     pub max_shape_tests: usize,
 }
 
@@ -73,7 +75,7 @@ impl Default for NavOptions {
             max_nodes: 512,
             max_visibility_tests: 50_000,
             margin: 30.0,
-            max_shape_tests: 4_000_000,
+            max_shape_tests: 1_000_000,
         }
     }
 }
@@ -113,6 +115,8 @@ struct Search {
     corners: Vec<Vec3>,
     found: bool,
     truncated: bool,
+    /// Shape tests made.
+    used: usize,
 }
 
 struct Graph<'a> {
@@ -174,8 +178,11 @@ fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
         corners: Vec::new(),
         found: false,
         truncated: false,
+        used: 0,
     };
-    if g.clear(a, b) {
+    let found = g.clear(a, b);
+    out.used = g.probe.used();
+    if found {
         out.found = true;
         return out;
     }
@@ -210,7 +217,7 @@ fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
         corner_points(shape, offset, z, &mut pts);
         for &p in &pts {
             // Points inside other solids are skipped, but still cost.
-            if g.probe.used() >= corner_budget {
+            if g.probe.used() >= corner_budget || g.probe.spent() {
                 out.truncated = true;
                 break 'objects;
             }
@@ -278,6 +285,7 @@ fn search(scene: &Scene, a: Vec3, b: Vec3, budget: Budget) -> Search {
             }
         }
     }
+    out.used = g.probe.used();
     if out.found {
         let mut i = parent[1];
         let mut steps = 0;
@@ -377,6 +385,7 @@ pub fn diffracted_path(
     let mut result = DiffractionSearch {
         path: None,
         truncated: s.truncated,
+        shape_tests: s.used,
     };
     if !s.found || s.corners.is_empty() {
         return result;
@@ -443,6 +452,7 @@ pub fn navigate(scene: &Scene, from: Vec3, to: Vec3, opts: &NavOptions) -> NavPa
         let loose = Budget {
             offset: SOUND_OFFSET,
             clearance: 0.0,
+            max_shape_tests: opts.max_shape_tests.saturating_sub(s.used),
             ..budget
         };
         s = search(scene, from, to, loose);
@@ -536,7 +546,7 @@ mod tests {
             Vec3::new(2.0, 2.5, 1.5),
             &QueryOptions::default(),
         );
-        assert_eq!(r, DiffractionSearch::default());
+        assert!(r.path.is_none() && !r.truncated);
     }
 
     #[test]
