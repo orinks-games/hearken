@@ -47,7 +47,7 @@
 //! until every track listed in the album is unlocked (a secret track counts
 //! once heard) and says how many are. Each track is then played on a
 //! mixer with no device, faster than real time, and its finished mix
-//! written as a WAV file to `Music/<game>/<album>/` (the game's data
+//! written as an Ogg Vorbis file to `Music/<game>/<album>/` (the game's data
 //! folder when there is no Music folder; see [`export`]). With
 //! [`AlbumOptions::vary_export`] each export is a fresh variation;
 //! otherwise it is the track as heard.
@@ -1565,11 +1565,25 @@ impl<G: Game> SoundtrackScreen<G> {
                 } else {
                     track.perform_as_heard()
                 };
-                let name = format!("{:02} {}.wav", e.at + 1, export::file_name(&track.title));
+                let number = format!("{}", e.at + 1);
+                let name = format!("{:02} {}.ogg", e.at + 1, export::file_name(&track.title));
                 let clips = crate::sound::clip_source::<G>(
                     hearken_audio::discover_clips(G::ENV_PREFIX).clips,
                 );
-                match export::Render::start(performer, clips, e.dir.join(name)) {
+                let tags = [
+                    ("TITLE", track.title.as_str()),
+                    (
+                        "ALBUM",
+                        if e.album.is_empty() {
+                            G::TITLE
+                        } else {
+                            e.album.as_str()
+                        },
+                    ),
+                    ("ARTIST", G::TITLE),
+                    ("TRACKNUMBER", number.as_str()),
+                ];
+                match export::Render::start(performer, clips, e.dir.join(name), &tags) {
                     Ok(r) => e.render = Some(r),
                     Err(err) => {
                         log::warn!("export of {:?} failed: {err}", track.id);
@@ -1840,14 +1854,17 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
 /// offers it ([`AlbumOptions::export`]).
 ///
 /// A track is played once on a mixer with no device, faster than real
-/// time, and its finished mix written as a 16-bit stereo WAV file at
+/// time, and its finished mix written as a stereo Ogg Vorbis file at
 /// [`RATE`]: only the mix, never the stems. The soundtrack menu does this
 /// a slice at a time, so the game keeps answering while it works.
 #[cfg(feature = "kira")]
 pub mod export {
     use std::fs::File;
-    use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+    use std::io::{self, BufWriter, Write};
+    use std::num::{NonZeroU32, NonZeroU8};
     use std::path::{Path, PathBuf};
+
+    use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoder, VorbisEncoderBuilder};
 
     use hearken_audio::{Audio, ClipSource, KiraBackend};
 
@@ -1957,7 +1974,7 @@ pub mod export {
     pub struct Render {
         audio: Audio,
         performer: Box<dyn Performer>,
-        out: Wav,
+        out: Ogg,
         frames: usize,
         tail: Option<usize>,
         path: PathBuf,
@@ -1965,11 +1982,14 @@ pub mod export {
 
     impl Render {
         /// Starts playing `performer` on a mixer of its own, loading clips
-        /// from `clips`, to be written to `path`.
+        /// from `clips`, to be written to `path` as Ogg Vorbis. `tags` are
+        /// the file's Vorbis comments, such as `("TITLE", "Morning")`;
+        /// empty values are left out.
         pub fn start(
             mut performer: Box<dyn Performer>,
             clips: Box<dyn ClipSource>,
             path: PathBuf,
+            tags: &[(&str, &str)],
         ) -> io::Result<Render> {
             let backend = KiraBackend::offline(RATE).map_err(|e| io::Error::other(e.0))?;
             let mut audio = Audio::new(Box::new(backend), clips);
@@ -1981,7 +2001,7 @@ pub mod export {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            let out = Wav::create(&part_of(&path))?;
+            let out = Ogg::create(&part_of(&path), tags)?;
             Ok(Render {
                 audio,
                 performer,
@@ -2043,6 +2063,7 @@ pub mod export {
         /// Stops, and removes the unfinished file.
         pub fn cancel(mut self) {
             self.performer.stop(&mut self.audio);
+            self.out.close();
             let _ = std::fs::remove_file(part_of(&self.path));
         }
     }
@@ -2059,8 +2080,9 @@ pub mod export {
         performer: Box<dyn Performer>,
         clips: Box<dyn ClipSource>,
         path: PathBuf,
+        tags: &[(&str, &str)],
     ) -> io::Result<PathBuf> {
-        let mut r = Render::start(performer, clips, path)?;
+        let mut r = Render::start(performer, clips, path, tags)?;
         while !r.step(RATE as usize)? {}
         Ok(r.path.clone())
     }
@@ -2072,48 +2094,76 @@ pub mod export {
         path.with_file_name(name)
     }
 
-    /// A 16-bit stereo WAV file, its sizes filled in at the end.
-    struct Wav {
-        file: BufWriter<File>,
-        bytes: u32,
+    /// The Ogg Vorbis quality an export is written at, from -0.2 to 1:
+    /// about 192 kbit/s for stereo music.
+    const QUALITY: f32 = 0.6;
+
+    /// A stereo Ogg Vorbis file being written.
+    struct Ogg {
+        encoder: Option<VorbisEncoder<BufWriter<File>>>,
     }
 
-    impl Wav {
-        fn create(path: &Path) -> io::Result<Wav> {
-            let mut file = BufWriter::new(File::create(path)?);
-            let rate = RATE;
-            file.write_all(b"RIFF\0\0\0\0WAVEfmt ")?;
-            file.write_all(&16u32.to_le_bytes())?;
-            file.write_all(&1u16.to_le_bytes())?; // PCM
-            file.write_all(&2u16.to_le_bytes())?; // stereo
-            file.write_all(&rate.to_le_bytes())?;
-            file.write_all(&(rate * 4).to_le_bytes())?;
-            file.write_all(&4u16.to_le_bytes())?;
-            file.write_all(&16u16.to_le_bytes())?;
-            file.write_all(b"data\0\0\0\0")?;
-            Ok(Wav { file, bytes: 0 })
+    impl Ogg {
+        fn create(path: &Path, tags: &[(&str, &str)]) -> io::Result<Ogg> {
+            let file = BufWriter::new(File::create(path)?);
+            let rate = NonZeroU32::new(RATE).expect("a rate");
+            let channels = NonZeroU8::new(2).expect("two channels");
+            let mut builder = VorbisEncoderBuilder::new_with_serial(rate, channels, file, serial());
+            builder.bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
+                target_quality: QUALITY,
+            });
+            builder
+                .comment_tags(tags.iter().filter(|(_, v)| !v.is_empty()).copied())
+                .map_err(io::Error::other)?;
+            let encoder = builder.build().map_err(io::Error::other)?;
+            Ok(Ogg {
+                encoder: Some(encoder),
+            })
         }
 
         fn write(&mut self, frames: &[[f32; 2]]) -> io::Result<()> {
-            let mut buf = Vec::with_capacity(frames.len() * 4);
+            let encoder = self
+                .encoder
+                .as_mut()
+                .ok_or_else(|| io::Error::other("the file is already finished"))?;
+            let mut left = Vec::with_capacity(frames.len());
+            let mut right = Vec::with_capacity(frames.len());
             for [l, r] in frames {
-                for s in [l, r] {
-                    let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                    buf.extend_from_slice(&v.to_le_bytes());
-                }
+                left.push(l.clamp(-1.0, 1.0));
+                right.push(r.clamp(-1.0, 1.0));
             }
-            self.bytes = self.bytes.saturating_add(buf.len() as u32);
-            self.file.write_all(&buf)
+            encoder
+                .encode_audio_block([left, right])
+                .map_err(io::Error::other)
         }
 
         fn finish(&mut self) -> io::Result<()> {
-            self.file.flush()?;
-            let file = self.file.get_mut();
-            file.seek(SeekFrom::Start(4))?;
-            file.write_all(&(36 + self.bytes).to_le_bytes())?;
-            file.seek(SeekFrom::Start(40))?;
-            file.write_all(&self.bytes.to_le_bytes())?;
-            file.sync_all()
+            let encoder = self
+                .encoder
+                .take()
+                .ok_or_else(|| io::Error::other("the file is already finished"))?;
+            let mut file = encoder.finish().map_err(io::Error::other)?;
+            file.flush()?;
+            file.get_ref().sync_all()
         }
+
+        /// Closes the file without finishing it.
+        fn close(&mut self) {
+            self.encoder = None;
+        }
+    }
+
+    /// An Ogg stream serial that differs from file to file, as the Ogg
+    /// format asks.
+    fn serial() -> i32 {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        );
+        h.finish() as i32
     }
 }

@@ -12,7 +12,7 @@ build = "build.rs"
 [features]
 default = ["kira", "testing", "visuals"]
 visuals = ["dep:ab_glyph", "dep:memmap2"]
-kira = ["hearken-audio/kira", "hearken-speech/genny-voice"]
+kira = ["hearken-audio/kira", "hearken-speech/genny-voice", "dep:vorbis_rs"]
 # `Headless`, the in-memory app a game's tests drive. A game that tests
 # through its own harness turns default features off and skips `tempfile`.
 testing = ["dep:tempfile"]
@@ -52,6 +52,8 @@ tempfile = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 hearken-replay = { workspace = true, optional = true }
 hearken-update = { workspace = true, optional = true }
+# Soundtrack exports as Ogg Vorbis (libvorbis, built from source; BSD).
+vorbis_rs = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -74,3 +76,5 @@ tempfile.workspace = true
 # Release archives for the update tests.
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
+# Reads exported Oggs back in the soundtrack tests.
+vorbis_rs.workspace = true

@@ -1024,13 +1024,51 @@ fn export_is_off_unless_the_game_offers_it() {
     assert!(!h.app.top_lines().join("\n").contains("Export"));
 }
 
-fn wav_frames(path: &std::path::Path) -> usize {
+/// The frames, loudest sample and comments of an Ogg Vorbis file.
+fn ogg_contents(path: &std::path::Path) -> (usize, f32, Vec<(String, String)>) {
+    let file = std::fs::File::open(path).unwrap();
+    let mut decoder = vorbis_rs::VorbisDecoder::new(file).unwrap();
+    assert_eq!(decoder.channels().get(), 2);
+    assert_eq!(
+        decoder.sampling_frequency().get(),
+        hearken_app::soundtrack::export::RATE
+    );
+    let mut frames = 0;
+    let mut loudest = 0.0f32;
+    while let Some(block) = decoder.decode_audio_block().unwrap() {
+        let samples = block.samples();
+        frames += samples[0].len();
+        for channel in samples {
+            for s in channel.iter() {
+                loudest = loudest.max(s.abs());
+            }
+        }
+    }
+    (frames, loudest, ogg_comments(path))
+}
+
+/// The Vorbis comments of an Ogg file, read from its comment header.
+fn ogg_comments(path: &std::path::Path) -> Vec<(String, String)> {
     let bytes = std::fs::read(path).unwrap();
-    assert_eq!(&bytes[0..4], b"RIFF");
-    assert_eq!(&bytes[8..12], b"WAVE");
-    let data = u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize;
-    assert_eq!(data, bytes.len() - 44, "the sizes are filled in");
-    data / 4
+    let at = bytes
+        .windows(7)
+        .position(|w| w == b"\x03vorbis")
+        .expect("a comment header")
+        + 7;
+    let u32_at = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+    let vendor = u32_at(at);
+    let mut i = at + 4 + vendor;
+    let count = u32_at(i);
+    i += 4;
+    (0..count)
+        .map(|_| {
+            let len = u32_at(i);
+            let text = String::from_utf8_lossy(&bytes[i + 4..i + 4 + len]).into_owned();
+            i += 4 + len;
+            let (k, v) = text.split_once('=').unwrap();
+            (k.to_uppercase(), v.to_string())
+        })
+        .collect()
 }
 
 #[test]
@@ -1118,21 +1156,25 @@ fn an_album_exports_once_every_track_is_heard() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
-    assert_eq!(names, vec!["01 First song.wav", "02 Second song.wav"]);
+    assert_eq!(names, vec!["01 First song.ogg", "02 Second song.ogg"]);
     // The stems piece runs its length, then fades.
-    let frames = wav_frames(&folder.join("02 Second song.wav"));
+    let (frames, loudest, tags) = ogg_contents(&folder.join("02 Second song.ogg"));
     let seconds = frames as f64 / hearken_app::soundtrack::export::RATE as f64;
     assert!(seconds > 4.0 && seconds < 20.0, "{seconds}");
     // It is the mix, not silence.
-    let bytes = std::fs::read(folder.join("02 Second song.wav")).unwrap();
-    let loudest = bytes[44..]
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|b| i16::from_le_bytes(*b).unsigned_abs())
-        .max()
-        .unwrap_or(0);
-    assert!(loudest > 300, "loudest sample {loudest}");
+    assert!(loudest > 0.01, "loudest sample {loudest}");
+    // A music player shows the track's name, album and number.
+    for tag in [
+        ("TITLE", "Second song"),
+        ("ALBUM", "Lake"),
+        ("ARTIST", "Test Game"),
+        ("TRACKNUMBER", "2"),
+    ] {
+        assert!(
+            tags.contains(&(tag.0.to_string(), tag.1.to_string())),
+            "{tags:?}"
+        );
+    }
 }
 
 #[test]
