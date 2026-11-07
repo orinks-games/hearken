@@ -105,16 +105,23 @@ fn failed_line(site: &str, e: &crate::online::OnlineError) -> String {
     }
 }
 
-fn code_line(site: &str, code: &str, url: &str) -> String {
+fn code_line(site: &str, code: &str, url: &str, opened: bool) -> String {
     let place = if url.is_empty() {
         site.to_string()
     } else {
         spoken_url(url)
     };
-    format!(
-        "Code {}. Go to {place} and enter it. Enter repeats the code.",
-        spell_code(code)
-    )
+    if opened {
+        format!(
+            "Code {}. {place} is open in your browser. Enter repeats the code.",
+            spell_code(code)
+        )
+    } else {
+        format!(
+            "Code {}. Go to {place} and enter it. Enter repeats the code.",
+            spell_code(code)
+        )
+    }
 }
 
 impl<G: Game> State<G> for OnlineAccountScreen {
@@ -169,7 +176,9 @@ impl<G: Game> State<G> for OnlineAccountScreen {
         self.heard = state.clone();
         let site = ctx.online.site().to_string();
         match state {
-            Connect::Waiting { code, url } => ctx.say(code_line(&site, &code, &url)),
+            Connect::Waiting { code, url, opened } => {
+                ctx.say(code_line(&site, &code, &url, opened))
+            }
             Connect::Connected { name } if ctx.online.is_guest() => {
                 ctx.play_ui(UiSound::Select);
                 ctx.pop_with(format!("Playing as guest {name}."));
@@ -255,7 +264,9 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 ctx.pop_with(format!("Disconnected from {site}."));
             }
             Key::Return => match ctx.online.connect_state().clone() {
-                Connect::Waiting { code, url } => ctx.say(code_line(&site, &code, &url)),
+                Connect::Waiting { code, url, opened } => {
+                    ctx.say(code_line(&site, &code, &url, opened))
+                }
                 Connect::Failed(_) | Connect::Idle => {
                     ctx.online.connect();
                     self.waiting = true;
@@ -284,7 +295,7 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 "Connected to {site} as {}.",
                 ctx.online.player_name().unwrap_or("your account")
             )],
-            Connect::Waiting { code, url } => {
+            Connect::Waiting { code, url, .. } => {
                 let place = if url.is_empty() { site } else { url.as_str() };
                 vec![format!("Code: {code}"), format!("Enter it at {place}")]
             }

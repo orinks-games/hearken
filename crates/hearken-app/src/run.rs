@@ -167,6 +167,13 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     if let (Some(config), false) = (G::discord(), sandboxed) {
         ctx.discord = crate::discord::Discord::start(&config, ctx.settings.discord.enabled);
     }
+    // Connecting an account opens its page in the browser; an agent session
+    // never opens one on the player's desktop.
+    #[cfg(feature = "online")]
+    if !sandboxed {
+        ctx.online
+            .set_opener(Box::new(|url: &str| sdl2::url::open_url(url).is_ok()));
+    }
 
     // Off the game loop; an agent session never updates the real game.
     #[cfg(feature = "update")]

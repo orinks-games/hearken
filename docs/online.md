@@ -266,6 +266,12 @@ speaks it works; `@hearken/online` is one.
   "verify_url": "https://orinks.net/activate", "expires_in": 600, "interval": 5 }
 ```
 
+An optional `verify_url_complete` is the same page with the code filled in,
+such as `https://orinks.net/activate?code=ABCD-EF34`. The game opens it (or
+`verify_url` when there is none) in the player's browser, as long as it is on
+the game's own server; `www.` and the bare host count as the same server.
+Agent sessions never open a browser.
+
 The game speaks the user code and the URL, then sends
 `POST activate/poll` with `{"device_code": "..."}` every `interval` seconds:
 
