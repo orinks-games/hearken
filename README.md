@@ -100,7 +100,7 @@ Some of what that gives a game:
 - **Unlockable soundtracks.** A game lists its music as `Track`s; the
   player unlocks each by hearing it in play (or when the game says so) and
   listens from `SoundtrackScreen`, which plays each track as it was heard
-  in the game. A game can let players export a finished album to WAV, as
+  in the game. A game can let players export a finished album to Ogg Vorbis, as
   heard or freshly varied; the stems never leave the sound pack. See
   [Soundtracks](#soundtracks).
 - **Tests without a window.** `hearken::Headless` runs a game with no
@@ -676,8 +676,10 @@ The menu then shows an "Export album" row (or "Export Lantern Lake" for a
 named album). It reads "Export album, locked: 2 of 5 heard" until every
 track listed in that album is unlocked; a secret track counts once heard.
 Export plays each track once on a mixer with no device, faster than real
-time, and writes only its finished mix, never the stems, as a 16-bit
-stereo 48 kHz WAV to `Music/<game>/<album>/01 <title>.wav`. A portable
+time, and writes only its finished mix, never the stems, as a stereo
+48 kHz Ogg Vorbis file (quality 6, about 192 kbit/s) to
+`Music/<game>/<album>/01 <title>.ogg`, tagged with its title, album, game
+and track number. A portable
 copy (one with `portable.txt` beside its executable) writes to
 `Music/<album>/` in its own folder instead, as it keeps its saves there,
 and says the path from that folder. When the system has no Music folder

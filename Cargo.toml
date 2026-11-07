@@ -43,6 +43,9 @@ rtrb = "0.4"
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
 symphonia-adapter-libopus = "0.3"
 symphonia-core = "0.6"
+# Soundtrack exports: libvorbis built from source, no system library. The
+# stream serial comes from hearken-app, so no random-number crate.
+vorbis_rs = { version = "0.5", default-features = false }
 symphonia-adapter-fdk-aac = "0.2"
 # The radio's HE-AAC: Media Foundation on Windows, AudioToolbox on macOS.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_LibraryLoader"] }
