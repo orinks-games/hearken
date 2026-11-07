@@ -147,6 +147,7 @@ export function memoryAccounts({
         device_code: deviceCode,
         user_code: userCode,
         verify_url: verifyUrl,
+        verify_url_complete: `${verifyUrl}?code=${encodeURIComponent(userCode)}`,
         expires_in: Math.round(ttlMs / 1000),
         interval: 5,
       };

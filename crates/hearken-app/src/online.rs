@@ -337,10 +337,12 @@ pub enum Connect {
     Idle,
     /// Asking the server for a code.
     Asking,
-    /// Waiting for the player to enter `code` at `url`.
+    /// Waiting for the player to enter `code` at `url`; `opened` when
+    /// the page was opened in the player's browser.
     Waiting {
         code: String,
         url: String,
+        opened: bool,
     },
     /// Connected as `name`.
     Connected {
@@ -373,7 +375,8 @@ const MAX_CONNECT: Duration = Duration::from_secs(15 * 60);
 
 enum Msg {
     Done(Ticket, u64, Result<Value, OnlineError>),
-    Code(u64, String, String),
+    /// The code, the page to speak, and the page to open.
+    Code(u64, String, String, String),
     Connected(u64, String, String, bool),
     Renamed(u64, String),
     ConnectFailed(u64, OnlineError),
@@ -399,7 +402,12 @@ pub struct Online {
     cancel: Option<Arc<AtomicBool>>,
     /// The account changed and `settings.json` needs saving.
     changed: bool,
+    /// Opens a page in the player's browser; `None` in tests and agent runs.
+    opener: Option<Opener>,
 }
+
+/// Opens `url` in the player's browser, `true` when it did.
+pub type Opener = Box<dyn Fn(&str) -> bool + Send>;
 
 impl Online {
     /// The connection for a game with `config` (`None`: no online play),
@@ -429,7 +437,14 @@ impl Online {
             connect_gen: 0,
             cancel: None,
             changed: false,
+            opener: None,
         }
+    }
+
+    /// Opens the page to enter a connect code on with `opener`, as the app
+    /// does with the system browser.
+    pub fn set_opener(&mut self, opener: Opener) {
+        self.opener = Some(opener);
     }
 
     /// Sends requests through `transport` instead, as a test does.
@@ -735,9 +750,11 @@ impl Online {
                         self.done.pop_front();
                     }
                 }
-                Msg::Code(generation, code, url) if generation == self.connect_gen => {
+                Msg::Code(generation, code, url, open) if generation == self.connect_gen => {
                     if !matches!(self.connect, Connect::Idle) {
-                        self.connect = Connect::Waiting { code, url };
+                        let opened = !open.is_empty()
+                            && self.opener.as_ref().is_some_and(|opener| opener(&open));
+                        self.connect = Connect::Waiting { code, url, opened };
                     }
                 }
                 Msg::Connected(generation, token, name, guest)
@@ -826,6 +843,14 @@ fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
+/// Whether two URLs are on the same site: the same host, where
+/// `www.example.test` and `example.test` count as one.
+fn same_site(a: &str, b: &str) -> bool {
+    let bare =
+        |url: &str| host_of(url).map(|h| h.strip_prefix("www.").map(str::to_string).unwrap_or(h));
+    bare(a).is_some() && bare(a) == bare(b)
+}
+
 /// A name from the server, cut to something sensible to speak.
 fn clean_name(name: Option<&str>) -> String {
     let name = clean_text(name.unwrap_or(""), 32);
@@ -877,18 +902,25 @@ fn activate(
     // The page to enter the code on is spoken only when it is on the game's
     // own server; anything else is a server trying to send the player
     // somewhere, and the site's name is spoken instead.
-    let url = clean_text(body["verify_url"].as_str().unwrap_or(""), 200);
-    let url =
-        if url.contains(' ') || host_of(&url).is_none() || host_of(&url) != host_of(&config.url) {
+    let own = |key: &str| {
+        let url = clean_text(body[key].as_str().unwrap_or(""), 300);
+        if url.contains(' ') || !same_site(&url, &config.url) {
             String::new()
         } else {
             url
-        };
+        }
+    };
+    let url = own("verify_url");
+    // The page with the code already filled in is what opens in the
+    // browser, when the server gives one.
+    let open = Some(own("verify_url_complete"))
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| url.clone());
     if code.is_empty() || device.len() > 128 {
         return Err(OnlineError::Unavailable);
     }
     let device = device.to_string();
-    let _ = tx.send(Msg::Code(generation, code, url));
+    let _ = tx.send(Msg::Code(generation, code, url, open));
     let expires = body["expires_in"]
         .as_u64()
         .map_or(MAX_CONNECT, |s| Duration::from_secs(s).min(MAX_CONNECT));
@@ -1173,7 +1205,7 @@ pub(crate) mod tests {
         let mut saw_code = false;
         for _ in 0..1000 {
             let changed = online.update();
-            if let Connect::Waiting { code, url } = online.connect_state() {
+            if let Connect::Waiting { code, url, .. } = online.connect_state() {
                 assert_eq!(
                     (code.as_str(), url.as_str()),
                     ("ABCD-EF34", "https://example.test/activate")
@@ -1252,6 +1284,95 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("no code");
+    }
+
+    #[test]
+    fn the_filled_in_page_opens_in_the_browser() {
+        let transport = Scripted::answering(vec![reply(
+            200,
+            json!({ "device_code": "d".repeat(64), "user_code": "ABCD-EF34",
+                    "verify_url": "https://www.example.test/activate",
+                    "verify_url_complete": "https://www.example.test/activate?code=ABCD-EF34" }),
+        )]);
+        let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut online = Online::new(config(), &OnlineSettings::default());
+        online.set_transport(transport);
+        let seen = opened.clone();
+        online.set_opener(Box::new(move |url| {
+            seen.lock().unwrap().push(url.to_string());
+            true
+        }));
+        online.connect();
+        for _ in 0..200 {
+            online.update();
+            if let Connect::Waiting {
+                url,
+                opened: was_opened,
+                ..
+            } = online.connect_state()
+            {
+                assert_eq!(url, "https://www.example.test/activate");
+                assert!(was_opened);
+                assert_eq!(
+                    *opened.lock().unwrap(),
+                    vec!["https://www.example.test/activate?code=ABCD-EF34".to_string()]
+                );
+                online.cancel_connect();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("no code");
+    }
+
+    #[test]
+    fn a_page_elsewhere_never_opens() {
+        let transport = Scripted::answering(vec![reply(
+            200,
+            json!({ "device_code": "d".repeat(64), "user_code": "ABCD-EF34",
+                    "verify_url": "https://example.test/activate",
+                    "verify_url_complete": "https://evil.test/activate?code=ABCD-EF34" }),
+        )]);
+        let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut online = Online::new(config(), &OnlineSettings::default());
+        online.set_transport(transport);
+        let seen = opened.clone();
+        online.set_opener(Box::new(move |url| {
+            seen.lock().unwrap().push(url.to_string());
+            true
+        }));
+        online.connect();
+        for _ in 0..200 {
+            online.update();
+            if let Connect::Waiting { .. } = online.connect_state() {
+                assert_eq!(
+                    *opened.lock().unwrap(),
+                    vec!["https://example.test/activate".to_string()]
+                );
+                online.cancel_connect();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("no code");
+    }
+
+    #[test]
+    fn www_is_the_same_site() {
+        assert!(same_site(
+            "https://www.orinks.net/x",
+            "https://orinks.net/api"
+        ));
+        assert!(same_site(
+            "https://orinks.net/x",
+            "https://www.orinks.net/api"
+        ));
+        assert!(!same_site("https://evil.net/x", "https://orinks.net/api"));
+        assert!(!same_site(
+            "https://wwwx.orinks.net/x",
+            "https://orinks.net/api"
+        ));
+        assert!(!same_site("javascript:alert(1)", "https://orinks.net/api"));
     }
 
     #[test]
