@@ -280,6 +280,32 @@ site's business. User codes should use letters a voice does not blur (the
 library's alphabet leaves out O, 0, I, 1, L, S, 5, Z and 2), and the page
 should rate limit attempts.
 
+### Guests
+
+A server whose accounts store has `createGuest` lets players play with no
+account. The game turns it on with `OnlineConfig::with_guests()`; the
+Online account screen then offers "Play as a guest" beside connecting an
+account.
+
+`POST activate/guest` with `{}` answers
+`200 {"status":"ready","token":"...","name":"Copper Fox 12","guest":true}`.
+The server picks the name, a word from each of two lists and a number
+(`server/src/names.js`), and ignores anything the request says, so no
+name a player typed can reach a board. New guests are limited per address
+per day (`limits.guestsPerDay`, 5), and a store without `createGuest`
+answers `404`.
+
+`POST activate/rename`, with the guest's token, answers
+`200 {"ok":true,"name":"..."}`: another name from the same lists
+(`limits.renamesPerHour`, 20). An account's token gets
+`422 {"error":"not-a-guest"}`.
+
+A guest connects an account the usual way, but sends its own token with
+`activate/start`. Once the code is approved, the server calls the
+service's `onLink({ guest, player })` with the guest's id and the account,
+so the game's boards can move the guest's scores, and the guest's tokens
+stop working.
+
 ### Asking what to play
 
 `POST start?kind=<kind>`, with the bearer token and `{}`, for a kind whose
@@ -312,7 +338,8 @@ handlers.
 
 `GET <kind>/<path...>` reaches the handler's `read`, when it has one: a
 leaderboard's top ten, a ghost to download, an event's total. The token is
-optional there.
+optional there. `ctx.online.read("<kind>/<path>")` sends it, with the token
+when an account is connected, and its answer is the whole JSON body.
 
 ## Writing a server
 

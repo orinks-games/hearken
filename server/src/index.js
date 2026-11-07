@@ -18,3 +18,4 @@ export {
   normalizeUserCode,
   CODE_ALPHABET,
 } from "./memory.js";
+export { guestName, isGuestName, GUEST_ADJECTIVES, GUEST_NOUNS } from "./names.js";
