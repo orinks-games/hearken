@@ -288,3 +288,86 @@ fn a_value_first_row_reads_only_its_new_value_on_left_and_right() {
     );
     assert!(h.spoken().is_empty());
 }
+
+/// A game that sorts Settings into categories, with one row of its own in
+/// a category and one left on the first screen.
+struct SortedGame;
+
+impl Game for SortedGame {
+    const TITLE: &'static str = "Sorted Settings Test";
+    const DATA_DIR: &'static str = "HearkenSortedSettingsTest";
+    const ENV_PREFIX: &'static str = "HEARKEN_SORTED_SETTINGS_TEST";
+    type Event = ();
+    type Data = ();
+    type Settings = ();
+    type Action = NoAction;
+    type Category = NoCategory;
+
+    fn settings_categories() -> bool {
+        true
+    }
+
+    fn settings_rows(_ctx: &Ctx<Self>, mut rows: Vec<SettingsRow<Self>>) -> Vec<SettingsRow<Self>> {
+        let mut out = vec![
+            SettingsRow::new("difficulty", MenuItem::inert("Difficulty: normal"))
+                .in_category("Game"),
+        ];
+        out.append(&mut rows);
+        out.push(SettingsRow::new("about", MenuItem::inert("About")));
+        out
+    }
+}
+
+#[test]
+fn categories_open_their_own_rows_and_escape_comes_back() {
+    let mut h = Headless::new((), SettingsScreen::<SortedGame>::new());
+    h.frame(0.0);
+    let rows = row_labels(&h);
+    assert_eq!(rows[0], "Game");
+    assert!(rows.contains(&"Speech".to_string()), "{rows:?}");
+    assert!(rows.contains(&"Sound".to_string()), "{rows:?}");
+    assert!(rows.contains(&"Controls".to_string()), "{rows:?}");
+    assert_eq!(rows.last().map(String::as_str), Some("About"));
+    assert!(!rows.iter().any(|r| r.starts_with("Master volume")));
+
+    // Sound opens a screen of its own rows, titled Sound.
+    let sound = rows.iter().position(|r| r == "Sound").unwrap();
+    h.press(Key::Home);
+    for _ in 0..sound {
+        h.press(Key::Down);
+    }
+    h.clear();
+    h.press(Key::Return);
+    h.frame(0.0);
+    assert!(h.spoken()[0].starts_with("Sound"), "{:?}", h.spoken());
+    let inside = row_labels(&h);
+    assert_eq!(inside[0], "Lower game sound under speech: off");
+    assert!(inside
+        .iter()
+        .all(|r| r.starts_with("Lower") || r.contains("volume")));
+
+    // A change inside a category works as it does on the flat list.
+    h.press(Key::Down); // Master volume
+    h.press(Key::Left);
+    assert_eq!(h.app.ctx.settings.audio.volume(Bus::MASTER), 95);
+
+    h.press(Key::Escape);
+    h.frame(0.0);
+    assert_eq!(row_labels(&h)[0], "Game");
+}
+
+#[test]
+fn a_speech_category_still_previews_the_rate_by_id() {
+    let mut h = Headless::new((), SettingsScreen::<SortedGame>::category("Speech"));
+    h.frame(0.0);
+    let rows = row_labels(&h);
+    assert_eq!(rows[0], "Speech rate: 50 percent", "{rows:?}");
+    h.clear();
+    h.press(Key::Right);
+    assert!(h
+        .speech
+        .borrow()
+        .previews()
+        .iter()
+        .any(|(id, text, _)| id.as_str() == "speech_rate" && text.starts_with("Speech rate: 55")));
+}

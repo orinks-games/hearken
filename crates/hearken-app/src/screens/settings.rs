@@ -174,12 +174,43 @@ fn toggle_row<G: Game>(s: &mut SettingsScreen<G>, ctx: &mut Ctx<G>, f: impl FnOn
     s.speak_current(ctx);
 }
 
+/// The built-in rows' categories, used when [`Game::settings_categories`]
+/// is on.
+pub mod categories {
+    pub const SPEECH: &str = "Speech";
+    pub const SOUND: &str = "Sound";
+    pub const DISPLAY: &str = "Display";
+    pub const CONTROLS: &str = "Controls";
+    pub const ONLINE: &str = "Online";
+    pub const UPDATES: &str = "Updates";
+}
+
+/// The category of a built-in row, by its id.
+fn builtin_category(id: &str) -> Option<&'static str> {
+    use categories::*;
+    Some(match id {
+        "language" | "speech_rate" | "speech_voice" | "speech_volume" | "verbosity"
+        | "menu_positions" => SPEECH,
+        "duck" => SOUND,
+        _ if id.starts_with("volume.") => SOUND,
+        "display" | "display_text" | "display_motion" | "display_contrast" => DISPLAY,
+        "keyboard" | "controller_buttons" | "controller" => CONTROLS,
+        "discord" | "online" => ONLINE,
+        "updates" | "update_channel" | "update_at_start" => UPDATES,
+        _ => return None,
+    })
+}
+
 /// One row of the Settings screen, tagged with a stable id so a game's
 /// [`Game::settings_rows`] can find, reorder, drop or add to the built-in
 /// rows.
 pub struct SettingsRow<G: Game> {
     pub id: String,
     pub item: MenuItem<SettingsScreen<G>, G>,
+    /// The category this row is listed under when the game turns on
+    /// [`Game::settings_categories`]. A row with none stays on the first
+    /// Settings screen, between the categories.
+    pub category: Option<String>,
 }
 
 impl<G: Game> SettingsRow<G> {
@@ -187,7 +218,15 @@ impl<G: Game> SettingsRow<G> {
         SettingsRow {
             id: id.into(),
             item,
+            category: None,
         }
+    }
+
+    /// Lists the row under `category`, such as `"Sound"` (see
+    /// [`Game::settings_categories`]).
+    pub fn in_category(mut self, category: impl Into<String>) -> Self {
+        self.category = Some(category.into());
+        self
     }
 
     /// Left and Right read back `value` alone (computed after the change,
@@ -204,6 +243,9 @@ impl<G: Game> SettingsRow<G> {
 
 pub struct SettingsScreen<G: Game> {
     menu: MenuCore<Self, G>,
+    /// The one category this screen lists, or `None` for the first
+    /// Settings screen (see [`Game::settings_categories`]).
+    category: Option<String>,
     /// The id of each row in `menu.items`, in the same order, read back by
     /// `speak_adjusted` to find the speech-rate row without assuming it is
     /// first: a game's `settings_rows` may have moved it.
@@ -216,8 +258,61 @@ impl<G: Game> SettingsScreen<G> {
             menu: MenuCore::new("Settings").with_intro_help(
                 "Up and Down move, Left and Right change the setting, Escape saves and goes back.",
             ),
+            category: None,
             row_ids: Vec::new(),
         }
+    }
+
+    /// One category's rows, titled with its name, such as `"Sound"`.
+    /// Settings opens these itself when [`Game::settings_categories`] is on.
+    pub fn category(name: impl Into<String>) -> Self {
+        let name = name.into();
+        SettingsScreen {
+            menu: MenuCore::new(name.clone()).with_intro_help(
+                "Up and Down move, Left and Right change the setting, Escape goes back.",
+            ),
+            category: Some(name),
+            row_ids: Vec::new(),
+        }
+    }
+
+    /// The category this screen lists, if it lists one.
+    pub fn category_name(&self) -> Option<&str> {
+        self.category.as_deref()
+    }
+
+    /// Sorts the rows for this screen when the game uses categories. A
+    /// category screen keeps its own rows. The first screen keeps rows with
+    /// no category where they are and puts one row in place of each
+    /// category, where its first row was.
+    fn sorted(&self, rows: Vec<SettingsRow<G>>) -> Vec<SettingsRow<G>> {
+        if let Some(name) = &self.category {
+            return rows
+                .into_iter()
+                .filter(|r| r.category.as_ref() == Some(name))
+                .collect();
+        }
+        let mut out: Vec<SettingsRow<G>> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        for row in rows {
+            let Some(name) = row.category else {
+                out.push(row);
+                continue;
+            };
+            if seen.contains(&name) {
+                continue;
+            }
+            seen.push(name.clone());
+            let open = name.clone();
+            out.push(SettingsRow::new(
+                format!("category.{name}"),
+                MenuItem::new(name.clone(), move |_s: &mut Self, ctx: &mut Ctx<G>| {
+                    ctx.push(SettingsScreen::<G>::category(open.clone()))
+                })
+                .help(format!("{name} settings.")),
+            ));
+        }
+        out
     }
 }
 
@@ -661,7 +756,17 @@ impl<G: Game> Menu for SettingsScreen<G> {
             }
         }
 
-        let rows = G::settings_rows(&*ctx, rows);
+        let rows: Vec<SettingsRow<G>> = rows
+            .into_iter()
+            .map(|row| match builtin_category(&row.id) {
+                Some(c) => row.in_category(c),
+                None => row,
+            })
+            .collect();
+        let mut rows = G::settings_rows(&*ctx, rows);
+        if G::settings_categories() {
+            rows = self.sorted(rows);
+        }
         self.row_ids = rows.iter().map(|r| r.id.clone()).collect();
         rows.into_iter().map(|r| r.item).collect()
     }

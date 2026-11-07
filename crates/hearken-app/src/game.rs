@@ -147,6 +147,16 @@ pub trait Game: Sized + 'static {
         rows
     }
 
+    /// Whether Settings opens on a list of categories, such as Speech,
+    /// Sound and Controls, each its own screen of rows. Off by default: one
+    /// long list. Built-in rows carry their categories (see
+    /// [`crate::screens::settings::categories`]); a game's own rows pick one
+    /// with [`SettingsRow::in_category`], and rows with none stay on the
+    /// first screen.
+    fn settings_categories() -> bool {
+        false
+    }
+
     /// The game's soundtrack: the pieces a player unlocks and plays from
     /// [`crate::SoundtrackScreen`]. Empty by default. A game whose list
     /// changes as it runs sets it with `ctx.soundtrack.set_tracks`.
