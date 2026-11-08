@@ -22,7 +22,12 @@
 //!   is one step that either happens or does not.
 //!
 //! The script waits up to five minutes for the game to exit, and gives up
-//! without touching anything if it never does.
+//! without touching anything if it never does. On Windows it then waits for
+//! the program file itself to be free, and retries a file that is still
+//! locked (by antivirus, say) for a minute before it gives up and puts the
+//! backup back. Each step, and any file that failed, goes to
+//! [`APPLY_LOG`] in the game's folder, which the next start copies into
+//! the game's log.
 //!
 //! The script is written inside the staging folder, which only this user
 //! can open (see [`crate::install::make_staging_dir`]), under a random name,
@@ -37,6 +42,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::install::{Host, Install, Os, Staged};
+use crate::recover::remove_path;
+pub use crate::recover::{recover_interrupted, Recovery, APPLY_LOG};
 
 /// The folder in a portable install that holds the player's saves.
 pub const SAVES: &str = "saves";
@@ -47,48 +54,78 @@ pub const SAVES: &str = "saves";
 pub const JOURNAL: &str = ".hearken-update-journal";
 
 /// The journal's first line.
-const JOURNAL_HEADER: &str = "hearken-update-journal 1";
+pub(crate) const JOURNAL_HEADER: &str = "hearken-update-journal 1";
 
 /// The first line of a journal whose backup holds only the files the update
 /// replaces; the lines after the backup name what the update adds. A copy
 /// that only knows [`JOURNAL_HEADER`] leaves such a journal's folder alone
 /// rather than prune it to a partial backup.
-const JOURNAL_HEADER_2: &str = "hearken-update-journal 2";
+pub(crate) const JOURNAL_HEADER_2: &str = "hearken-update-journal 2";
 
 /// The most a journal may hold: its backup's path and every path the
 /// update adds.
-const MAX_JOURNAL_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MAX_JOURNAL_BYTES: u64 = 4 * 1024 * 1024;
 
 const WINDOWS_FOLDER: &str = r#"@echo off
 rem Waits for the game to close and copies the update over its folder. The
-rem game already backed up each file the update replaces. saves is never touched. Until the copy is done, a
-rem journal in the game's folder names the copy, and the game puts it back
-rem when it next starts. The program is copied last, beside itself, and
-rem renamed into place.
+rem game already backed up each file the update replaces. saves is never
+rem touched. Until the copy is done, a journal in the game's folder names
+rem the backup, and the game puts it back when it next starts. The program
+rem is copied last, beside itself, and renamed into place. Each step goes
+rem to a log in the game's folder, which the game reads when it next starts.
+set log="{dst}\{log}"
+>>%log% echo %date% %time% waiting for the game to close
 set tries=0
 :wait
 tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL
 if errorlevel 1 goto closed
 set /a tries+=1
-if %tries% GEQ 300 goto done
+if %tries% GEQ 300 goto gaveup
 ping -n 2 127.0.0.1 >NUL
 goto wait
+:gaveup
+>>%log% echo %date% %time% the game did not close in five minutes, so nothing was changed
+goto done
 :closed
-copy /y "{staging}\{journal}" "{dst}\{journal}" >NUL || goto start
-robocopy "{src}" "{dst}" /E /XD saves /XF "{exe}" /R:10 /W:1 >NUL
-if errorlevel 8 goto failed
-copy /y "{src}\{exe}" "{dst}\{exe}.update-new" >NUL || goto failed
-move /y "{dst}\{exe}.update-new" "{dst}\{exe}" >NUL || goto failed
+rem Windows can hold the program a moment after the game has gone, and
+rem antivirus may be reading it: wait until it can be written.
+set tries=0
+:unlock
+2>NUL (>>"{dst}\{exe}" call ) && goto unlocked
+set /a tries+=1
+if %tries% GEQ 60 goto unlocked
+ping -n 2 127.0.0.1 >NUL
+goto unlock
+:unlocked
+>>%log% echo %date% %time% the game closed; waited %tries% seconds for the program to be free
+copy /y "{staging}\{journal}" "{dst}\{journal}" >NUL || goto nojournal
+robocopy "{src}" "{dst}" /E /XD saves /XF "{exe}" /R:30 /W:2 /NP /NDL /NFL /NJH /LOG+:%log% >NUL
+set code=%errorlevel%
+if %code% GEQ 8 goto failed
+set tries=0
+:program
+copy /y "{src}\{exe}" "{dst}\{exe}.update-new" >NUL && move /y "{dst}\{exe}.update-new" "{dst}\{exe}" >NUL && goto copied
+set /a tries+=1
+set code=program
+if %tries% GEQ 30 goto failed
+ping -n 3 127.0.0.1 >NUL
+goto program
+:copied
 del "{dst}\{journal}"
+>>%log% echo %date% %time% the update is in
 :start
 start "" /D "{dst}" "{dst}\{exe}"
 :done
 rem The script is in the staging folder: one line, so cmd never reads on.
 rmdir /s /q "{staging}" & exit /b
+:nojournal
+>>%log% echo %date% %time% writing the journal failed, so nothing was changed
+goto start
 :failed
 rem The journal stays, and so does the backup: the game puts it back.
+>>%log% echo %date% %time% copying the update failed, code %code%; putting the backup back
 del "{dst}\{exe}.update-new" 2>NUL
-robocopy "{backup}" "{dst}" /E /XD saves /R:10 /W:1 >NUL
+robocopy "{backup}" "{dst}" /E /XD saves /R:30 /W:2 /NP /NDL /NFL /NJH /LOG+:%log% >NUL
 start "" /D "{dst}" "{dst}\{exe}"
 exit /b
 "#;
@@ -98,35 +135,45 @@ const POSIX_FOLDER: &str = r#"#!/bin/sh
 # game already backed up each file the update replaces. saves is never touched. Until the copy is done, a journal
 # in the game's folder names the copy, and the game puts it back when it
 # next starts, even if this script was stopped part-way. The program is
-# copied last, beside itself, and renamed into place.
+# copied last, beside itself, and renamed into place. Each step goes to a
+# log in the game's folder, which the game reads when it next starts.
+log="{dst}/{log}"
+note() { echo "$(date) $*" >>"$log" 2>/dev/null; }
+note waiting for the game to close
 tries=0
 while kill -0 {pid} 2>/dev/null; do
   tries=$((tries + 1))
-  if [ "$tries" -ge 300 ]; then rm -rf "{staging}"; exit 1; fi
+  if [ "$tries" -ge 300 ]; then
+    note the game did not close in five minutes, so nothing was changed
+    rm -rf "{staging}"; exit 1
+  fi
   sleep 1
 done
+note the game closed
 rm -rf "{src}/saves" "{src}/{journal}"
 backup="{backup}"
 ok=1
 keep=0
-[ -d "$backup" ] || ok=0
+[ -d "$backup" ] || { ok=0; note the backup is missing, so nothing was changed; }
 if [ "$ok" = 1 ]; then
-  cp "{staging}/{journal}" "{dst}/{journal}" || ok=0
+  cp "{staging}/{journal}" "{dst}/{journal}" || { ok=0; note writing the journal failed, so nothing was changed; }
 fi
 if [ "$ok" = 1 ]; then
   copied=1
   for entry in "{src}"/* "{src}"/.[!.]* "{src}"/..?*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     [ "${entry##*/}" = "{exe}" ] && continue
-    cp -a "$entry" "{dst}/" || { copied=0; break; }
+    cp -a "$entry" "{dst}/" 2>>"$log" || { copied=0; note copying "${entry##*/}" failed; break; }
   done
-  if [ "$copied" = 1 ] && cp -a "{src}/{exe}" "{dst}/{exe}.update-new" \
-    && mv -f "{dst}/{exe}.update-new" "{dst}/{exe}"; then
+  if [ "$copied" = 1 ] && cp -a "{src}/{exe}" "{dst}/{exe}.update-new" 2>>"$log" \
+    && mv -f "{dst}/{exe}.update-new" "{dst}/{exe}" 2>>"$log"; then
     rm -f "{dst}/{journal}"
+    note the update is in
   else
     # The journal stays, and so does the backup: the game puts it back.
+    note copying the update failed, putting the backup back
     rm -f "{dst}/{exe}.update-new"
-    cp -a "$backup/." "{dst}/"
+    cp -a "$backup/." "{dst}/" 2>>"$log"
     keep=1
   fi
 fi
@@ -272,6 +319,7 @@ pub fn script_text(
             ("backup", q(&backup)),
             ("exe", quote_for_script(&exe, windows)),
             ("journal", JOURNAL.to_string()),
+            ("log", APPLY_LOG.to_string()),
         ],
     ))
 }
@@ -429,221 +477,6 @@ pub fn write_apply_script(
     Ok(script)
 }
 
-/// What [`recover_interrupted`] found.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Recovery {
-    /// No update was left part-way.
-    Nothing,
-    /// An update was left part-way, and the version before it is back.
-    Restored,
-    /// An update was left part-way, and its backup is gone, so the folder
-    /// is as the update left it.
-    NoBackup,
-}
-
-/// Puts a folder install back as it was before an update that did not
-/// finish being copied in: the apply script failed, or was stopped before
-/// it removed its [`JOURNAL`]. The game calls this as it starts, before it
-/// reads anything from its folder. The backup and its staging folder are
-/// removed once the folder is back; doing it again after being stopped
-/// part-way is safe.
-pub fn recover_interrupted(install: &Install) -> io::Result<Recovery> {
-    let Install::Folder { dir, .. } = install else {
-        return Ok(Recovery::Nothing);
-    };
-    let journal = dir.join(JOURNAL);
-    let meta = match fs::symlink_metadata(&journal) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Recovery::Nothing),
-        Err(e) => return Err(e),
-    };
-    let read = if meta.is_file() && meta.len() <= MAX_JOURNAL_BYTES {
-        fs::read_to_string(&journal)
-            .ok()
-            .and_then(|text| journal_backup(&text))
-            .filter(|(backup, _)| backup_usable(backup, &meta))
-    } else {
-        None
-    };
-    let (backup, added) = match read {
-        Some((backup, added)) => (Some(backup), added),
-        None => (None, None),
-    };
-    let Some(backup) = backup else {
-        log::warn!(
-            "an update to {} did not finish and its backup is gone",
-            dir.display()
-        );
-        remove_path(&journal)?;
-        return Ok(Recovery::NoBackup);
-    };
-    log::info!(
-        "an update to {} did not finish; putting {} back",
-        dir.display(),
-        backup.display()
-    );
-    restore_into(&backup, dir)?;
-    match added {
-        // Only what the update added goes: the backup holds only what it
-        // replaced, and everything else was never touched.
-        Some(added) => {
-            for path in added {
-                if !through_links(dir, &path) {
-                    remove_path(&dir.join(path))?;
-                }
-            }
-        }
-        // An older journal's backup is the whole folder.
-        None => prune_to(&backup, dir, true)?,
-    }
-    fs::remove_file(&journal)?;
-    if let Some(staging) = backup.parent() {
-        let _ = fs::remove_dir_all(staging);
-    }
-    Ok(Recovery::Restored)
-}
-
-/// Whether a folder on the way from `dir` to `rel` is a link (or not a
-/// folder at all): removing through it could reach outside the game.
-fn through_links(dir: &Path, rel: &Path) -> bool {
-    let mut at = dir.to_path_buf();
-    let mut parts = rel.components().peekable();
-    while let Some(part) = parts.next() {
-        if parts.peek().is_none() {
-            return false;
-        }
-        at.push(part);
-        if !fs::symlink_metadata(&at).is_ok_and(|m| m.is_dir()) {
-            return true;
-        }
-    }
-    false
-}
-
-/// The backup a journal names and, for a journal that lists them, what
-/// the update adds (`None` for an older journal, whose backup is the whole
-/// folder). A listed path that could reach outside the folder, or into its
-/// saves, makes the journal unreadable.
-fn journal_backup(text: &str) -> Option<(PathBuf, Option<Vec<PathBuf>>)> {
-    let mut lines = text.lines();
-    let header = lines.next()?;
-    let listed = match header {
-        JOURNAL_HEADER => false,
-        JOURNAL_HEADER_2 => true,
-        _ => return None,
-    };
-    let path = PathBuf::from(lines.next()?);
-    if !path.is_absolute() {
-        return None;
-    }
-    if !listed {
-        return Some((path, None));
-    }
-    let mut added = Vec::new();
-    for line in lines {
-        let rel = crate::extract::safe_path(line)?;
-        let first = rel.components().next()?;
-        if first.as_os_str() == SAVES || first.as_os_str() == JOURNAL {
-            return None;
-        }
-        added.push(rel);
-    }
-    Some((path, Some(added)))
-}
-
-/// Whether `backup` looks like one an apply script made: a real folder
-/// named `backup` in a staging folder, which on Unix only its owner, the
-/// one who wrote the journal, can open.
-fn backup_usable(backup: &Path, journal: &fs::Metadata) -> bool {
-    let named = backup.file_name().is_some_and(|n| n == "backup");
-    let Some(staging) = backup.parent() else {
-        return false;
-    };
-    let in_staging = staging
-        .file_name()
-        .is_some_and(|n| n.to_string_lossy().contains("-update-"));
-    let real_dir = |p: &Path| fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
-    if !(named && in_staging && real_dir(backup) && real_dir(staging)) {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let Ok(meta) = fs::symlink_metadata(staging) else {
-            return false;
-        };
-        if meta.mode() & 0o077 != 0 || meta.uid() != journal.uid() {
-            return false;
-        }
-    }
-    let _ = journal;
-    true
-}
-
-fn remove_path(path: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
-        Ok(_) => fs::remove_file(path),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-/// The name a restored file is copied to before it is renamed over the one
-/// it replaces, so each file is either the old one or the restored one.
-const RESTORING: &str = ".hearken-restore";
-
-/// Copies everything in `from` over `to`, file by file.
-fn restore_into(from: &Path, to: &Path) -> io::Result<()> {
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let source = entry.path();
-        let target = to.join(&name);
-        let source_meta = fs::symlink_metadata(&source)?;
-        let target_meta = fs::symlink_metadata(&target).ok();
-        if source_meta.is_dir() && target_meta.as_ref().is_some_and(|m| m.is_dir()) {
-            restore_into(&source, &target)?;
-            continue;
-        }
-        let mut temp_name = name.clone();
-        temp_name.push(RESTORING);
-        let temp = to.join(temp_name);
-        remove_path(&temp)?;
-        crate::install::copy_tree(&source, &temp)?;
-        // A rename replaces a file but not a folder.
-        if target_meta.is_some_and(|m| m.is_dir() || source_meta.is_dir()) {
-            remove_path(&target)?;
-        }
-        fs::rename(&temp, &target)?;
-    }
-    Ok(())
-}
-
-/// Removes what is in `to` but not in `from`: what the update added. Saves
-/// and the journal stay.
-fn prune_to(from: &Path, to: &Path, top: bool) -> io::Result<()> {
-    for entry in fs::read_dir(to)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name == SAVES || (top && name == JOURNAL) {
-            continue;
-        }
-        let source = from.join(&name);
-        let target = entry.path();
-        match fs::symlink_metadata(&source) {
-            Ok(meta) if meta.is_dir() => {
-                if fs::symlink_metadata(&target).is_ok_and(|m| m.is_dir()) {
-                    prune_to(&source, &target, false)?;
-                }
-            }
-            Ok(_) => {}
-            Err(_) => remove_path(&target)?,
-        }
-    }
-    Ok(())
-}
-
 /// The command that runs `script`.
 pub fn apply_command(script: &Path, os: Os) -> Vec<String> {
     let script = script.display().to_string();
@@ -697,7 +530,16 @@ pub fn spawn_detached(command: Vec<String>) -> io::Result<()> {
     {
         use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-        cmd.creation_flags(0x0800_0000 | 0x0000_0200);
+        const FLAGS: u32 = 0x0800_0000 | 0x0000_0200;
+        // CREATE_BREAKAWAY_FROM_JOB: a launcher or terminal that runs the
+        // game in a job closes every process in it when the game exits,
+        // which would stop the script part-way. A job that forbids leaving
+        // refuses the spawn, so it is tried again inside the job.
+        cmd.creation_flags(FLAGS | 0x0100_0000);
+        if cmd.spawn().is_ok() {
+            return Ok(());
+        }
+        cmd.creation_flags(FLAGS);
     }
     #[cfg(unix)]
     {
@@ -710,6 +552,8 @@ pub fn spawn_detached(command: Vec<String>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::recover::journal_backup;
 
     #[test]
     fn paths_are_quoted_for_each_shell() {
@@ -780,6 +624,16 @@ mod tests {
             .find("del \"C:\\Games\\100%% Fun\\.hearken-update-journal\"")
             .unwrap();
         assert!(journal < copy && copy < done);
+        // Each step is logged in the game's folder; the program must be
+        // free before anything is copied, and a locked file is retried.
+        assert!(text.contains(r#"set log="C:\Games\100%% Fun\.hearken-update.log""#));
+        assert!(
+            text.contains(r#"2>NUL (>>"C:\Games\100%% Fun\my-game.exe" call ) && goto unlocked"#)
+        );
+        assert!(text.contains("/R:30 /W:2 /NP /NDL /NFL /NJH /LOG+:%log%"));
+        let unlock = text.find(":unlock").unwrap();
+        assert!(unlock < journal);
+        assert!(text.contains("if %tries% GEQ 30 goto failed"));
         // A failed copy keeps the staging folder, with the backup in it.
         let failed = text.find(":failed").unwrap();
         assert!(!text[failed..].contains("rmdir"));
@@ -800,7 +654,8 @@ mod tests {
         assert!(text.contains("backup=\"/tmp/s/backup\""));
         // No backup without the one the game made, and no copy of the
         // whole folder.
-        assert!(text.contains("[ -d \"$backup\" ] || ok=0"));
+        assert!(text.contains("[ -d \"$backup\" ] || { ok=0;"));
+        assert!(text.contains("log=\"/home/p/My \\$Game/.hearken-update.log\""));
         assert!(!text.contains("\"$backup/\" ||"));
         assert!(text.contains(
             "cp \"/tmp/s/.hearken-update-journal\" \"/home/p/My \\$Game/.hearken-update-journal\""
@@ -1047,6 +902,8 @@ mod tests {
         assert_eq!(fs::read(game.join("saves/progress.json")).unwrap(), b"mine");
         assert!(started.exists(), "the game was not started again");
         assert!(!staging.exists() && !script.exists());
+        let log = fs::read_to_string(game.join(APPLY_LOG)).unwrap();
+        assert!(log.contains("the game closed") && log.contains("the update is in"));
     }
 
     /// A copy that fails part-way is undone from the backup.
@@ -1079,6 +936,8 @@ mod tests {
         )
         .unwrap();
         Command::new("/bin/sh").arg(&script).status().unwrap();
+        let log = fs::read_to_string(game.join(APPLY_LOG)).unwrap();
+        assert!(log.contains("copying clash failed"), "{log}");
         assert_eq!(fs::read(game.join("a.txt")).unwrap(), b"old");
         assert!(game.join("clash/inside").is_dir());
         // The journal and the backup stay for the next start, which puts
@@ -1087,6 +946,7 @@ mod tests {
         assert!(staging.join("backup").is_dir());
         assert_eq!(recover_interrupted(&install).unwrap(), Recovery::Restored);
         assert!(!game.join(JOURNAL).exists() && !staging.exists());
+        assert!(!game.join(APPLY_LOG).exists());
         assert_eq!(fs::read(game.join("a.txt")).unwrap(), b"old");
         assert!(game.join("clash/inside").is_dir());
         assert_eq!(recover_interrupted(&install).unwrap(), Recovery::Nothing);

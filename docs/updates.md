@@ -345,10 +345,23 @@ player back to a version with a known flaw.
      there, and the next time the game starts, before it reads anything
      else, it puts the backup back exactly: each file is copied in beside
      the one it replaces and renamed over it, and what the update added is
-     removed. The player is told the update did not finish. Stopped again
+     removed. A file that already matches its backup is left alone, so the
+     running program is never renamed over (Windows refuses that); one the
+     running game holds open is renamed aside first, and removed at a later
+     start. If the program differs from its backup, the script got as far
+     as renaming the new program in, so the update is whole and is kept.
+     The player is told the update did not finish. Stopped again
      during that, it simply happens again at the next start. A folder that
      holds such a backup is kept for 30 days rather than one. The `saves`
      folder of a portable copy is never copied either way. On Windows the
+     script also waits, up to a minute, for the program file to be free
+     after the process has gone, and retries a locked file every two
+     seconds for a minute (robocopy `/R:30 /W:2`, and the program's own
+     copy 30 times) before it gives up. The script is started outside any
+     job the game runs in, where Windows allows it, so a launcher closing
+     the game's job does not stop it part-way. Each step, and robocopy's
+     errors, go to `.hearken-update.log` in the game's folder; the next
+     start copies that into the game's log and deletes it. On Windows the
      script uses robocopy, which refuses `\\?\` paths, so they are written
      in their plain form; a `%` in a path is doubled for cmd, and `$`,
      backticks, backslashes and quotes are escaped for sh.

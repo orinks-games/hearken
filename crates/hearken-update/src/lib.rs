@@ -26,6 +26,8 @@
 //! behind its `update` feature.
 
 pub mod apply;
+#[cfg(all(test, windows))]
+mod apply_windows_tests;
 pub mod check;
 pub mod download;
 pub mod extract;
@@ -37,6 +39,7 @@ pub mod manifest;
 pub mod notes;
 pub mod partial;
 pub mod platform;
+pub mod recover;
 pub mod source;
 pub mod version;
 
