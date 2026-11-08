@@ -1,5 +1,5 @@
 name: Linux build dependencies
-description: SDL2 desktop backends, Speech Dispatcher headers and gcc 13 for Prism.
+description: SDL2 desktop backends, Speech Dispatcher headers and gcc 13 for Prism, and mold for CI's links.
 runs:
   using: composite
   steps:
@@ -18,7 +18,8 @@ runs:
           libwayland-dev wayland-protocols libdecor-0-dev \
           libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libdrm-dev libgbm-dev \
           libasound2-dev libpulse-dev libpipewire-0.3-dev \
-          libdbus-1-dev libudev-dev libibus-1.0-dev
+          libdbus-1-dev libudev-dev libibus-1.0-dev \
+          mold
         echo "CC=gcc-13" >> "$GITHUB_ENV"
         echo "CXX=g++-13" >> "$GITHUB_ENV"
         # Prism's objects carry gcc 13 link-time bytecode the system cc cannot read.

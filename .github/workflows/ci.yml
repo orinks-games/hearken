@@ -3,18 +3,24 @@ name: CI
 on:
   # Jobs run on GitHub's hosted runners, free for this public repository
   # (Blacksmith's paid minutes stay with the private ones). Pull requests
-  # run fmt and the tests on Windows and Linux; macOS runners are the
-  # slowest and fewest at once, so macOS runs only on release tags and
+  # and main run fmt and the tests on Windows and Linux; macOS runners are
+  # the slowest and fewest at once, so macOS runs only on release tags and
   # workflow_dispatch.
   pull_request:
   push:
+    # Main runs too, so its build caches exist. A cache saved from a pull
+    # request is visible only to later runs of that same pull request;
+    # main's are visible to every pull request. With nothing ever saved on
+    # main, each new pull request built from nothing.
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
-# A new push to a pull request cancels the run it replaces.
+# A new push to a pull request cancels the run it replaces. Main's runs are
+# never cancelled: a cancelled run saves no cache.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,7 +28,8 @@ env:
   # CMake 4 accepts; this is CMake's own escape hatch for exactly that.
   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   # sccache caches compiled crates by content, so a toolchain bump or a
-  # fresh checkout recompiles only what changed.
+  # fresh checkout recompiles only what changed, and a pull request reuses
+  # main's copies of the crates it leaves alone.
   RUSTC_WRAPPER: sccache
   SCCACHE_GHA_ENABLED: "true"
 
@@ -39,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["windows-2025","ubuntu-24.04"]' || '["windows-2025","macos-15","ubuntu-24.04"]') }}
+        os: ${{ fromJSON((github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && '["windows-2025","ubuntu-24.04"]' || '["windows-2025","macos-15","ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -47,6 +54,14 @@ jobs:
       HEARKEN_TEST_NO_SPEECH: "1"
       SDL_VIDEODRIVER: dummy
       SDL_AUDIODRIVER: dummy
+      # Prism's static library is built with gcc link-time optimisation and
+      # ships fat objects (LTO bytecode beside the machine code), so every
+      # Linux link re-optimised all of Prism: seconds for each of the ~115 test
+      # programs, most of the Linux test job. -fno-lto links the machine code
+      # that is already there, and mold links faster than ld. CI only; release
+      # builds made with `hearken release` keep LTO. Applies only when building
+      # for Linux.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fno-lto -C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/linux-deps
@@ -56,6 +71,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          # Main only: every pull request restores main's entry, and one
+          # saved per pull request would only crowd the 10 GB cache budget.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # prism-sys asks CMake for C23. The Windows image's CMake does not map
       # C23 onto MSVC, so use a current CMake that does (/std:clatest).
       - uses: lukka/get-cmake@latest
@@ -112,10 +130,10 @@ jobs:
       - name: Build without Kira
         if: runner.os == 'Linux'
         run: cargo check -p hearken --no-default-features --locked
-      # fdk-aac compiles a C codec from source, so pull requests skip it;
-      # release tags and manual runs still check it.
+      # fdk-aac compiles a C codec from source, so pull requests and main
+      # skip it; release tags and manual runs still check it.
       - name: Build with fdk-aac
-        if: runner.os == 'Linux' && github.event_name != 'pull_request'
+        if: runner.os == 'Linux' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
         run: cargo check -p hearken --features fdk-aac --locked
       - name: Tests
         run: cargo test --workspace --locked
@@ -164,6 +182,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          # Main only: every pull request restores main's entry, and one
+          # saved per pull request would only crowd the 10 GB cache budget.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test -p hearken-replay --locked
       - run: cargo build -p hearken-replay --example coin-dash --target wasm32-unknown-unknown --release --locked
       - uses: actions/setup-node@v4
@@ -186,12 +207,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["windows-2025","ubuntu-24.04"]' || '["windows-2025","macos-15","ubuntu-24.04"]') }}
+        os: ${{ fromJSON((github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && '["windows-2025","ubuntu-24.04"]' || '["windows-2025","macos-15","ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
       HEARKEN_VOICES: ${{ github.workspace }}/voices
       HEARKEN_VOICE_REQUIRED: "1"
+      # Fast Linux links, as in the test job.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fno-lto -C link-arg=-fuse-ld=mold"
     defaults:
       run:
         shell: bash
@@ -205,6 +228,7 @@ jobs:
         with:
           key: voice
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/cache@v4
         with:
           path: voices

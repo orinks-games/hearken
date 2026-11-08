@@ -39,6 +39,9 @@ jobs:
             os: windows-2025
           - name: Linux
             os: ubuntu-24.04
+            # Fast links without re-running Prism's LTO, as in ci.yml. These
+            # go in RUSTFLAGS because it overrides the per-target variable.
+            link: -C link-arg=-fno-lto -C link-arg=-fuse-ld=mold
           - name: macOS
             os: macos-15
     runs-on: ${{ matrix.os }}
@@ -49,7 +52,7 @@ jobs:
       SDL_VIDEODRIVER: dummy
       SDL_AUDIODRIVER: dummy
       HOMEBREW_NO_AUTO_UPDATE: "1"
-      RUSTFLAGS: --cfg ci_quick
+      RUSTFLAGS: --cfg ci_quick ${{ matrix.link }}
     steps:
       - name: Pick the Freight Fate ref
         id: ref
@@ -83,6 +86,10 @@ jobs:
         with:
           cache-key: hearken-downstream
           save-cache: "false"
+          # sccache keeps the compiled crates, so a second push to a
+          # labelled pull request skips most of the game build.
+          sccache: "true"
+          linux-packages: mold
 
       # Every Hearken crate from this checkout, in a cargo config outside
       # the Freight Fate tree. The checkout moves out of the Freight Fate
