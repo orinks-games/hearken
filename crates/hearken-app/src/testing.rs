@@ -22,6 +22,9 @@ pub struct Headless<G: Game> {
     pub speech: Rc<RefCell<CaptureSpeech>>,
     /// Records every call the pool makes to its backend, for assertions.
     pub sounds: Recorder,
+    /// `Ctx::changed` at the last `clear`, so `changes` reports only what
+    /// came after it.
+    changes_seen: u64,
     _dir: tempfile::TempDir,
 }
 
@@ -51,8 +54,41 @@ impl<G: Game> Headless<G> {
             app: App::new(ctx, Box::new(first)),
             speech,
             sounds,
+            changes_seen: 0,
             _dir: dir,
         }
+    }
+
+    /// The top screen's phase, by name, when it reports one
+    /// ([`State::phase`]).
+    pub fn phase(&self) -> Option<&'static str> {
+        self.app.top_phase()
+    }
+
+    /// Every state change since the last `clear`, as the logs write them:
+    /// `[screen] push pause over play`, `[phase] play: ready -> ending`.
+    pub fn changes(&self) -> Vec<String> {
+        let ctx = &self.app.ctx;
+        let new = (ctx.changed - self.changes_seen).min(ctx.changes.len() as u64) as usize;
+        ctx.changes[ctx.changes.len() - new..].to_vec()
+    }
+
+    /// Phase changes since the last `clear`, as `"play: ready -> ending"`.
+    pub fn transitions(&self) -> Vec<String> {
+        self.changes_of("[phase] ")
+    }
+
+    /// Screen-stack changes since the last `clear`, as
+    /// `"push pause over play"`.
+    pub fn screens(&self) -> Vec<String> {
+        self.changes_of("[screen] ")
+    }
+
+    fn changes_of(&self, prefix: &str) -> Vec<String> {
+        self.changes()
+            .iter()
+            .filter_map(|line| line.strip_prefix(prefix).map(str::to_string))
+            .collect()
     }
 
     /// Sound keys played (via `Audio::play`/`play_at`/`start_loop`) since the
@@ -87,8 +123,10 @@ impl<G: Game> Headless<G> {
         self.speech.borrow().main_lines()
     }
 
+    /// Forgets what was spoken, played and changed so far.
     pub fn clear(&mut self) {
         self.speech.borrow_mut().clear();
         self.sounds.clear();
+        self.changes_seen = self.app.ctx.changed;
     }
 }

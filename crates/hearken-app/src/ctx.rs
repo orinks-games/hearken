@@ -24,6 +24,16 @@ pub const TRANSCRIPT_TARGET: &str = "hearken.transcript";
 /// How many spoken lines `Ctx::transcript` keeps.
 pub const TRANSCRIPT_CAP: usize = 2000;
 
+/// The `log` target every screen-stack change is written under: a push, a
+/// pop, what a pop revealed and how.
+pub const SCREENS_TARGET: &str = "hearken.screens";
+
+/// The `log` target every phase change (`Phases::set`) is written under.
+pub const PHASE_TARGET: &str = "hearken.phase";
+
+/// How many state changes `Ctx::changes` keeps.
+pub const CHANGES_CAP: usize = 500;
+
 pub struct Ctx<G: Game> {
     pub speech: Box<dyn SpeechSink>,
     /// Translates finished English lines before they are spoken.
@@ -63,6 +73,16 @@ pub struct Ctx<G: Game> {
     pub said: u64,
     /// Lines for the player once the first screen has announced itself.
     pub notices: Vec<String>,
+    /// Every state change this run, newest last, as the logs write them:
+    /// `[screen] push pause over play`, `[phase] play: ready -> ending`.
+    /// Nothing here is spoken; it is for tests, recordings and the agent
+    /// server's inspector.
+    pub changes: Vec<String>,
+    /// State changes this run, counting those `changes` has let go.
+    pub changed: u64,
+    /// The screen on top of the stack, by `State::name`, as the app last
+    /// set it; `"none"` before the first screen.
+    pub(crate) screen: &'static str,
     pub frame: u64,
     /// Seconds since the run started, the sum of every frame's `dt`.
     pub clock: f64,
@@ -126,6 +146,9 @@ impl<G: Game> Ctx<G> {
             transcript: Vec::new(),
             said: 0,
             notices: Vec::new(),
+            changes: Vec::new(),
+            changed: 0,
+            screen: "none",
             frame: 0,
             clock: 0.0,
             audio: Audio::silent(),
@@ -303,6 +326,36 @@ impl<G: Game> Ctx<G> {
         if self.transcript.len() > TRANSCRIPT_CAP {
             let excess = self.transcript.len() - TRANSCRIPT_CAP;
             self.transcript.drain(..excess);
+        }
+    }
+
+    /// The name of the screen on top of the stack: the one whose handlers
+    /// run. `"none"` before the first screen.
+    pub fn top_screen(&self) -> &'static str {
+        self.screen
+    }
+
+    /// Notes a phase change on the top screen: logged under
+    /// [`PHASE_TARGET`] and kept in `changes`. `Phases::set` calls this.
+    pub(crate) fn note_phase(&mut self, from: &'static str, to: &'static str) {
+        let line = format!("{}: {from} -> {to}", self.screen);
+        log::info!(target: PHASE_TARGET, "{line}");
+        self.note_change(format!("[phase] {line}"));
+    }
+
+    /// Notes a screen-stack change: logged under [`SCREENS_TARGET`] and kept
+    /// in `changes`.
+    pub(crate) fn note_screen(&mut self, line: String) {
+        log::info!(target: SCREENS_TARGET, "{line}");
+        self.note_change(format!("[screen] {line}"));
+    }
+
+    fn note_change(&mut self, line: String) {
+        self.changes.push(line);
+        self.changed += 1;
+        if self.changes.len() > CHANGES_CAP {
+            let excess = self.changes.len() - CHANGES_CAP;
+            self.changes.drain(..excess);
         }
     }
 
