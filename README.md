@@ -70,6 +70,10 @@ Some of what that gives a game:
   (`ctx.pop_to("routes")`).
 - **Spoken menus.** A `Menu` builds its rows; Hearken speaks them, plays the
   earcons and handles the keys. Rows carry their own help for F1.
+- **Named phases.** A screen's phases are an enum behind `Phases`, changed
+  in one place; each change is logged beside the screen-stack changes,
+  readable by tests and the agent server, and never spoken. `StatusKey`
+  reads the status in layers. See [`docs/state-machines.md`](docs/state-machines.md).
 - **Translations (optional).** Drop gettext PO files in `lang/`; `Ctx::say`
   translates finished English lines, with missing entries left in English.
   See [`docs/l10n.md`](docs/l10n.md).

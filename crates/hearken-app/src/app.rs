@@ -20,6 +20,8 @@ impl<G: Game> App<G> {
     /// Enter the first screen, then speak any notices behind its
     /// announcement.
     pub fn new(mut ctx: Ctx<G>, mut first: Box<dyn State<G>>) -> Self {
+        ctx.screen = first.name();
+        ctx.note_screen(format!("start on {}", first.name()));
         first.enter(&mut ctx);
         for notice in std::mem::take(&mut ctx.notices) {
             ctx.say_queued(notice);
@@ -245,8 +247,23 @@ impl<G: Game> App<G> {
         self.states.last().map(|s| s.name()).unwrap_or("none")
     }
 
+    /// The top screen's phase ([`State::phase`]), when it reports one.
+    pub fn top_phase(&self) -> Option<&'static str> {
+        self.states.last().and_then(|s| s.phase())
+    }
+
+    /// Every screen on the stack by name, bottom first.
+    pub fn stack_names(&self) -> Vec<&'static str> {
+        self.states.iter().map(|s| s.name()).collect()
+    }
+
     pub fn depth(&self) -> usize {
         self.states.len()
+    }
+
+    /// Keeps `ctx.top_screen()` in step with the stack, after a change.
+    fn note_top(&mut self) {
+        self.ctx.screen = self.top_name();
     }
 
     pub fn top_lines(&self) -> Vec<String> {
@@ -259,7 +276,16 @@ impl<G: Game> App<G> {
     fn pop_one(&mut self) {
         if let Some(mut gone) = self.states.pop() {
             gone.exit(&mut self.ctx);
+            self.note_top();
         }
+    }
+
+    /// Enters `next` as the new top screen, noting it first so anything
+    /// `enter` logs or sets a phase on is filed under its own name.
+    fn enter_top(&mut self, mut next: Box<dyn State<G>>) {
+        self.ctx.screen = next.name();
+        next.enter(&mut self.ctx);
+        self.states.push(next);
     }
 
     fn apply_pending(&mut self) {
@@ -279,15 +305,18 @@ impl<G: Game> App<G> {
             let mut reveal: Option<Reveal> = None;
             for op in self.ctx.take_pending() {
                 match op {
-                    StackOp::Push(mut next) => {
+                    StackOp::Push(next) => {
+                        let over = self.top_name();
+                        self.ctx
+                            .note_screen(format!("push {} over {over}", next.name()));
                         if let Some(top) = self.states.last_mut() {
                             top.cover(&mut self.ctx);
                         }
-                        next.enter(&mut self.ctx);
-                        self.states.push(next);
+                        self.enter_top(next);
                         reveal = None;
                     }
                     StackOp::Pop => {
+                        self.ctx.note_screen(format!("pop {}", self.top_name()));
                         self.pop_one();
                         // An empty stack is only judged once the whole queue
                         // has drained: popping the root and pushing its
@@ -295,6 +324,7 @@ impl<G: Game> App<G> {
                         reveal = Some(Reveal::Announce);
                     }
                     StackOp::PopReveal(how) => {
+                        self.ctx.note_screen(format!("pop {}", self.top_name()));
                         self.pop_one();
                         reveal = Some(how);
                     }
@@ -304,6 +334,8 @@ impl<G: Game> App<G> {
                             continue;
                         };
                         let popped = self.states.len() - 1 - at;
+                        self.ctx
+                            .note_screen(format!("pop to {name}, {popped} closed"));
                         for _ in 0..popped {
                             self.pop_one();
                         }
@@ -313,30 +345,48 @@ impl<G: Game> App<G> {
                             reveal = Some(how);
                         }
                     }
-                    StackOp::Replace(mut next) => {
+                    StackOp::Replace(next) => {
+                        self.ctx.note_screen(format!(
+                            "replace {} with {}",
+                            self.top_name(),
+                            next.name()
+                        ));
                         if let Some(mut gone) = self.states.pop() {
                             gone.exit(&mut self.ctx);
                         }
-                        next.enter(&mut self.ctx);
-                        self.states.push(next);
+                        self.enter_top(next);
                         reveal = None;
                     }
-                    StackOp::Reset(mut next) => {
+                    StackOp::Reset(next) => {
+                        self.ctx.note_screen(format!("reset to {}", next.name()));
                         while let Some(mut gone) = self.states.pop() {
                             gone.exit(&mut self.ctx);
                         }
-                        next.enter(&mut self.ctx);
-                        self.states.push(next);
+                        self.enter_top(next);
                         reveal = None;
                     }
                 }
             }
             if let (Some(how), Some(top)) = (reveal, self.states.last_mut()) {
+                let name = top.name();
                 match how {
-                    Reveal::Announce => top.resume(&mut self.ctx),
-                    Reveal::Quiet => top.resume_quiet(&mut self.ctx),
-                    Reveal::With(result) if result.trim().is_empty() => top.resume(&mut self.ctx),
-                    Reveal::With(result) => top.resume_with(&mut self.ctx, &result),
+                    Reveal::Announce => {
+                        self.ctx.note_screen(format!("{name} resumes"));
+                        top.resume(&mut self.ctx)
+                    }
+                    Reveal::Quiet => {
+                        self.ctx.note_screen(format!("{name} resumes quietly"));
+                        top.resume_quiet(&mut self.ctx)
+                    }
+                    Reveal::With(result) if result.trim().is_empty() => {
+                        self.ctx.note_screen(format!("{name} resumes"));
+                        top.resume(&mut self.ctx)
+                    }
+                    Reveal::With(result) => {
+                        self.ctx
+                            .note_screen(format!("{name} resumes with \"{result}\""));
+                        top.resume_with(&mut self.ctx, &result)
+                    }
                 }
             }
         }
@@ -345,6 +395,7 @@ impl<G: Game> App<G> {
             self.ctx.clear_pending();
         }
         if self.states.is_empty() {
+            self.note_top();
             self.ctx.running = false;
         }
     }

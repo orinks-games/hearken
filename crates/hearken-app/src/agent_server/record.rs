@@ -103,6 +103,11 @@ impl Recording {
         self.line(clock, &format!("sound: {}", describe_sound(s)));
     }
 
+    /// A screen-stack or phase change, as `Ctx::changes` keeps it.
+    pub(super) fn change(&mut self, clock: f64, line: &str) {
+        self.line(clock, line);
+    }
+
     /// A key down or up, from the agent or from a person at the window.
     pub(super) fn key(&mut self, clock: f64, who: &str, event: &InputEvent) {
         let (what, key, mods) = match event {

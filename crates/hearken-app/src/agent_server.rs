@@ -17,6 +17,11 @@
 //! reply at once for timing-critical play), `hold`, `release`, `wait`,
 //! `wait_for`, `lockstep`, `record_start`, `record_stop` and `quit_game`.
 //!
+//! `screen` also names the top screen's phase (`State::phase`) and the
+//! whole stack, and a recording's log carries every screen and phase change
+//! (`Ctx::changes`) beside what was said. Neither reaches `listen`: an
+//! agent plays by ear, and inspects when it needs to explain something.
+//!
 //! `lockstep` (on) holds game time still between tool calls, the way
 //! Freight Fate's does. An agent's round trip takes seconds, longer than
 //! most reaction windows; in lockstep the game waits while it thinks, so a
@@ -130,7 +135,7 @@ fn tools() -> Value {
     let key = json!({ "type": "string", "description": "A key as the settings file names it, with optional ctrl+, alt+, shift+: enter, escape, up, down, left, right, space, tab, a-z, 0-9, f1-f12, page_up, home, ... e.g. \"ctrl+up\"." });
     json!([
         { "name": "listen", "description": "Everything said (and every sound started) since the last call, without touching the game.", "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "screen", "description": "Inspector, not ears: the top screen's name and its text lines. Record anything you needed here that was never spoken.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "screen", "description": "Inspector, not ears: the top screen's name, its phase when it has one, the screen stack and its text lines. Record anything you needed here that was never spoken.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "press", "description": "Press and release a key (times: repeat count, default 1), then return what was heard. settle: seconds to keep listening after the key comes up (default 0.6; 0 replies at once, for timing-critical play).", "inputSchema": { "type": "object", "properties": { "key": key, "times": { "type": "integer", "minimum": 1, "maximum": MAX_REPEAT }, "settle": { "type": "number", "minimum": 0, "maximum": MAX_WAIT_SECONDS } }, "required": ["key"] } },
         { "name": "hold", "description": "Hold a key down until release.", "inputSchema": { "type": "object", "properties": { "key": key }, "required": ["key"] } },
         { "name": "release", "description": "Let a held key go.", "inputSchema": { "type": "object", "properties": { "key": key }, "required": ["key"] } },
@@ -274,6 +279,8 @@ pub struct AgentServer {
     heard: heard::Heard,
     /// `Ctx::said` when last read.
     said: u64,
+    /// `Ctx::changed` when last read.
+    changed: u64,
     recording: Option<record::Recording>,
     /// Hold game time still between calls.
     lockstep: bool,
@@ -315,6 +322,7 @@ impl AgentServer {
             job: None,
             heard: heard::Heard::default(),
             said: 0,
+            changed: 0,
             recording: None,
             lockstep: false,
             wall: 0.0,
@@ -445,6 +453,10 @@ impl AgentServer {
             Ask::Listen => job.left = 0.0,
             Ask::Screen => {
                 let mut text = format!("screen: {}", app.top_name());
+                if let Some(phase) = app.top_phase() {
+                    text.push_str(&format!(", phase: {phase}"));
+                }
+                text.push_str(&format!("\nstack: {}", app.stack_names().join(" > ")));
                 for line in app.top_lines() {
                     text.push('\n');
                     text.push_str(&line);
@@ -514,7 +526,14 @@ impl AgentServer {
         self.said = ctx.said;
         let start = ctx.transcript.len() - new;
         let sounds = ctx.audio.take_heard();
+        let new_changes = (ctx.changed - self.changed).min(ctx.changes.len() as u64) as usize;
+        self.changed = ctx.changed;
         if let Some(rec) = &mut self.recording {
+            // Screen and phase changes go to the log, never to the agent's
+            // ears: `listen` stays what a player hears, `screen` inspects.
+            for line in &ctx.changes[ctx.changes.len() - new_changes..] {
+                rec.change(self.wall, line);
+            }
             for line in &ctx.transcript[start..] {
                 rec.said(self.wall, line);
             }
@@ -641,6 +660,7 @@ mod tests {
 mod lockstep_tests {
     use super::*;
     use crate::ctx::Ctx;
+    use crate::phase::{Phase, Phases};
     use crate::shell::FRAME_SECONDS;
     use crate::state::State;
     use crate::testing::Headless;
@@ -661,10 +681,39 @@ mod lockstep_tests {
     }
 
     /// "Now!" after half a second, then a third of a second to press space.
-    #[derive(Default)]
+    /// Its phases are explicit, as a game's should be (see `phase`).
     struct Window {
         clock: f64,
-        over: bool,
+        phases: Phases<Cue>,
+    }
+
+    impl Default for Window {
+        fn default() -> Self {
+            Window {
+                clock: 0.0,
+                phases: Phases::new(Cue::Waiting),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Cue {
+        /// Before the cue: a press is too soon.
+        Waiting,
+        /// The window after the cue: a press hits.
+        Open,
+        /// Answered or missed.
+        Done,
+    }
+
+    impl Phase for Cue {
+        fn name(self) -> &'static str {
+            match self {
+                Cue::Waiting => "waiting",
+                Cue::Open => "open",
+                Cue::Done => "done",
+            }
+        }
     }
 
     const CUE_AT: f64 = 0.5;
@@ -674,31 +723,35 @@ mod lockstep_tests {
         fn name(&self) -> &'static str {
             "window"
         }
+        fn phase(&self) -> Option<&'static str> {
+            Some(self.phases.name())
+        }
         fn help(&self, _ctx: &Ctx<Reflex>) -> String {
             String::new()
         }
         fn update(&mut self, ctx: &mut Ctx<Reflex>, dt: f64) {
-            if self.over {
+            if self.phases.is(Cue::Done) {
                 return;
             }
-            let before = self.clock;
             self.clock += dt;
-            if before < CUE_AT && self.clock >= CUE_AT {
+            // The window closes at a fixed moment, however late the frame
+            // that opened it landed.
+            if self.phases.is(Cue::Waiting) && self.clock >= CUE_AT {
+                self.phases
+                    .set_for(ctx, Cue::Open, CUE_AT + WINDOW - self.clock);
                 ctx.say("Now!");
             }
-            if self.clock >= CUE_AT + WINDOW {
-                self.over = true;
+            if self.phases.tick(dt) && self.phases.set(ctx, Cue::Done) {
                 ctx.say("Missed.");
             }
         }
         fn handle_input(&mut self, ctx: &mut Ctx<Reflex>, event: &InputEvent) {
-            if !self.over && event.pressed() == Some(Key::Space) {
-                self.over = true;
-                ctx.say(if self.clock >= CUE_AT {
-                    "Hit!"
-                } else {
-                    "Too soon."
-                });
+            if event.pressed() != Some(Key::Space) {
+                return;
+            }
+            let hit = self.phases.is(Cue::Open);
+            if self.phases.set(ctx, Cue::Done) {
+                ctx.say(if hit { "Hit!" } else { "Too soon." });
             }
         }
     }
@@ -862,6 +915,25 @@ mod lockstep_tests {
         s.call("lockstep", json!({ "on": false }));
         s.think(0.5);
         assert!(s.clock() > after + 0.4);
+    }
+
+    #[test]
+    fn the_screen_tool_names_the_phase_and_the_stack_and_listen_does_not() {
+        let (mut s, text) = Session::open("screen", json!({}));
+        assert!(
+            text.starts_with("screen: window, phase: waiting\nstack: window"),
+            "{text}"
+        );
+        let heard = s.call("wait_for", json!({ "text": "now", "seconds": 5 }));
+        assert!(!heard.contains("[phase]"), "{heard}");
+        let text = s.call("screen", json!({}));
+        assert!(text.starts_with("screen: window, phase: open"), "{text}");
+        assert_eq!(
+            s.game.transitions(),
+            ["window: waiting -> open"],
+            "{:?}",
+            s.game.changes()
+        );
     }
 
     #[test]
