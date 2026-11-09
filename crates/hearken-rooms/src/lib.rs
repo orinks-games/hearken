@@ -25,16 +25,22 @@ pub mod protocol;
 pub mod transport;
 
 pub use client::{
-    Answer, Connection, Notice, Room, Rooms, RoomsConfig, Ticket, MAX_IN_FLIGHT, POLL_ACTIVE,
-    POLL_QUIET, QUIET_AFTER,
+    Answer, Connection, Notice, Room, Rooms, RoomsConfig, Ticket, HISTORY_LINES, MAX_IN_FLIGHT,
+    POLL_ACTIVE, POLL_QUIET, QUIET_AFTER,
 };
 pub use error::RoomsError;
 pub use matches::{Applied, Match, MatchError, Sync};
-pub use protocol::{Event, EventKind, Member, Phase, RoomId, RoomInfo, Seats};
+pub use protocol::{
+    valid_handle, Event, EventKind, Member, Mute, MuteMode, Phase, RoomId, RoomInfo, Seats,
+};
 pub use transport::{Reply, Transport};
 
 /// The longest chat line, in characters.
 pub const MAX_CHAT_CHARS: usize = 200;
+/// The longest tag on a chat line, in characters.
+pub const MAX_TAG_CHARS: usize = 64;
+/// The longest channel name, in characters.
+pub const MAX_NAME_CHARS: usize = 32;
 
 /// The letters an invite code is made of: ones a synthesized voice does
 /// not blur (no O/0, I/1/L, S/5, Z/2), as the connect codes use.

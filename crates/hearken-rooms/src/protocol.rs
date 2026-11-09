@@ -41,6 +41,8 @@ pub enum Phase {
     Closed,
     /// A match nobody moved in for the idle limit. Read-only.
     Abandoned,
+    /// A channel: members come and go, chat is taken, nothing is played.
+    Open,
     #[serde(other)]
     Unknown,
 }
@@ -59,9 +61,51 @@ impl Phase {
             Phase::Finished => "over",
             Phase::Closed => "closed",
             Phase::Abandoned => "abandoned",
+            Phase::Open => "open",
             Phase::Unknown => "unknown",
         }
     }
+}
+
+/// How a player has set another: not heard, or kept apart altogether.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MuteMode {
+    /// Their lines are left out of what you read. They are not told.
+    Mute,
+    /// Neither of you reads the other, and you are never seated together
+    /// by Play with anyone or in a direct room.
+    Block,
+    /// Neither: forgets a mute or block.
+    None,
+}
+
+impl MuteMode {
+    pub fn spoken(self) -> &'static str {
+        match self {
+            MuteMode::Mute => "muted",
+            MuteMode::Block => "blocked",
+            MuteMode::None => "heard",
+        }
+    }
+}
+
+/// One player the reading player has muted or blocked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mute {
+    pub handle: String,
+    pub mode: MuteMode,
+    /// The player's name as the server last saw it.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Whether `text` has the shape of a player's handle.
+pub fn valid_handle(text: &str) -> bool {
+    text.len() == 16
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 /// How many seats a room's kind has.
@@ -76,6 +120,10 @@ pub struct Seats {
 pub struct Member {
     pub seat: u8,
     pub name: String,
+    /// What other players know this one by: stable for the account, for
+    /// muting, blocking, reporting and direct rooms.
+    #[serde(default)]
+    pub handle: Option<String>,
     #[serde(default)]
     pub guest: bool,
     /// Polled or connected in the last half minute.
@@ -99,6 +147,12 @@ pub struct RoomInfo {
     pub id: RoomId,
     pub kind: String,
     pub code: String,
+    /// A channel's name, when it was joined by name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// A room of two, found or made by the other player's handle.
+    #[serde(default)]
+    pub direct: bool,
     pub phase: Phase,
     #[serde(default)]
     pub open: bool,
@@ -206,6 +260,19 @@ impl RoomInfo {
             .map(|s| crate::clean_text(s, 200))
     }
 
+    /// Whether this room is a channel (named, direct, or open) rather
+    /// than a match.
+    pub fn is_channel(&self) -> bool {
+        self.phase == Phase::Open || self.direct || self.name.is_some()
+    }
+
+    /// The member with `handle`.
+    pub fn member_by_handle(&self, handle: &str) -> Option<&Member> {
+        self.members
+            .iter()
+            .find(|m| m.handle.as_deref() == Some(handle))
+    }
+
     /// The names of the other seats, in seat order.
     pub fn others(&self) -> Vec<String> {
         self.members
@@ -230,7 +297,7 @@ pub enum EventKind {
     Turn,
     /// A seat left the match: `reason` is `left` or `turn-limit`.
     Left,
-    /// A line of chat: `name`, `text`.
+    /// A line of chat: `name`, `text`, and `tag` when the sender gave one.
     Chat,
     #[serde(other)]
     Unknown,
@@ -248,8 +315,15 @@ pub struct Event {
     pub seat: Option<u8>,
     #[serde(default)]
     pub name: Option<String>,
+    /// The sender's handle, on joins, leaves and chat.
+    #[serde(default)]
+    pub handle: Option<String>,
     #[serde(default)]
     pub text: Option<String>,
+    /// A short line the sender attached to a chat line: where they are,
+    /// what they are doing. The game decides what goes here.
+    #[serde(default)]
+    pub tag: Option<String>,
     #[serde(default)]
     pub inputs: Option<Vec<(u16, i32)>>,
     #[serde(default)]
@@ -259,6 +333,37 @@ pub struct Event {
 impl Event {
     pub fn seat(&self) -> Option<Seat> {
         self.seat.and_then(Seat::new)
+    }
+
+    /// A chat line as it is spoken: "Ada: nice move", or with the tag,
+    /// "Ada, Lake Road: nice move". `None` for any other event.
+    pub fn chat_line(&self) -> Option<String> {
+        if self.kind != EventKind::Chat {
+            return None;
+        }
+        let name = self.name.as_deref().unwrap_or("Someone");
+        let text = self.text.as_deref().unwrap_or("");
+        Some(match self.tag.as_deref().filter(|t| !t.is_empty()) {
+            Some(tag) => format!("{name}, {tag}: {text}"),
+            None => format!("{name}: {text}"),
+        })
+    }
+
+    /// An empty event standing at `seq`: where a read ended when the
+    /// lines up to there were left out, so the client is not behind.
+    pub(crate) fn marker(seq: u64) -> Event {
+        Event {
+            seq,
+            kind: EventKind::Unknown,
+            at: 0,
+            seat: None,
+            name: None,
+            handle: None,
+            text: None,
+            tag: None,
+            inputs: None,
+            reason: None,
+        }
     }
 
     /// Whether this event moves the match: a turn or a seat leaving.

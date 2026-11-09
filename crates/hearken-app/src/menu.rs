@@ -241,6 +241,11 @@ pub trait Menu: Sized + 'static {
         ctx.say_queued(current);
     }
 
+    /// See [`State::takes_text`]: a menu that captures whole keys says so.
+    fn takes_text(&self) -> bool {
+        false
+    }
+
     fn handle_input(&mut self, ctx: &mut Ctx<Self::Game>, event: &InputEvent) {
         menu_input(self, ctx, event)
     }
@@ -515,6 +520,9 @@ impl<M: Menu> State<M::Game> for M {
     }
     fn resume_with(&mut self, ctx: &mut Ctx<M::Game>, result: &str) {
         Menu::resume_with(self, ctx, result)
+    }
+    fn takes_text(&self) -> bool {
+        Menu::takes_text(self)
     }
     fn handle_input(&mut self, ctx: &mut Ctx<M::Game>, event: &InputEvent) {
         Menu::handle_input(self, ctx, event)

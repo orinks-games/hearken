@@ -57,6 +57,9 @@ pub struct Ctx<G: Game> {
     pub rooms: hearken_rooms::Rooms,
     #[cfg(feature = "online")]
     room_notices: Vec<hearken_rooms::Notice>,
+    /// Chat: lines sent and not yet answered, and the read-back place.
+    #[cfg(feature = "online")]
+    pub(crate) chat: crate::chat::ChatState,
     /// The game's updates (see [`crate::updates`]): what the check at start
     /// found, and the way to check and install.
     #[cfg(feature = "update")]
@@ -150,6 +153,8 @@ impl<G: Game> Ctx<G> {
             rooms,
             #[cfg(feature = "online")]
             room_notices: Vec::new(),
+            #[cfg(feature = "online")]
+            chat: Default::default(),
             #[cfg(feature = "update")]
             updates: crate::updates::Updates::new(G::updates()),
             speech,
@@ -259,7 +264,10 @@ impl<G: Game> Ctx<G> {
     #[cfg(feature = "online")]
     pub(crate) fn update_online(&mut self) {
         if self.online.update() {
+            // The account changed; the chat setting is the player's.
+            let chat = self.settings.online.chat;
             self.settings.online = self.online.saved();
+            self.settings.online.chat = chat;
             self.save_settings();
         }
         self.rooms
@@ -267,6 +275,9 @@ impl<G: Game> Ctx<G> {
         let notices = self.rooms.update();
         if self.rooms.was_signed_out() {
             self.online.signed_out_elsewhere();
+        }
+        if let Some(chat) = G::chat() {
+            self.update_chat(&notices, chat.spoken);
         }
         self.room_notices.extend(notices);
         if self.room_notices.len() > MAX_ROOM_NOTICES {

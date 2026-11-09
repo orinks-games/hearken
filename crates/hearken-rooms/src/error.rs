@@ -39,6 +39,14 @@ pub enum RoomsError {
     TooManyRooms,
     /// Not in that room.
     NotAMember,
+    /// Lines are coming too quickly for this room.
+    TooFast,
+    /// One of you has blocked the other.
+    Blocked,
+    /// No player has that handle, or the server has not seen them.
+    UnknownPlayer,
+    /// A line the screen turned away.
+    Screened(Option<String>),
     /// The server refused in its own words: its `error` code and a line
     /// for the player when it gave one.
     Refused {
@@ -68,6 +76,10 @@ impl RoomsError {
             RoomsError::NotEnoughPlayers => "not-enough-players",
             RoomsError::TooManyRooms => "too-many-rooms",
             RoomsError::NotAMember => "not-a-member",
+            RoomsError::TooFast => "too-fast",
+            RoomsError::Blocked => "blocked",
+            RoomsError::UnknownPlayer => "unknown-player",
+            RoomsError::Screened(_) => "screened",
             RoomsError::Refused { code, .. } => code,
         }
     }
@@ -97,6 +109,11 @@ impl RoomsError {
             RoomsError::NotEnoughPlayers => "Not enough players yet.".into(),
             RoomsError::TooManyRooms => "You have too many open games. Finish or leave one.".into(),
             RoomsError::NotAMember => "You are not in that game.".into(),
+            RoomsError::TooFast => "Wait a moment before the next line.".into(),
+            RoomsError::Blocked => "You cannot reach that player.".into(),
+            RoomsError::UnknownPlayer => "No player by that name.".into(),
+            RoomsError::Screened(Some(m)) => end_sentence(m),
+            RoomsError::Screened(None) => "That line was not sent.".into(),
             RoomsError::Refused {
                 message: Some(m), ..
             } => end_sentence(m),
@@ -113,11 +130,15 @@ impl RoomsError {
             .filter(|m| !m.is_empty());
         match (reply.status, code.as_str()) {
             (401, _) => RoomsError::SignedOut,
+            (429, "too-fast") => RoomsError::TooFast,
             (429, _) => RoomsError::RateLimited,
             (404, "unknown-code") => RoomsError::UnknownCode,
             (404, "unknown-kind") => RoomsError::BadKind,
+            (404, "unknown-player") => RoomsError::UnknownPlayer,
             (403, "not-a-member") => RoomsError::NotAMember,
             (403, "not-the-host") => RoomsError::NotTheHost,
+            (403, "blocked") => RoomsError::Blocked,
+            (422, "screened") => RoomsError::Screened(message),
             (409, "full") => RoomsError::Full,
             (409, "started") => RoomsError::Started,
             (409, "wrong-phase") => RoomsError::WrongPhase(

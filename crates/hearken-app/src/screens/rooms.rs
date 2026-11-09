@@ -18,9 +18,10 @@ use serde_json::Value;
 use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
-use crate::menu::{Menu, MenuCore, MenuItem};
+use crate::menu::{Label, Menu, MenuCore, MenuItem};
 use crate::screens::confirm::ConfirmScreen;
 use crate::screens::online::OnlineAccountScreen;
+use crate::screens::players::PlayersScreen;
 use crate::screens::text_entry::TextEntryScreen;
 use crate::sound::UiSound;
 
@@ -545,6 +546,18 @@ impl<G: Game> Menu for RoomScreen<G> {
                     .help("Go to the match."),
                 );
             }
+            Phase::Open => {
+                let here = info.members.iter().filter(|m| m.here).count();
+                items.push(MenuItem::inert(format!(
+                    "Players: {}{}",
+                    players_line(&info),
+                    if here > 1 {
+                        format!(". {here} here now")
+                    } else {
+                        String::new()
+                    }
+                )));
+            }
             phase => {
                 let standing = info.you().and_then(|s| info.summary_for(s)).map_or_else(
                     || format!("This game is {}.", phase.spoken()),
@@ -553,6 +566,36 @@ impl<G: Game> Menu for RoomScreen<G> {
                 items.push(MenuItem::inert(standing));
                 items.push(MenuItem::inert(format!("Players: {}", players_line(&info))));
             }
+        }
+        if !info.phase.is_final() && G::chat().is_some() {
+            items.push(
+                MenuItem::new("Say something", |_: &mut Self, ctx: &mut Ctx<G>| {
+                    ctx.open_chat();
+                })
+                .help(Label::dynamic(|_: &Self, _ctx: &Ctx<G>| {
+                    let keys = G::chat().map(|c| c.help()).unwrap_or_default();
+                    if keys.is_empty() {
+                        "Type a line for the other players.".to_string()
+                    } else {
+                        format!("Type a line for the other players. From any screen in the game, {keys}")
+                    }
+                })),
+            );
+        }
+        if info
+            .members
+            .iter()
+            .any(|m| Some(m.seat) != info.you && m.handle.is_some())
+        {
+            items.push(
+                MenuItem::new(
+                    "Mute or report a player",
+                    |s: &mut Self, ctx: &mut Ctx<G>| {
+                        ctx.push(PlayersScreen::<G>::new(s.id.clone()));
+                    },
+                )
+                .help("The other players, each with Mute, Block and Report."),
+            );
         }
         if info.phase.is_final() {
             items.push(
@@ -1019,6 +1062,35 @@ mod tests {
         h.send(InputEvent::key(key));
     }
 
+    /// Frames, in real time, until `done` holds; polls go out on the
+    /// clock, so this waits long enough for the active poll pace.
+    fn wait_until(
+        h: &mut Headless<Demo>,
+        what: &str,
+        mut done: impl FnMut(&Headless<Demo>) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !done(h) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never saw {what}; heard {:?}; played {:?}; screen {:?}",
+                h.spoken(),
+                h.played(),
+                h.app.top_lines()
+            );
+            h.frame(0.016);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn read_seq(h: &Headless<Demo>) -> u64 {
+        h.app
+            .ctx
+            .rooms
+            .room(&RoomId(ID.into()))
+            .map_or(0, |r| r.read_seq())
+    }
+
     #[test]
     fn a_game_is_created_and_its_code_spoken_then_a_player_joins_and_the_host_starts() {
         let (mut h, script) = start(OnlinePlayScreen::new(kind()));
@@ -1173,6 +1245,294 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("Pebbles: waiting for 1 more")),
             "{lines:?}"
+        );
+    }
+
+    /// A room in play with Bo in the other seat, opened on the Room screen.
+    fn playing_room() -> serde_json::Value {
+        let mut r = room("playing", 3, &[(0, "Ada"), (1, "Bo")], 0);
+        r["members"][0]["handle"] = json!("aaaaaaaaaaaaaaaa");
+        r["members"][1]["handle"] = json!("bbbbbbbbbbbbbbbb");
+        r
+    }
+
+    fn bo_says(seq: u64, text: &str) -> serde_json::Value {
+        json!({ "seq": seq, "type": "chat", "at": 1000 + seq, "seat": 1, "name": "Bo",
+                "handle": "bbbbbbbbbbbbbbbb", "text": text })
+    }
+
+    #[test]
+    fn chat_keys_send_and_read_back_and_lines_arrive_under_the_setting() {
+        let (mut h, script) = start(Blank);
+        h.app
+            .ctx
+            .rooms
+            .adopt(serde_json::from_value(playing_room()).unwrap());
+        h.app.ctx.push(RoomScreen::new(kind(), RoomId(ID.into())));
+        script.push_for("?after=0", reply(200, json!({ "ok": true, "room": playing_room(),
+            "events": [{ "seq": 1, "type": "join", "at": 1, "seat": 1, "name": "Bo" }], "read_to": 3, "more": false })));
+        h.frame(0.0);
+        wait_for(&mut h, "Pebbles game.");
+        h.clear();
+
+        // T opens a line; Enter sends it, cleaned; the sound says it went.
+        h.send(InputEvent::key(Key::T));
+        h.frame(0.0);
+        assert_eq!(h.app.top_name(), "text_entry");
+        wait_for(&mut h, "Say to the other players");
+        for c in "good luck".chars() {
+            h.send(InputEvent::typed(c));
+        }
+        // The chat key while typing is a letter, not the chat key.
+        assert_eq!(h.app.top_name(), "text_entry");
+        script.push_for("/events", reply(200, json!({ "ok": true, "seq": 4 })));
+        script.push_for("?after=3", reply(200, json!({ "ok": true, "room": playing_room(),
+            "events": [{ "seq": 4, "type": "chat", "at": 1004, "seat": 0, "name": "Ada", "text": "good luck" }],
+            "read_to": 4, "more": false })));
+        press(&mut h, Key::Return);
+        h.frame(0.0);
+        assert_eq!(h.app.top_name(), "room");
+        let sent = |script: &Scripted| {
+            script
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.1.ends_with("/events"))
+                .map(|r| r.2.clone())
+        };
+        wait_until(&mut h, "the line sent", |_| sent(&script).is_some());
+        assert_eq!(
+            sent(&script),
+            Some(json!({ "type": "chat", "text": "good luck" }))
+        );
+        wait_until(&mut h, "seq 4 read", |h| read_seq(h) >= 4);
+        assert!(
+            !h.spoken().iter().any(|l| l.contains("Ada: good luck")),
+            "own line is not read back as it arrives: {:?}",
+            h.spoken()
+        );
+        h.clear();
+
+        // Bo's line arrives on a poll and is spoken as "Bo: ...".
+        script.push_for(
+            "?after=4",
+            reply(
+                200,
+                json!({ "ok": true, "room": playing_room(),
+            "events": [bo_says(5, "thanks, you too")], "read_to": 5, "more": false }),
+            ),
+        );
+        wait_until(&mut h, "Bo's line", |h| {
+            h.spoken().iter().any(|l| l == "Bo: thanks, you too")
+        });
+        h.clear();
+
+        // Shift+T reads back, newest first, then the one before.
+        h.send(InputEvent::key_mods(Key::T, crate::input::Mods::SHIFT));
+        h.frame(0.0);
+        assert_eq!(
+            h.spoken().last().map(String::as_str),
+            Some("Bo: thanks, you too")
+        );
+        h.send(InputEvent::key_mods(Key::T, crate::input::Mods::SHIFT));
+        h.frame(0.0);
+        assert_eq!(
+            h.spoken().last().map(String::as_str),
+            Some("Ada: good luck")
+        );
+        h.send(InputEvent::key_mods(Key::T, crate::input::Mods::SHIFT));
+        h.frame(0.0);
+        assert_eq!(
+            h.spoken().last().map(String::as_str),
+            Some("That is the oldest line.")
+        );
+        h.clear();
+
+        // Sound only: a line is a sound, not words; off: nothing at all.
+        h.app.ctx.settings.online.chat = crate::chat::ChatLevel::Sound;
+        script.push_for(
+            "?after=5",
+            reply(
+                200,
+                json!({ "ok": true, "room": playing_room(),
+            "events": [bo_says(6, "quiet one")], "read_to": 6, "more": false }),
+            ),
+        );
+        wait_until(&mut h, "the notify sound", |h| {
+            h.played().iter().any(|s| s == hearken_synth::UI_NOTIFY)
+        });
+        assert!(
+            !h.spoken().iter().any(|l| l.contains("quiet one")),
+            "{:?}",
+            h.spoken()
+        );
+        h.clear();
+        h.app.ctx.settings.online.chat = crate::chat::ChatLevel::Off;
+        script.push_for(
+            "?after=6",
+            reply(
+                200,
+                json!({ "ok": true, "room": playing_room(),
+            "events": [bo_says(7, "silent one")], "read_to": 7, "more": false }),
+            ),
+        );
+        wait_until(&mut h, "seq 7 read", |h| read_seq(h) >= 7);
+        assert!(
+            !h.played().iter().any(|s| s == hearken_synth::UI_NOTIFY),
+            "{:?}",
+            h.played()
+        );
+        assert!(
+            !h.spoken().iter().any(|l| l.contains("silent one")),
+            "{:?}",
+            h.spoken()
+        );
+        // Read-back still has it.
+        h.send(InputEvent::key_mods(Key::T, crate::input::Mods::SHIFT));
+        h.frame(0.0);
+        assert_eq!(
+            h.spoken().last().map(String::as_str),
+            Some("Bo: silent one")
+        );
+
+        // A refused line is spoken.
+        h.clear();
+        h.send(InputEvent::key(Key::T));
+        h.frame(0.0);
+        for c in "rude".chars() {
+            h.send(InputEvent::typed(c));
+        }
+        script.push_for(
+            "/events",
+            reply(
+                422,
+                json!({ "error": "screened", "message": "Keep it kind" }),
+            ),
+        );
+        press(&mut h, Key::Return);
+        wait_for(&mut h, "Keep it kind.");
+
+        // Away from the room, T is nobody's: nothing is said or opened.
+        h.app.ctx.pop();
+        h.frame(0.0);
+        h.clear();
+        h.send(InputEvent::key(Key::T));
+        h.frame(0.0);
+        assert_eq!(h.app.top_name(), "blank");
+        assert!(h.spoken().is_empty(), "{:?}", h.spoken());
+    }
+
+    #[test]
+    fn players_are_muted_blocked_and_reported_from_the_room() {
+        let (mut h, script) = start(Blank);
+        h.app
+            .ctx
+            .rooms
+            .adopt(serde_json::from_value(playing_room()).unwrap());
+        h.app.ctx.push(RoomScreen::new(kind(), RoomId(ID.into())));
+        script.push_for(
+            "?after=0",
+            reply(
+                200,
+                json!({ "ok": true, "room": playing_room(),
+            "events": [], "read_to": 3, "more": false }),
+            ),
+        );
+        h.frame(0.0);
+        wait_for(&mut h, "Pebbles game.");
+        let lines = h.app.top_lines();
+        assert!(
+            lines.iter().any(|l| l.contains("Say something")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Mute or report a player")),
+            "{lines:?}"
+        );
+        h.clear();
+        // Down to Mute or report a player.
+        for _ in 0..10 {
+            if h.spoken()
+                .last()
+                .is_some_and(|l| l.starts_with("Mute or report"))
+            {
+                break;
+            }
+            press(&mut h, Key::Down);
+        }
+        script.push_for(
+            "rooms/mutes",
+            reply(200, json!({ "ok": true, "mutes": [] })),
+        );
+        press(&mut h, Key::Return);
+        wait_for(&mut h, "Players.");
+        assert_eq!(h.app.top_name(), "players");
+        wait_for(&mut h, "Bo");
+        h.clear();
+        press(&mut h, Key::Return);
+        wait_for(&mut h, "Mute");
+        assert_eq!(h.app.top_name(), "player");
+        script.push_for(
+            "rooms/mutes",
+            reply(
+                200,
+                json!({ "ok": true, "handle": "bbbbbbbbbbbbbbbb", "mode": "mute", "name": "Bo" }),
+            ),
+        );
+        script.push_for("rooms/mutes", reply(200, json!({ "ok": true, "mutes": [{ "handle": "bbbbbbbbbbbbbbbb", "mode": "mute", "name": "Bo" }] })));
+        // The watched room is read again once the mute is set.
+        script.push_for("?after=3", reply(200, json!({ "ok": true, "room": playing_room(), "events": [], "read_to": 3, "more": false })));
+        press(&mut h, Key::Return);
+        wait_for(&mut h, "Bo muted.");
+        assert_eq!(h.app.top_name(), "players");
+        wait_until(&mut h, "Bo listed as muted", |h| {
+            h.app.top_lines().iter().any(|l| l.contains("Bo: muted"))
+        });
+        let sent: Vec<_> = script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.0 == "POST" && r.1.ends_with("rooms/mutes"))
+            .map(|r| r.2.clone())
+            .collect();
+        assert_eq!(
+            sent,
+            vec![json!({ "handle": "bbbbbbbbbbbbbbbb", "mode": "mute" })]
+        );
+        h.clear();
+
+        // Report asks first, then sends.
+        press(&mut h, Key::Return);
+        wait_for(&mut h, "Unmute");
+        press(&mut h, Key::Down);
+        press(&mut h, Key::Down);
+        assert!(
+            h.spoken().last().is_some_and(|l| l.starts_with("Report")),
+            "{:?}",
+            h.spoken()
+        );
+        press(&mut h, Key::Return);
+        wait_for(&mut h, "Report Bo to example.test?");
+        script.push_for("/report", reply(200, json!({ "ok": true, "lines": 0 })));
+        script.push_for("rooms/mutes", reply(200, json!({ "ok": true, "mutes": [{ "handle": "bbbbbbbbbbbbbbbb", "mode": "mute", "name": "Bo" }] })));
+        press(&mut h, Key::Return); // Yes
+        wait_for(&mut h, "Reported Bo.");
+        assert_eq!(h.app.top_name(), "players");
+        let reported = |script: &Scripted| {
+            script
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.1.ends_with("/report"))
+                .map(|r| r.2.clone())
+        };
+        wait_until(&mut h, "the report sent", |_| reported(&script).is_some());
+        assert_eq!(
+            reported(&script),
+            Some(json!({ "handle": "bbbbbbbbbbbbbbbb", "note": "" }))
         );
     }
 

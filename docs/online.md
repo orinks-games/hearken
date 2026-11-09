@@ -363,9 +363,9 @@ on `with_rooms()`.
 |------|-------|--------------|
 | `Seat`, `Seated<I>` | `hearken-replay` | A seat (0 to 15) in the top 4 bits of an input code; `Seated::Left` when a seat leaves. |
 | `hearken_play` | the rules module (ABI 2) | Builds a run from a server's turns and plays it: where the match stands, or its outcome. |
-| rooms routes and store | `@hearken/online` | Rooms with invite codes, seats, phases and an ordered event log; turns stamped with the sender's seat. |
+| rooms routes and store | `@hearken/online` | Rooms with invite codes, seats, phases and an ordered event log; turns stamped with the sender's seat. Channels and direct rooms for chat, with history, mutes, blocks and reports. |
 | `hearken-rooms` | `crates/hearken-rooms` | The client: `Rooms` (requests on worker threads, polling), `Match<R>` (the rules stepped in server order). No `Ctx`, so a game with its own screens embeds it. |
-| `ctx.rooms` and screens | `hearken-app`, feature `online` | The Online play menu, the Room screen and the My games list, ready made. |
+| `ctx.rooms` and screens | `hearken-app`, feature `online` | The Online play menu, the Room screen, the My games list and the Players list, ready made, and the chat keys that work from any screen. |
 
 ### How a match works
 
@@ -479,6 +479,53 @@ match. `template/src/online.rs` is the whole of it for Pebbles. A game
 with its own screens (one that does not use `hearken-app`) uses
 `hearken-rooms` directly with its own token.
 
+### Chat
+
+A line of chat is a room event like a turn, kept in the same log and read
+back with it. In `hearken-app` every game with rooms has it without
+writing anything: T opens a one-line field that sends to the room in
+focus (the last room a screen watched: the Room screen, the match
+screen), Enter sends, Escape drops it; Shift+T reads the chat back,
+newest first, one line per press. Lines from other players arrive as
+"Bo: nice move", queued behind what is being said, under the Chat row of
+Settings: spoken, a sound for each, or off (reading back still works).
+With no room in focus the keys do nothing and belong to the game. The
+Room screen also has Say something, and Mute or report a player: the
+other players, each with Mute, Block and Report.
+
+A game whose keys clash moves them, or takes them over:
+
+```rust
+fn chat() -> Option<ChatConfig> {
+    Some(ChatConfig { say: Some(Chord::alt(Key::C)), read: None, spoken: false })
+}
+```
+
+`say: None` or `read: None` leaves that key to the game, which calls
+`ctx.open_chat()` and `ctx.read_chat_back()` itself; `spoken: false`
+leaves speaking lines to the game, which reads the `Chat` events in
+`take_room_notices` (`Event::chat_line` gives the spoken form). `None`
+from `chat()` turns the engine's part off altogether.
+
+Beyond a match, a kind with `seats` but no `rules` is a channel: a room
+that is `open` as soon as it is made, where members come and go and only
+chat is posted. `rooms.channel(kind, name)` joins the channel of that
+name, made the first time anyone asks for it, and a channel first watched
+reads its last 20 lines rather than its whole log; a named channel never
+closes, and keeps its lines for the kind's `history` (a week by default).
+`rooms.direct(kind, handle)` finds or makes the two-member room with
+another player, for a kind with `seats: {min: 2, max: 2}`; it is on both
+players' lists, and closes when either leaves. Players are known to each
+other by `handle`, a short stable id on every member and chat event, never
+the account id. `rooms.set_mute(handle, MuteMode::Mute)` leaves that
+player's lines out of what this player reads, in every room, without
+telling them; `Block` does that both ways and keeps the two out of each
+other's direct rooms and Play-with-anyone games; `rooms.report(id, handle,
+note)` hands that player's recent lines in the room to the server's
+`report` hook. A line may carry a `tag` (`say_tagged`), a short line about
+the sender spoken with their name ("Ada, Lake Road: ..."), for a game that
+wants a place or a role on each line.
+
 ### The rooms protocol
 
 Relative to the game's base URL, with the bearer token on every request.
@@ -489,23 +536,36 @@ ids are not sent).
 |-------|--------------|
 | `POST rooms?kind=K` `{context?, open?}` | A new room with an invite code; the player takes seat 0 as host. `open` lists it for `find`. |
 | `POST rooms/join` `{code}` | The next seat in that room. `404 unknown-code`, `409 full`, `409 started`. The last seat starts the match. |
-| `POST rooms/find?kind=K` | Joins the oldest open room of that kind with a free seat, or makes one. |
+| `POST rooms/find?kind=K` | Joins the oldest open room of that kind with a free seat, or makes one. Never seats two players who have blocked each other. |
+| `POST rooms/find?kind=K&name=N` | Joins the channel of that kind called `N`, made the first time anyone asks. `422 not-a-channel` for a kind with rules. |
+| `POST rooms/direct?kind=K` `{handle}` | The two-member room of that kind with the player whose handle this is, found or made (they are seated too). `404 unknown-player`, `403 blocked`, `422 not-direct` for a kind that is not two seats without rules. |
 | `GET rooms` | The player's rooms, newest first, each with `unread`: events since the player last read it. |
-| `GET rooms/<id>?after=<seq>` | The room, the events after `seq` (`more` when there are over 200), and presence. The client's poll; it marks the room read. |
+| `GET rooms/<id>?after=<seq>` | The room, the events after `seq` (`more` when there are over 500), presence, and `read_to`, the last seq the page covered. The client's poll; it marks the room read. |
+| `GET rooms/<id>?last=N` | The room and its last `N` events (at most 100), oldest first, with `first_seq`; `&before=<seq>` pages back. For a channel's history. |
 | `POST rooms/<id>/start` | The host starts with at least `seats.min` filled. `403 not-the-host`, `422 not-enough-players`. |
-| `POST rooms/<id>/events` | One event: `turn {inputs:[[code,value],...]}`, `chat {text}`, `leave`, or `finish`. Answers `{seq}`. `leave` frees a waiting seat, forfeits a match in play, and drops a room that is over from the player's list. |
+| `POST rooms/<id>/events` | One event: `turn {inputs:[[code,value],...]}`, `chat {text, tag?}`, `leave`, or `finish`. Answers `{seq}`. `leave` frees a waiting seat, forfeits a match in play, leaves a channel, closes a direct room, and drops a room that is over from the player's list. |
+| `POST rooms/<id>/report` `{handle, note?}` | Hands that member's last 20 lines in the room, with the note, to the service's `report` hook. |
+| `GET rooms/mutes` | Who the player has muted or blocked: `{mutes:[{handle, mode, name}]}`. |
+| `POST rooms/mutes` `{handle, mode}` | `mode` is `mute`, `block` or `none`. The other player is not told. |
 
-A room is `{id, kind, code, phase, open, seats:{min,max}, host, members,
-you, seed, context, seq, snapshot, result, updated_at, turn_started_at}`;
-`seed` is a decimal string once playing, `you` the reader's seat, `members`
-`{seat, name, guest, here, left}` with `here` true for a member who polled
-in the last 30 s. Events are `{seq, type, at, ...}`: `join` and `leave`
-(`seat`, `name`), `start` (`seed`, `context`, `build`), `turn` (`seat`,
+A room is `{id, kind, code, name, direct, phase, open, seats:{min,max},
+host, members, you, seed, context, seq, snapshot, result, updated_at,
+turn_started_at}`; `seed` is a decimal string once playing, `you` the
+reader's seat, `members` `{seat, name, handle, guest, here, left}` with
+`here` true for a member who polled in the last 30 s. Phases are
+`waiting`, `playing`, `finished`, `closed`, `abandoned`, and `open` for a
+channel. Events are `{seq, type, at, ...}`: `join` and `leave` (`seat`,
+`name`, `handle`), `start` (`seed`, `context`, `build`), `turn` (`seat`,
 `inputs`), `left` (`seat`, `reason`: `left` or `turn-limit`), `chat`
-(`seat`, `name`, `text`). Chat lines are at most 200 characters, cleaned
-of control and invisible characters before they are stored, 10 a minute
-per player; a room takes 60 events a minute per player, and a player holds
-at most 20 rooms that are not over.
+(`seat`, `name`, `handle`, `text`, `tag?`). Chat lines are at most 200
+characters and tags 64, cleaned of control and invisible characters
+before they are stored, 10 a minute per player unless the kind says
+otherwise (`chat_limit`); a line that comes too soon is `429 too-fast`,
+and one the screen turns away is `422 screened` with a line for the
+player, or the screen's own code. A reader's own mutes and blocks, and
+anyone who has blocked them, are left out of the events they read. A room
+takes 60 events a minute per player, and a player holds at most 20 rooms
+that are not over.
 
 ### The play request
 
@@ -544,12 +604,30 @@ pebbles: {
 play from, whatever the creator sent. `accept` runs once, after the rules
 finish, with `verified` from the full replay (`run_id`, `build`, `ticks`,
 `outcome`) and `players` as `{seat, id, name, guest, left}`. `turn_limit`
-needs `progress`, since the server must know whose move it is. The service
-takes a `rooms` store (`memoryRooms()` for one process; a real one mirrors
-its guarantees, above all that `append` gives one `seq` per event with no
-gaps) and an optional `screen({text, player, room})` that may refuse a chat
-line with a `Refusal`. `server/examples/handlers.js` has the Pebbles kind,
-and the dev server offers it with `memoryRooms()`.
+needs `progress`, since the server must know whose move it is.
+
+A channel is a kind with `seats` and no `rules`:
+
+```js
+lobby: {
+  seats: { min: 1, max: 200 },         // up to 500 in a channel
+  history: 7 * 86_400,                 // seconds a line is kept; 0 keeps none
+  chat_limit: { per_minute: 20, gap: 3 }, // and at least 3 s between a player's lines
+  idle_limit: 0,                       // a named channel stays open; 0 is never
+},
+dm: { seats: { min: 2, max: 2 }, history: 7 * 86_400 },
+```
+
+The service takes a `rooms` store (`memoryRooms()` for one process; a
+real one mirrors its guarantees, above all that `append` gives one `seq`
+per event with no gaps, and that `prune` keeps the numbering), an
+optional `screen({text, tag, player, room})` that may refuse a chat line
+(`false` or a line for the player answers `422 screened`; `{code,
+message}` answers with the game's own code, `muted` say), and an optional
+`report({reporter, about, room, lines, note})` that takes a player's
+report of another with that player's last lines in the room.
+`server/examples/handlers.js` has the Pebbles kind, a `lobby` and a `dm`,
+and the dev server offers them with `memoryRooms()`.
 
 ## Writing a server
 

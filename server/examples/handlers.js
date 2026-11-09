@@ -16,6 +16,10 @@
 // `pebbles` is a kind with rooms, for the replay crate's two-player Pebbles
 // rules: `seats` makes it one, `start` picks the match's seed when the room
 // starts, and `accept` gets the verified outcome when the rules end.
+//
+// `lobby` and `dm` are channels: seats with no rules. A lobby is joined by
+// name (`rooms/find?kind=lobby&name=general`) and keeps a week of lines; a
+// dm is the two-member room `rooms/direct?kind=dm` finds or makes.
 
 import { refuse } from "../src/index.js";
 
@@ -130,6 +134,17 @@ export function createHandlers({ now = () => new Date(), secret = "dev only: set
       async read() {
         return { players: [...wins.values()].sort((a, b) => b.won - a.won).slice(0, 10) };
       },
+    },
+    lobby: {
+      seats: { min: 1, max: 200 },
+      // Lines are kept a week; one line every three seconds, twenty a minute.
+      history: 7 * 86_400,
+      chat_limit: { per_minute: 20, gap: 3 },
+    },
+    dm: {
+      seats: { min: 2, max: 2 },
+      history: 7 * 86_400,
+      chat_limit: { per_minute: 20, gap: 1 },
     },
   };
 }

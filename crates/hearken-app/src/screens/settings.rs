@@ -195,7 +195,7 @@ fn builtin_category(id: &str) -> Option<&'static str> {
         _ if id.starts_with("volume.") => SOUND,
         "display" | "display_text" | "display_motion" | "display_contrast" => DISPLAY,
         "keyboard" | "controller_buttons" | "controller" => CONTROLS,
-        "discord" | "online" => ONLINE,
+        "discord" | "online" | "chat" => ONLINE,
         "updates" | "update_channel" | "update_at_start" => UPDATES,
         _ => return None,
     })
@@ -684,6 +684,29 @@ impl<G: Game> Menu for SettingsScreen<G> {
                         ctx.online.site()
                     )
                 })),
+            ));
+        }
+
+        #[cfg(feature = "online")]
+        if ctx.rooms.is_offered() && G::chat().is_some() {
+            fn step_chat<G: Game>(ctx: &mut Ctx<G>, delta: i32) {
+                ctx.settings.online.chat = ctx.settings.online.chat.stepped(delta);
+                ctx.save_settings();
+            }
+            rows.push(SettingsRow::new(
+                "chat",
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        format!("Chat: {}", ctx.settings.online.chat.spoken())
+                    }),
+                    |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, |ctx| step_chat(ctx, 1)),
+                )
+                .help(
+                    "How other players' lines reach you in a game: spoken as they come, a sound for \
+                     each, or nothing. Reading the chat back works either way. Enter, Left or Right \
+                     changes it.",
+                )
+                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_chat(ctx, delta)),
             ));
         }
 
