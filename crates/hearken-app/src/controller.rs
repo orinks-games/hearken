@@ -137,21 +137,57 @@ pub trait PadSubsystem {
 /// Brings the subsystem up on demand; `None` when it is unavailable.
 pub type PadSubsystemFactory = Box<dyn FnMut() -> Option<Box<dyn PadSubsystem>>>;
 
+/// Log target for the pad binding's changes.
+pub const PAD_TARGET: &str = "hearken.controller";
+
+/// The pad the manager is bound to, and how far the binding is trusted.
+/// Changed only through `ControllerManager::set_pad`, which logs it.
+enum Pad {
+    /// No pad: keyboard only.
+    Unbound,
+    /// A pad freshly opened. It reports a device id that a hot-plug can
+    /// leave stale (the events then arrive under a different id), so the
+    /// id is provisional and the first real event's id is adopted, which
+    /// keeps the binding on the live event stream.
+    Provisional { device: Box<dyn PadDevice>, id: u32 },
+    /// A pad whose id the event stream has confirmed.
+    Bound { device: Box<dyn PadDevice>, id: u32 },
+}
+
+impl Pad {
+    fn device(&self) -> Option<&dyn PadDevice> {
+        match self {
+            Pad::Unbound => None,
+            Pad::Provisional { device, .. } | Pad::Bound { device, .. } => Some(device.as_ref()),
+        }
+    }
+
+    fn id(&self) -> Option<u32> {
+        match self {
+            Pad::Unbound => None,
+            Pad::Provisional { id, .. } | Pad::Bound { id, .. } => Some(*id),
+        }
+    }
+
+    /// For the log: `unbound`, `provisional (instance 3)`, `bound (instance 3)`.
+    fn describe(&self) -> String {
+        match self {
+            Pad::Unbound => "unbound".to_string(),
+            Pad::Provisional { id, .. } => format!("provisional (instance {id})"),
+            Pad::Bound { id, .. } => format!("bound (instance {id})"),
+        }
+    }
+}
+
 /// Owns the bound controller and decides which of its events a screen
 /// sees.
 pub struct ControllerManager {
-    device: Option<Box<dyn PadDevice>>,
+    pad: Pad,
     enabled: bool,
     last_used: InputDevice,
-    instance_id: Option<u32>,
     name: String,
     /// Latched until the app reads it with `take_disconnect`.
     disconnected: bool,
-    /// A freshly opened pad reports a device id that a hot-plug can leave
-    /// stale (the events then arrive under a different id). The opened id
-    /// is provisional and the id of the first real event is adopted, so the
-    /// binding always matches the live event stream.
-    id_pending: bool,
     /// Buttons down now, so a duplicate press (some pads and drivers
     /// deliver a button twice) fires only once, on the genuine transition.
     buttons_down: HashSet<ControllerButton>,
@@ -174,13 +210,11 @@ impl ControllerManager {
     /// machine, keyboard only).
     pub fn new(enabled: bool, factory: Option<PadSubsystemFactory>) -> Self {
         let mut manager = ControllerManager {
-            device: None,
+            pad: Pad::Unbound,
             enabled,
             last_used: InputDevice::Keyboard,
-            instance_id: None,
             name: String::new(),
             disconnected: false,
-            id_pending: false,
             buttons_down: HashSet::new(),
             logged_mismatch_id: None,
             modifier: false,
@@ -237,12 +271,12 @@ impl ControllerManager {
     }
 
     pub fn connected(&self) -> bool {
-        self.device.is_some()
+        !matches!(self.pad, Pad::Unbound)
     }
 
     /// True when a controller is connected and controller input is on.
     pub fn active(&self) -> bool {
-        self.enabled && self.device.is_some()
+        self.enabled && self.connected()
     }
 
     pub fn enabled(&self) -> bool {
@@ -255,17 +289,52 @@ impl ControllerManager {
 
     /// The bound instance id, `None` when nothing is bound.
     pub fn instance_id(&self) -> Option<u32> {
-        self.instance_id
+        self.pad.id()
     }
 
-    /// Whether the bound id is still provisional (see `id_pending`).
+    /// Whether the bound id is still provisional (see [`Pad`]).
     pub fn id_pending(&self) -> bool {
-        self.id_pending
+        matches!(self.pad, Pad::Provisional { .. })
     }
 
     /// Test seam: mark the bound id latched or provisional.
     pub fn set_id_pending(&mut self, pending: bool) {
-        self.id_pending = pending;
+        let pad = match std::mem::replace(&mut self.pad, Pad::Unbound) {
+            Pad::Unbound => Pad::Unbound,
+            Pad::Provisional { device, id } | Pad::Bound { device, id } if pending => {
+                Pad::Provisional { device, id }
+            }
+            Pad::Provisional { device, id } | Pad::Bound { device, id } => {
+                Pad::Bound { device, id }
+            }
+        };
+        self.set_pad(pad);
+    }
+
+    /// The one place the binding changes; logs the change.
+    fn set_pad(&mut self, pad: Pad) {
+        let from = self.pad.describe();
+        let to = pad.describe();
+        if from != to {
+            log::debug!(target: PAD_TARGET, "{from} -> {to}");
+        }
+        self.pad = pad;
+    }
+
+    /// Confirms the provisional binding, on `id` when the event stream
+    /// names another id than the one the pad was opened under.
+    fn latch(&mut self, id: Option<u32>) {
+        if let Pad::Provisional { .. } = self.pad {
+            let Pad::Provisional { device, id: opened } =
+                std::mem::replace(&mut self.pad, Pad::Unbound)
+            else {
+                unreachable!("checked just above");
+            };
+            self.set_pad(Pad::Bound {
+                device,
+                id: id.unwrap_or(opened),
+            });
+        }
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -281,21 +350,16 @@ impl ControllerManager {
 
     /// Bind `device` (what opening a pad does, and the test seam).
     pub fn bind_device(&mut self, device: Box<dyn PadDevice>, name: &str) {
-        self.instance_id = Some(device.instance_id());
-        // Provisional: the first real event's instance id is authoritative
-        // (see id_pending), which self-heals a stale id left by a hot-plug.
-        self.id_pending = true;
+        let id = device.instance_id();
         self.name = if name.is_empty() {
             "controller".to_string()
         } else {
             name.to_string()
         };
-        log::info!(
-            "Controller connected: {} (instance {:?})",
-            self.name,
-            self.instance_id
-        );
-        self.device = Some(device);
+        log::info!("Controller connected: {} (instance {id})", self.name);
+        // Provisional: the first real event's instance id is authoritative
+        // (see `Pad`), which self-heals a stale id left by a hot-plug.
+        self.set_pad(Pad::Provisional { device, id });
     }
 
     /// Bind the controller at `index`; true on success.
@@ -330,19 +394,17 @@ impl ControllerManager {
     }
 
     fn close_controller(&mut self) {
-        self.device = None;
-        self.instance_id = None;
-        self.id_pending = false;
+        self.set_pad(Pad::Unbound);
         self.buttons_down.clear();
     }
 
     fn is_attached(&self) -> bool {
-        self.device.as_ref().is_some_and(|device| device.attached())
+        self.pad.device().is_some_and(|device| device.attached())
     }
 
     /// Drop the current pad and bind whatever is connected now.
     ///
-    /// The first real event's instance id (see `id_pending`) corrects a
+    /// The first real event's instance id (see [`Pad`]) corrects a
     /// stale id left by a hot-plug, so the SDL subsystem is never cycled:
     /// quitting and re-initializing it while the event loop is live
     /// re-registers SDL's controller event watch and makes every controller
@@ -421,7 +483,7 @@ impl ControllerManager {
                 if self.connected() && self.is_attached() {
                     log::debug!(
                         "Ignoring add; a pad is already bound (instance {:?})",
-                        self.instance_id
+                        self.instance_id()
                     );
                     return false;
                 }
@@ -430,7 +492,10 @@ impl ControllerManager {
             }
             InputEvent::ControllerRemoved { instance_id } => {
                 log::debug!("Controller device removed (instance {instance_id})");
-                if self.instance_id.is_some() && Some(*instance_id) == self.instance_id {
+                if self
+                    .instance_id()
+                    .is_some_and(|bound| bound == *instance_id)
+                {
                     self.close_controller();
                     self.release_all();
                     self.disconnected = true;
@@ -448,15 +513,14 @@ impl ControllerManager {
         if !self.active() {
             return false;
         }
-        if Some(instance_id) != self.instance_id {
-            if self.id_pending {
+        if Some(instance_id) != self.instance_id() {
+            if self.id_pending() {
                 // First real event after (re)open: its id is authoritative.
                 log::info!(
                     "Controller bound to instance {instance_id} (opened as {:?})",
-                    self.instance_id
+                    self.instance_id()
                 );
-                self.instance_id = Some(instance_id);
-                self.id_pending = false;
+                self.latch(Some(instance_id));
                 self.logged_mismatch_id = None;
             } else {
                 // A genuinely foreign id: a second pad, or a duplicate from
@@ -465,7 +529,7 @@ impl ControllerManager {
                     self.logged_mismatch_id = Some(instance_id);
                     log::debug!(
                         "Dropping controller event from instance {instance_id} (bound to {:?})",
-                        self.instance_id
+                        self.instance_id()
                     );
                 }
                 return false;
@@ -473,7 +537,7 @@ impl ControllerManager {
         } else {
             // Matched the bound id, so it is live: a duplicate under a
             // different id is now a duplicate.
-            self.id_pending = false;
+            self.latch(None);
         }
         match event {
             InputEvent::ControllerAxis { axis, value, .. } => {
@@ -532,7 +596,7 @@ impl ControllerManager {
             return Vec::new();
         };
         let count = self.repeat.tick(dt);
-        let instance_id = self.instance_id.unwrap_or(0);
+        let instance_id = self.instance_id().unwrap_or(0);
         (0..count)
             .map(|_| InputEvent::ControllerButtonDown {
                 button,
