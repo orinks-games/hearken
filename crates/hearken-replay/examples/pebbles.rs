@@ -26,7 +26,7 @@ impl InputCode for Take {
     }
 
     fn from_code(code: u16, value: i32) -> Option<Self> {
-        (code == 1 && (1..=3).contains(&value)).then(|| Take(value as u8))
+        (code == 1 && (1..=3).contains(&value)).then_some(Take(value as u8))
     }
 }
 
@@ -97,7 +97,10 @@ impl Replayable for Pebbles {
                 Seated::Left { seat } => self.winner = Some(Self::other(seat)),
                 // Only the seat whose turn it is may move; the rest is
                 // ignored, as a hand-written run file could say anything.
-                Seated::Input { seat, input: Take(n) } if seat == self.turn => {
+                Seated::Input {
+                    seat,
+                    input: Take(n),
+                } if seat == self.turn => {
                     let n = u32::from(n).min(self.pile);
                     self.pile -= n;
                     self.turns += 1;

@@ -191,7 +191,10 @@ mod tests {
             seat: Seat::new(1).unwrap(),
         };
         assert_eq!(left.to_code(), (1 << 12 | LEFT_CODE, 0));
-        assert_eq!(Seated::<Take>::from_code(1 << 12 | LEFT_CODE, 0), Some(left));
+        assert_eq!(
+            Seated::<Take>::from_code(1 << 12 | LEFT_CODE, 0),
+            Some(left)
+        );
         assert_eq!(Seated::<Take>::from_code(1 << 12 | LEFT_CODE, 1), None);
         assert!(left.is_left());
         assert_eq!(left.input(), None);

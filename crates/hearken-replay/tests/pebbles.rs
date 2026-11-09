@@ -60,13 +60,19 @@ fn progress_reads_a_match_in_the_middle() {
     let mut run = Recording::<Pebbles>::new(1, &Setup { pile: 10 }).unwrap();
     run.step(&[Seated::new(seat(0), Take(3))]);
     let file = run.to_run();
-    assert_eq!(replay::<Pebbles>(&file).err().map(|e| e.code()), Some("unfinished"));
+    assert_eq!(
+        replay::<Pebbles>(&file).err().map(|e| e.code()),
+        Some("unfinished")
+    );
     let so_far = progress::<Pebbles>(&file).unwrap();
     assert!(!so_far.finished);
     assert_eq!(so_far.ticks, 1);
     assert_eq!(so_far.outcome.pile, 7);
     assert_eq!(so_far.outcome.next_seat, Some(1));
-    assert_eq!(so_far.outcome.summary[1], "Their move, 7 left".replace("Their", "Your"));
+    assert_eq!(
+        so_far.outcome.summary[1],
+        "Their move, 7 left".replace("Their", "Your")
+    );
     assert_eq!(so_far.outcome.summary[0], "Their move, 7 left");
 }
 
@@ -77,10 +83,26 @@ fn a_server_builds_the_same_run_from_its_turns() {
         seed: json!("7"),
         context: json!({ "pile": 10 }),
         turns: vec![
-            PlayTurn { seat: 0, inputs: vec![(1, 3)], left: false },
-            PlayTurn { seat: 1, inputs: vec![(1, 3)], left: false },
-            PlayTurn { seat: 0, inputs: vec![(1, 3)], left: false },
-            PlayTurn { seat: 1, inputs: vec![(1, 1)], left: false },
+            PlayTurn {
+                seat: 0,
+                inputs: vec![(1, 3)],
+                left: false,
+            },
+            PlayTurn {
+                seat: 1,
+                inputs: vec![(1, 3)],
+                left: false,
+            },
+            PlayTurn {
+                seat: 0,
+                inputs: vec![(1, 3)],
+                left: false,
+            },
+            PlayTurn {
+                seat: 1,
+                inputs: vec![(1, 1)],
+                left: false,
+            },
         ],
         finish: true,
     };
@@ -158,9 +180,7 @@ fn seated_codes_read_back_through_the_recording() {
 fn writes_fixtures_for_the_javascript_host() {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")
-        });
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"));
     let dir = target.join("hearken-replay-fixtures");
     std::fs::create_dir_all(&dir).unwrap();
     let run = recorded();

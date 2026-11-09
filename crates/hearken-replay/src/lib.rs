@@ -24,7 +24,7 @@ pub use format::{
     build_of, canonical_json, run_id, BuildId, FormatError, Input, Run, MAX_RUN_BYTES,
 };
 pub use rules::{
-    assert_replays, progress, replay, verify, Expected, InputCode, Progress, Recording,
-    Replayable, Verified, VerifyError,
+    assert_replays, progress, replay, verify, Expected, InputCode, Progress, Recording, Replayable,
+    Verified, VerifyError,
 };
 pub use seats::{Seat, Seated, MAX_SEATED_CODE};
