@@ -1,5 +1,7 @@
 //! Hello Hearken: the smallest complete Hearken game.
 
+#[cfg(feature = "online")]
+pub mod online;
 mod practice;
 mod sound;
 mod title;

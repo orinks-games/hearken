@@ -1,0 +1,24 @@
+[package]
+name = "hearken-rooms"
+description = "Online play between players: rooms, seats, server-ordered turns, chat and presence, as a client any game loop can poll"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["http"]
+# The real HTTPS client. Tests swap in a scripted transport and leave it off.
+http = ["dep:ureq"]
+
+# No audio, speech or window code: a game with its own screens (Freight
+# Fate) embeds this as it embeds hearken-update, and hearken-app wraps it
+# as `ctx.rooms`.
+[dependencies]
+hearken-replay.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+ureq = { workspace = true, optional = true }

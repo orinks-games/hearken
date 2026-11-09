@@ -186,7 +186,7 @@ jobs:
           # saved per pull request would only crowd the 10 GB cache budget.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test -p hearken-replay --locked
-      - run: cargo build -p hearken-replay --example coin-dash --target wasm32-unknown-unknown --release --locked
+      - run: cargo build -p hearken-replay --example coin-dash --example pebbles --target wasm32-unknown-unknown --release --locked
       - uses: actions/setup-node@v4
         with:
           node-version: 22

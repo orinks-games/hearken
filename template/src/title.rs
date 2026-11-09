@@ -38,11 +38,22 @@ impl Menu for Title {
     }
 
     fn build_items(&mut self, _ctx: &mut Ctx<HelloGame>) -> Vec<MenuItem<Self, HelloGame>> {
-        vec![
+        let mut items = vec![
             MenuItem::new("Play", |_s: &mut Self, ctx: &mut Ctx<HelloGame>| {
                 ctx.push(Practice::new())
             })
             .help("Go to the practice room."),
+        ];
+        #[cfg(feature = "online")]
+        if _ctx.online.offers_rooms() {
+            items.push(
+                MenuItem::new("Play online", |_s: &mut Self, ctx: &mut Ctx<HelloGame>| {
+                    ctx.push(crate::online::online_play())
+                })
+                .help("Pebbles against another player, by invite code or with anyone waiting."),
+            );
+        }
+        items.extend([
             MenuItem::new("Settings", |_s: &mut Self, ctx: &mut Ctx<HelloGame>| {
                 ctx.push(SettingsScreen::<HelloGame>::new())
             })
@@ -53,7 +64,8 @@ impl Menu for Title {
             .help("How to play."),
             MenuItem::new("Quit", |_s: &mut Self, ctx: &mut Ctx<HelloGame>| ctx.quit())
                 .help("Close the game."),
-        ]
+        ]);
+        items
     }
 
     /// The root of the stack never pops: that would end the run with no

@@ -11,6 +11,17 @@ export {
 } from "./rules.js";
 export { createService, refuse, Refusal, KIND_PATTERN } from "./service.js";
 export {
+  memoryRooms,
+  transition,
+  cleanText,
+  mintRoomCode,
+  normalizeRoomCode,
+  PHASES,
+  FINAL_PHASES,
+  ROOM_CODE_ALPHABET,
+  MAX_SEATS,
+} from "./rooms.js";
+export {
   memoryAccounts,
   memoryLimiter,
   memoryRuns,

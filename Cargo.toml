@@ -33,6 +33,7 @@ hearken-audio = { path = "crates/hearken-audio", default-features = false }
 hearken-radio = { path = "crates/hearken-radio" }
 hearken-voice = { path = "crates/hearken-voice" }
 hearken-replay = { path = "crates/hearken-replay" }
+hearken-rooms = { path = "crates/hearken-rooms" }
 hearken-discord = { path = "crates/hearken-discord" }
 # The engine side turns on `http`; `hearken release` only signs.
 hearken-update = { path = "crates/hearken-update", default-features = false }

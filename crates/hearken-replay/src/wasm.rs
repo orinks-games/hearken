@@ -2,32 +2,42 @@
 //! [`export_rules!`](crate::export_rules) puts in the module, and the JSON
 //! it answers with.
 //!
-//! The module's exports (ABI version 1). Pointers and lengths are `u32`;
+//! The module's exports (ABI version 2). Pointers and lengths are `u32`;
 //! an answer is a `u64` holding its pointer in the high half and its length
 //! in the low half, and the host frees it with `hearken_free`.
 //!
 //! | Export | What it does |
 //! |--------|--------------|
 //! | `memory` | The module's memory. |
-//! | `hearken_abi() -> u32` | The ABI version, 1. |
+//! | `hearken_abi() -> u32` | The ABI version, 2. |
 //! | `hearken_alloc(len) -> ptr` | Room for `len` bytes the host writes into. |
 //! | `hearken_free(ptr, len)` | Gives back what `hearken_alloc` or an answer took. |
 //! | `hearken_rules() -> u64` | JSON: the rules this module has, `{"rules":["belfry"]}`. |
 //! | `hearken_inspect(run, run_len) -> u64` | JSON: what a run file says about itself, without replaying it. |
 //! | `hearken_verify(run, run_len, req, req_len) -> u64` | JSON: the run checked against the request and replayed. |
+//! | `hearken_play(req, req_len) -> u64` | JSON: a match's turns, each stamped with its seat, built into a run and replayed, finished or not (ABI 2). |
 //!
 //! The request is `{"rules":"belfry","seed":"12345","context":{...}}`: the
 //! seed as a decimal string (or a number below 2^53), the context as the
 //! JSON the rules take. Answers are `{"ok":true,...}` or
 //! `{"ok":false,"error":"<code>"}`.
+//!
+//! A play request is `{"rules":"pebbles","seed":"123","context":{...},
+//! "turns":[{"seat":0,"inputs":[[1,2]]},{"seat":1,"left":true}],
+//! "finish":false}`: one tick per turn, each input's code stamped with the
+//! turn's seat ([`crate::seats`]), `left` for a seat that left the match.
+//! With `finish` the rules must have ended; without it the answer says
+//! whether they have. See `docs/online.md`.
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::format::{run_id, Run};
-use crate::rules::{verify, Expected, Replayable, VerifyError};
+use crate::format::{canonical_json, run_id, BuildId, FormatError, Input, Run, MAX_INPUTS};
+use crate::rules::{progress, verify, Expected, Replayable, VerifyError};
+use crate::seats::{stamp, Seat, LEFT_CODE, MAX_SEATED_CODE};
 
-/// The module ABI this crate exports.
-pub const ABI: u32 = 1;
+/// The module ABI this crate exports. ABI 1 lacked `hearken_play`.
+pub const ABI: u32 = 2;
 
 /// The longest request read, in bytes.
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -37,6 +47,100 @@ pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub struct Entry {
     pub rules: &'static str,
     pub verify: fn(&Run, &Expected) -> Result<Value, VerifyError>,
+    pub play: fn(&PlayRequest) -> Result<Value, VerifyError>,
+}
+
+/// One turn of a match as a server stores it: the seat that moved and its
+/// inputs, or a seat that left.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct PlayTurn {
+    pub seat: u8,
+    #[serde(default)]
+    pub inputs: Vec<(u16, i32)>,
+    #[serde(default)]
+    pub left: bool,
+}
+
+/// What a server asks `hearken_play`: the match so far.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct PlayRequest {
+    pub rules: String,
+    pub seed: Value,
+    pub context: Value,
+    #[serde(default)]
+    pub turns: Vec<PlayTurn>,
+    /// Whether the rules must have ended.
+    #[serde(default)]
+    pub finish: bool,
+}
+
+impl PlayRequest {
+    /// The turns as one run for `R`: the context as the rules write it,
+    /// one tick per turn, every code stamped with its seat.
+    pub fn to_run<R: Replayable>(&self) -> Result<Run, VerifyError> {
+        let seed = seed_of(&self.seed).ok_or(VerifyError::WrongSeed)?;
+        let read: R::Context =
+            R::Context::deserialize(&self.context).map_err(|_| VerifyError::BadContext)?;
+        let written = serde_json::to_value(&read).map_err(|_| VerifyError::BadContext)?;
+        let context = canonical_json(&written);
+        if context.len() > crate::format::MAX_CONTEXT_LEN {
+            return Err(VerifyError::BadContext);
+        }
+        if self.turns.len() as u64 > R::MAX_TICKS {
+            return Err(VerifyError::TooLong);
+        }
+        let mut inputs = Vec::new();
+        for (tick, turn) in self.turns.iter().enumerate() {
+            let seat = Seat::new(turn.seat).ok_or(VerifyError::BadInput)?;
+            if turn.left {
+                inputs.push(Input {
+                    tick: tick as u64,
+                    code: stamp(seat, LEFT_CODE),
+                    value: 0,
+                });
+                continue;
+            }
+            for &(code, value) in &turn.inputs {
+                if code > MAX_SEATED_CODE {
+                    return Err(VerifyError::BadInput);
+                }
+                inputs.push(Input {
+                    tick: tick as u64,
+                    code: stamp(seat, code),
+                    value,
+                });
+            }
+            if inputs.len() > MAX_INPUTS {
+                return Err(VerifyError::Format(FormatError::BadInputs));
+            }
+        }
+        Ok(Run {
+            build: BuildId::NONE,
+            rules: self.rules.clone(),
+            seed,
+            context,
+            ticks: self.turns.len() as u64,
+            inputs,
+        })
+    }
+}
+
+/// `progress::<R>` over a play request's turns, as JSON, for an [`Entry`].
+pub fn play_entry<R: Replayable>(request: &PlayRequest) -> Result<Value, VerifyError> {
+    let run = request.to_run::<R>()?;
+    let played = progress::<R>(&run)?;
+    if request.finish && !played.finished {
+        return Err(VerifyError::Unfinished);
+    }
+    let outcome = serde_json::to_value(&played.outcome).map_err(|_| VerifyError::BadContext)?;
+    Ok(json!({
+        "ok": true,
+        "rules": played.rules,
+        "seed": played.seed.to_string(),
+        "ticks": played.ticks,
+        "finished": played.finished,
+        "outcome": outcome,
+    }))
 }
 
 /// `verify::<R>` with its outcome as JSON, for an [`Entry`].
@@ -142,6 +246,27 @@ pub fn verify_json(file: &[u8], request: &[u8], entries: &[Entry]) -> String {
     }
 }
 
+/// A match's turns (`request`, a [`PlayRequest`] as JSON) built into a run
+/// and replayed by the matching entry, as JSON.
+pub fn play_json(request: &[u8], entries: &[Entry]) -> String {
+    if !entries_valid(entries) {
+        return refusal("bad-module");
+    }
+    if request.len() > MAX_REQUEST_BYTES.max(crate::format::MAX_RUN_BYTES) {
+        return refusal("bad-request");
+    }
+    let Ok(request) = serde_json::from_slice::<PlayRequest>(request) else {
+        return refusal("bad-request");
+    };
+    let Some(entry) = entries.iter().find(|e| e.rules == request.rules) else {
+        return refusal(VerifyError::WrongRules.code());
+    };
+    match (entry.play)(&request) {
+        Ok(answer) => answer.to_string(),
+        Err(e) => refusal(e.code()),
+    }
+}
+
 /// Whether `entries` name each set of rules once, with valid names.
 pub fn entries_valid(entries: &[Entry]) -> bool {
     entries.iter().enumerate().all(|(i, e)| {
@@ -202,9 +327,10 @@ pub mod abi {
 /// hearken_replay::export_rules!(belfry::Peal, sonar_dive::Dive);
 /// ```
 ///
-/// It also adds `hearken_rules::verify(run, request)` and
-/// `hearken_rules::inspect(run)` to the crate on every target, so a test
-/// can ask the same questions natively that a server asks the module.
+/// It also adds `hearken_rules::verify(run, request)`,
+/// `hearken_rules::inspect(run)` and `hearken_rules::play(request)` to the
+/// crate on every target, so a test can ask the same questions natively
+/// that a server asks the module.
 #[macro_export]
 macro_rules! export_rules {
     ($($rules:ty),+ $(,)?) => {
@@ -219,6 +345,7 @@ macro_rules! export_rules {
                     $crate::wasm::Entry {
                         rules: <$rules as $crate::Replayable>::RULES,
                         verify: $crate::wasm::verify_entry::<$rules>,
+                        play: $crate::wasm::play_entry::<$rules>,
                     }
                 ),+]
             }
@@ -231,6 +358,11 @@ macro_rules! export_rules {
             /// The module's `hearken_inspect`, natively.
             pub fn inspect(run: &[u8]) -> ::std::string::String {
                 $crate::wasm::inspect_json(run, &entries())
+            }
+
+            /// The module's `hearken_play`, natively.
+            pub fn play(request: &[u8]) -> ::std::string::String {
+                $crate::wasm::play_json(request, &entries())
             }
 
             /// The module's `hearken_rules`, natively.
@@ -283,6 +415,14 @@ macro_rules! export_rules {
                     let run = $crate::wasm::abi::bytes(run, run_len);
                     let request = $crate::wasm::abi::bytes(request, request_len);
                     $crate::wasm::abi::answer(super::verify(run, request))
+                }
+
+                /// # Safety
+                /// Only the host calls it, with a filled `hearken_alloc`.
+                #[unsafe(no_mangle)]
+                pub unsafe extern "C" fn hearken_play(request: u32, request_len: u32) -> u64 {
+                    let request = $crate::wasm::abi::bytes(request, request_len);
+                    $crate::wasm::abi::answer(super::play(request))
                 }
             }
         }

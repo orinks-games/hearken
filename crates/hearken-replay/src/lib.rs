@@ -7,19 +7,25 @@
 //! a ghost to race) is up to the game's own server handler: nothing here
 //! knows.
 //!
+//! A match between players is one run with a [`Seat`] on each input
+//! ([`Seated`]), ordered by a server; see `seats`.
+//!
 //! This crate has no audio, speech or window code, so a game's rules crate
 //! that depends on it (and not on `hearken`) builds for
 //! `wasm32-unknown-unknown`. `docs/online.md` in the Hearken repository
 //! covers the whole service.
 
 pub mod format;
+pub mod pebbles;
 pub mod rules;
+pub mod seats;
 pub mod wasm;
 
 pub use format::{
     build_of, canonical_json, run_id, BuildId, FormatError, Input, Run, MAX_RUN_BYTES,
 };
 pub use rules::{
-    assert_replays, replay, verify, Expected, InputCode, Recording, Replayable, Verified,
-    VerifyError,
+    assert_replays, progress, replay, verify, Expected, InputCode, Progress, Recording, Replayable,
+    Verified, VerifyError,
 };
+pub use seats::{Seat, Seated, MAX_SEATED_CODE};

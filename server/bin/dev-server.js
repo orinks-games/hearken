@@ -11,7 +11,7 @@
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
-import { createService, memoryAccounts, memoryLimiter, memoryRuns } from "../src/index.js";
+import { createService, memoryAccounts, memoryLimiter, memoryRooms, memoryRuns } from "../src/index.js";
 import { rulesFromDir, serve, workerReplay } from "../src/node.js";
 
 const { values } = parseArgs({
@@ -37,6 +37,7 @@ const service = createService({
   rules,
   accounts,
   runs: memoryRuns(),
+  rooms: memoryRooms(),
   limiter: memoryLimiter(),
   handlers,
   replay: workerReplay(),

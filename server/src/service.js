@@ -9,24 +9,19 @@
 //   POST activate/start       begins connecting an account
 //   POST activate/poll        { device_code }: whether the player approved it
 //   GET  <kind>/<path...>     a handler's own read route, when it has one
+//   rooms, rooms/...          matches and chat between players (see rooms.js),
+//                             when the service is given a `rooms` store
 //
 // docs/online.md in the Hearken repository is the protocol in full.
 
 import { BUILD_OFFSET, buildOf, MAX_RUN_BYTES, RulesError, sha256Hex } from "./rules.js";
+import { Refusal, refuse } from "./refusal.js";
+import { roomRoutes } from "./rooms.js";
 
 export const KIND_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
-/** Thrown by a handler to refuse a run: becomes 422 { error: code, message }. */
-export class Refusal extends Error {
-  constructor(code, message) {
-    super(message ?? code);
-    this.code = code;
-  }
-}
-
-export function refuse(code, message) {
-  return new Refusal(code, message);
-}
+// Thrown by a handler to refuse a run: becomes 422 { error: code, message }.
+export { Refusal, refuse };
 
 function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
@@ -113,6 +108,11 @@ function isSeed(seed) {
  * @param {({ guest, player }) => Promise<void>} [options.onLink]
  *   Called once when a guest connects an account: `guest` is the guest's
  *   id, `player` the account. Move the guest's scores here.
+ * @param {object} [options.rooms]  Where rooms and their events live (see
+ *   `memoryRooms`). Without it the rooms routes answer 404.
+ * @param {({ text, player, room }) => Promise<boolean | string | undefined>} [options.screen]
+ *   Looks at each chat line before it is stored: `false` or a string (a
+ *   line for the player) refuses it.
  * @param {object} [options.limits]
  */
 export function createService(options) {
@@ -132,6 +132,9 @@ export function createService(options) {
     log = (event) => console.warn("hearken-online", event),
     // Called once when a guest connects an account: move the guest's scores.
     onLink = async () => {},
+    rooms: roomStore = null,
+    screen,
+    now = () => Date.now(),
   } = options;
   const limits = {
     runsPerMinute: 20,
@@ -146,11 +149,23 @@ export function createService(options) {
   };
   for (const kind of Object.keys(handlers)) {
     if (!KIND_PATTERN.test(kind)) throw new Error(`"${kind}" cannot name a kind of run`);
-    if (typeof handlers[kind].expect !== "function" || typeof handlers[kind].accept !== "function") {
+    const handler = handlers[kind];
+    if (handler.seats) {
+      // A kind played in rooms: the server starts it and takes the outcome.
+      if (typeof handler.rules !== "string" || typeof handler.start !== "function" || typeof handler.accept !== "function") {
+        throw new Error(`the room handler for "${kind}" needs rules, start() and accept()`);
+      }
+      if (kind === "rooms") throw new Error(`"rooms" cannot name a kind: it is the rooms route`);
+      continue;
+    }
+    if (typeof handler.expect !== "function" || typeof handler.accept !== "function") {
       throw new Error(`the handler for "${kind}" needs expect() and accept()`);
     }
   }
   const base = basePath.replace(/\/+$/, "");
+  const rooms = roomStore
+    ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, limits: options.limits })
+    : null;
 
   async function submit(request, url) {
     const kind = url.searchParams.get("kind") ?? "";
@@ -335,6 +350,7 @@ export function createService(options) {
     }
     const parts = path.split("/").filter(Boolean);
     const method = request.method.toUpperCase();
+    if (rooms && parts[0] === "rooms") return rooms(request, method, parts, url);
     if (method === "POST" && parts.length === 1 && parts[0] === "runs") return submit(request, url);
     if (method === "POST" && parts.length === 1 && parts[0] === "start") return begin(request, url);
     if (method === "POST" && parts.length === 2 && parts[0] === "activate") {

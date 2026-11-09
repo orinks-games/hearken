@@ -35,6 +35,9 @@ pub struct OnlineConfig {
     /// Whether players can play as guests, with no account: the server
     /// names them from word lists (`activate/guest`).
     pub guests: bool,
+    /// Whether the server has rooms for play between players (`rooms/`),
+    /// so `ctx.rooms` and the Online play screens are offered.
+    pub rooms: bool,
 }
 
 impl OnlineConfig {
@@ -43,12 +46,20 @@ impl OnlineConfig {
             url: url.into(),
             site: site.into(),
             guests: false,
+            rooms: false,
         }
     }
 
     /// Lets players play as guests, with no account.
     pub fn with_guests(mut self) -> Self {
         self.guests = true;
+        self
+    }
+
+    /// Offers play between players through the server's rooms
+    /// (`ctx.rooms`); the server must have a rooms store and room kinds.
+    pub fn with_rooms(mut self) -> Self {
+        self.rooms = true;
         self
     }
 
@@ -452,6 +463,17 @@ impl Online {
         self.transport = transport;
     }
 
+    /// Holds `token` as `name`'s, as a test of a screen does in place of
+    /// connecting.
+    #[cfg(any(test, feature = "testing"))]
+    #[doc(hidden)]
+    pub fn hold_account(&mut self, token: &str, name: &str) {
+        self.token = Some(Secret(token.to_string()));
+        self.name = Some(name.to_string());
+        self.guest = false;
+        self.token_gen += 1;
+    }
+
     /// Whether the game has a server.
     pub fn is_offered(&self) -> bool {
         self.config.is_some()
@@ -470,6 +492,16 @@ impl Online {
     /// The name the server knows the player by.
     pub fn player_name(&self) -> Option<&str> {
         self.name.as_deref()
+    }
+
+    /// Whether the server has rooms for play between players.
+    pub fn offers_rooms(&self) -> bool {
+        self.config.as_ref().is_some_and(|c| c.rooms)
+    }
+
+    /// The bearer token held, for `ctx.rooms` to send with its requests.
+    pub(crate) fn token(&self) -> Option<&str> {
+        self.token.as_ref().map(|t| t.0.as_str())
     }
 
     /// Whether the server lets players play as guests.
@@ -722,6 +754,12 @@ impl Online {
     pub fn disconnect(&mut self) {
         self.cancel_connect();
         self.connect = Connect::Idle;
+        self.forget();
+    }
+
+    /// Forgets the account because another client of the token (`ctx.rooms`)
+    /// heard the server no longer knows it.
+    pub(crate) fn signed_out_elsewhere(&mut self) {
         self.forget();
     }
 
