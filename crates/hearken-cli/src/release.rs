@@ -470,6 +470,7 @@ fn windows_runtime(target: &Path, stage: &Path) -> Result<(), String> {
             copy(&path, &stage.join(entry.file_name()))?;
         }
     }
+    require_sdl2(stage)?;
     directml_notices(stage)?;
     match vc_runtime() {
         Some(crt) => {
@@ -486,6 +487,20 @@ fn windows_runtime(target: &Path, stage: &Path) -> Result<(), String> {
         ),
     }
     Ok(())
+}
+
+/// Every Hearken game on Windows loads `SDL2.dll` at start, so a release
+/// without it does not run at all. hearken-app's build script puts it
+/// beside the build; refuse to pack a release when it is not there.
+fn require_sdl2(stage: &Path) -> Result<(), String> {
+    if stage.join("SDL2.dll").is_file() {
+        return Ok(());
+    }
+    Err(
+        "SDL2.dll is not beside the built game, and the game cannot start without it. \
+         Run `cargo clean -p hearken-app` and release again."
+            .to_string(),
+    )
 }
 
 /// Microsoft's DirectML licence (1.15.4, the redistributable ONNX Runtime
@@ -581,9 +596,18 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        directml_notices, engine_reads_packs, key_env, read_notes, rfc3339, rules_file_name,
-        vc_arch, write_manifest, ManifestFor, UpdateIdentity,
+        directml_notices, engine_reads_packs, key_env, read_notes, require_sdl2, rfc3339,
+        rules_file_name, vc_arch, write_manifest, ManifestFor, UpdateIdentity,
     };
+
+    #[test]
+    fn a_windows_release_without_sdl2_is_refused() {
+        let stage = tempfile::tempdir().unwrap();
+        let err = require_sdl2(stage.path()).unwrap_err();
+        assert!(err.contains("SDL2.dll"), "{err}");
+        std::fs::write(stage.path().join("SDL2.dll"), b"dll").unwrap();
+        assert!(require_sdl2(stage.path()).is_ok());
+    }
 
     #[test]
     fn a_build_without_keys_still_clears_them() {
