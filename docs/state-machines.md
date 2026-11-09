@@ -143,9 +143,11 @@ it, so a tester can see where a stalled update or a code request stands.
 ## Rules that run on a server
 
 Rules that implement `Replayable` are a stepped machine already: `new`,
-`step`, `finished`, `outcome`. Keep their phase as an enum inside the rules
-and derive `finished()` from it, so the screen reads one phase from the
-rules and never keeps its own copy.
+`step`, `finished`, `outcome`. Keep their phase as an enum inside the rules,
+name it from `Replayable::phase`, and derive `finished()` from it. The
+screen that plays them returns `self.run.phase()` from `State::phase` and
+never keeps its own copy; `Recording::phase` reads it through the
+recording. Rules with a single phase leave the default, `None`.
 
 ## Testing phases
 

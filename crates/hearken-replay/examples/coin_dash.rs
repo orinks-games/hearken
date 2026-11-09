@@ -153,7 +153,17 @@ impl Replayable for Dash {
     }
 
     fn finished(&self) -> bool {
-        self.quit || self.tick >= self.end
+        self.phase() != Some("running")
+    }
+
+    fn phase(&self) -> Option<&'static str> {
+        Some(if self.quit {
+            "quit"
+        } else if self.tick >= self.end {
+            "over"
+        } else {
+            "running"
+        })
     }
 
     fn outcome(&self) -> Score {
