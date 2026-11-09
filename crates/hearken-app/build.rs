@@ -55,8 +55,26 @@ fn stage_vendored_sdl2() {
             let p = entry.path();
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
             if matches!(ext, "dll" | "so" | "dylib") {
-                let _ = fs::copy(&p, profile.join(p.file_name().unwrap()));
+                let staged = profile.join(p.file_name().unwrap());
+                let _ = fs::copy(&p, &staged);
+                keep_modified_time(&p, &staged);
+                // A missing file counts as changed, so this script runs
+                // again whenever the DLL is gone from beside the build:
+                // after a CI cache restores the build without it, or
+                // after someone deletes it.
+                println!("cargo:rerun-if-changed={}", staged.display());
             }
         }
+    }
+}
+
+/// Gives the staged copy the vendored file's modified time, so that Cargo,
+/// which watches the copy, does not take the copy itself for a change.
+fn keep_modified_time(from: &std::path::Path, to: &std::path::Path) {
+    let Ok(time) = fs::metadata(from).and_then(|m| m.modified()) else {
+        return;
+    };
+    if let Ok(file) = fs::File::options().write(true).open(to) {
+        let _ = file.set_modified(time);
     }
 }
