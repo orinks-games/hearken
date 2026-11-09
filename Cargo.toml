@@ -19,7 +19,7 @@ tempfile = "3"
 dirs = "6"
 libc = "0.2"
 sdl2 = { version = "0.38", features = ["unsafe_textures"] }
-prismer = { version = "0.1.4", features = ["static"] }
+prismer = { version = "0.1.5", features = ["static"] }
 hearken-speech = { path = "crates/hearken-speech" }
 hearken-l10n = { path = "crates/hearken-l10n" }
 hearken-genny = { path = "crates/hearken-genny" }
