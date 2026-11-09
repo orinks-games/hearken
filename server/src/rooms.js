@@ -731,6 +731,8 @@ export function roomRoutes(deps) {
         room: publicRoom(room, player, t, limits.presentMs),
         events: events.map(publicEvent),
         first_seq: events[0]?.seq ?? null,
+        // Where the reader now stands: the latest line, read or left out.
+        read_to: before === null ? room.seq : null,
         more: events.length === last,
       });
     }
@@ -743,6 +745,9 @@ export function roomRoutes(deps) {
       ok: true,
       room: publicRoom(room, player, t, limits.presentMs),
       events: events.filter(audible).map(publicEvent),
+      // The last seq this page covered, lines left out included, so a
+      // client whose last line was one it does not hear is not behind.
+      read_to: events.length > 0 ? events.at(-1).seq : Math.min(after, room.seq),
       more: events.length === PAGE,
     });
   }
