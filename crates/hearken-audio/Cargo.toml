@@ -21,6 +21,9 @@ kira = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }
 rtrb = { workspace = true, optional = true }
 log.workspace = true
+# A take (see `take.rs`) is kept as JSON.
+serde.workspace = true
+serde_json.workspace = true
 # AAC in MP4/M4A and AIFF too, for the music files a player brings.
 symphonia = { workspace = true, optional = true, features = ["aac", "isomp4", "aiff"] }
 symphonia-adapter-libopus = { workspace = true, optional = true }

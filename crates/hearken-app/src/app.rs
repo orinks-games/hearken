@@ -59,6 +59,8 @@ impl<G: Game> App<G> {
                 top.on_event(&mut self.ctx, &event);
             }
         }
+        // The take's clock runs on the frames its owner is on top for.
+        self.ctx.audio.advance_take(dt);
         if let Some(top) = self.states.last_mut() {
             top.update(&mut self.ctx, dt);
         }
@@ -393,6 +395,10 @@ impl<G: Game> App<G> {
         if self.ctx.has_pending() {
             log::error!("screen changes kept queueing themselves; dropping the rest");
             self.ctx.clear_pending();
+        }
+        if self.ctx.take_owner.is_some() {
+            let names: Vec<&'static str> = self.states.iter().map(|s| s.name()).collect();
+            self.ctx.sync_take(&names);
         }
         if self.states.is_empty() {
             self.note_top();

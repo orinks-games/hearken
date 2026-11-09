@@ -1216,6 +1216,8 @@ dependencies = [
  "kira",
  "log",
  "rtrb",
+ "serde",
+ "serde_json",
  "symphonia",
  "symphonia-adapter-libopus",
  "tempfile",

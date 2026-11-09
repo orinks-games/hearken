@@ -53,7 +53,7 @@ pub use hearken_audio::KiraBackend;
 pub use hearken_audio::{
     Audio, Backend, BackendError, Bus, Call, Channel, ClipSource, Fades, LayeredClips, Listener,
     LiveSound, LoopRegion, LooseClips, MadeClips, MemoryClips, Mix, Recorder, RecordingBackend,
-    SilentBackend, Sound, Source, SpatialConfig, Vec3,
+    SilentBackend, Sound, Source, SpatialConfig, Take, TakeEvent, TakeState, Vec3,
 };
 pub use hearken_l10n as l10n;
 #[cfg(feature = "online")]
@@ -83,7 +83,8 @@ pub use settings::{
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
 pub use soundtrack::{
-    Performer, Piece, Soundtrack, SoundtrackScreen, Stems, Track, Variation, Variety,
+    Performer, Piece, Replay, Soundtrack, SoundtrackScreen, Stems, TakePerformer, Track, Variation,
+    Variety,
 };
 pub use speech_delivery::SayEvent;
 pub use state::{Reveal, StackOp, State};

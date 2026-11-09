@@ -1,7 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::ops::Sub;
 
 /// A position in 3D space: x east, y north, z up.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,
@@ -97,7 +98,7 @@ impl Mix {
 /// plays on through whatever follows `end`. `end: None` loops to the clip's
 /// end. This is how a horn, a bell or an engine is one file with its attack,
 /// its sustain and its release, instead of three files cut by hand.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LoopRegion {
     pub start: f64,
     pub end: Option<f64>,
