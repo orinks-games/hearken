@@ -134,6 +134,12 @@ Some(Action::Status) => {
 Empty layers are skipped; `hearken::text::sentences` joins the facts of one
 layer, leaving out the ones that are absent.
 
+The engine's own screens follow the pattern: the update check
+(`checking`, `planning`, `done`), the download (`ready`, `downloading`,
+`unpacking`, `done`) and the online account screen (`connected`,
+`choosing`, `asking`, `code`, `failed`) each keep one `Phases` and report
+it, so a tester can see where a stalled update or a code request stands.
+
 ## Rules that run on a server
 
 Rules that implement `Replayable` are a stepped machine already: `new`,

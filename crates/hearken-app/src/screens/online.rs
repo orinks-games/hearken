@@ -7,18 +7,45 @@ use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
 use crate::online::{spell_code, Connect};
+use crate::phase::{Phase, Phases};
 use crate::sound::UiSound;
 use crate::state::State;
 
+/// What the screen is doing. The server's side is `ctx.online`'s
+/// [`Connect`]; this is the player's: what the keys do now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Account {
+    /// Arrived connected to an account: Enter disconnects.
+    Connected,
+    /// Guests are allowed and nothing is asked yet: Up and Down choose,
+    /// Enter picks.
+    Choosing,
+    /// A request is with the server: a code, a guest name or a new name.
+    Asking,
+    /// The server gave a code and waits for the player to enter it on
+    /// the site: Enter repeats the code.
+    Code,
+    /// Asking for a code failed: Enter asks again.
+    Failed,
+}
+
+impl Phase for Account {
+    fn name(self) -> &'static str {
+        match self {
+            Account::Connected => "connected",
+            Account::Choosing => "choosing",
+            Account::Asking => "asking",
+            Account::Code => "code",
+            Account::Failed => "failed",
+        }
+    }
+}
+
 pub struct OnlineAccountScreen {
-    /// Whether the player arrived connected to an account: then Enter
-    /// disconnects.
-    connected: bool,
+    phases: Phases<Account>,
     /// The choices on offer when guests are allowed, and the one heard.
     choices: Vec<Choice>,
     at: usize,
-    /// Whether a choice has been made and its answer is awaited.
-    waiting: bool,
     /// The connect state last spoken, so each change is spoken once.
     heard: Connect,
 }
@@ -46,12 +73,19 @@ impl Choice {
 impl OnlineAccountScreen {
     pub fn new() -> Self {
         OnlineAccountScreen {
-            connected: false,
+            // Nothing is asked before `enter` says where the player stands.
+            phases: Phases::new(Account::Choosing),
             choices: Vec::new(),
             at: 0,
-            waiting: false,
             heard: Connect::Idle,
         }
+    }
+
+    /// Sends `ctx.online`'s request off and waits on it, speaking `line`.
+    fn ask<G: Game>(&mut self, ctx: &mut Ctx<G>, line: String) {
+        self.phases.set(ctx, Account::Asking);
+        self.heard = Connect::Asking;
+        ctx.say(line);
     }
 
     fn choice_line(&self, site: &str) -> String {
@@ -139,7 +173,7 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 self.choice_line(&site)
             ));
         } else if ctx.online.is_connected() {
-            self.connected = true;
+            self.phases.set(ctx, Account::Connected);
             let name = ctx
                 .online
                 .player_name()
@@ -153,20 +187,18 @@ impl<G: Game> State<G> for OnlineAccountScreen {
             ctx.say(format!("Not playing online. {}", self.choice_line(&site)));
         } else {
             ctx.online.connect();
-            self.waiting = true;
-            self.heard = Connect::Asking;
-            ctx.say(format!("Asking {site} for a code."));
+            self.ask(ctx, format!("Asking {site} for a code."));
         }
     }
 
     fn exit(&mut self, ctx: &mut Ctx<G>) {
-        if !self.connected {
+        if !self.phases.is(Account::Connected) {
             ctx.online.cancel_connect();
         }
     }
 
     fn update(&mut self, ctx: &mut Ctx<G>, _dt: f64) {
-        if self.connected || !self.waiting {
+        if matches!(self.phases.get(), Account::Connected | Account::Choosing) {
             return;
         }
         let state = ctx.online.connect_state().clone();
@@ -177,6 +209,7 @@ impl<G: Game> State<G> for OnlineAccountScreen {
         let site = ctx.online.site().to_string();
         match state {
             Connect::Waiting { code, url, opened } => {
+                self.phases.set(ctx, Account::Code);
                 ctx.say(code_line(&site, &code, &url, opened))
             }
             Connect::Connected { name } if ctx.online.is_guest() => {
@@ -188,14 +221,19 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 ctx.pop_with(format!("Connected to {site} as {name}."));
             }
             Connect::Renamed { name } => {
-                self.waiting = false;
+                self.phases.set(ctx, Account::Choosing);
                 ctx.play_ui(UiSound::Select);
                 ctx.say(format!("You are now {name}. Enter again for another."));
             }
             Connect::Failed(e) => {
-                if !self.choices.is_empty() {
-                    self.waiting = false;
-                }
+                // With choices on offer the player picks again; asking
+                // for a code, Enter asks again.
+                let next = if self.choices.is_empty() {
+                    Account::Failed
+                } else {
+                    Account::Choosing
+                };
+                self.phases.set(ctx, next);
                 ctx.play_ui(UiSound::Error);
                 ctx.say(failed_line(&site, &e));
             }
@@ -208,12 +246,13 @@ impl<G: Game> State<G> for OnlineAccountScreen {
             return;
         };
         let site = ctx.online.site().to_string();
+        let choosing = self.phases.is(Account::Choosing) && !self.choices.is_empty();
         match key {
             Key::Escape => {
                 ctx.play_ui(UiSound::Back);
                 ctx.pop();
             }
-            Key::Up | Key::Down if !self.choices.is_empty() && !self.waiting => {
+            Key::Up | Key::Down if choosing => {
                 let n = self.choices.len();
                 self.at = if key == Key::Up {
                     (self.at + n - 1) % n
@@ -224,27 +263,21 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 ctx.say(self.choice_line(&site));
             }
             Key::Return if event.is_repeat() && !self.choices.is_empty() => {}
-            Key::Return if !self.choices.is_empty() && !self.waiting => {
+            Key::Return if choosing => {
                 match self.choices[self.at] {
                     Choice::Guest => {
                         ctx.online.play_as_guest();
-                        self.waiting = true;
-                        self.heard = Connect::Asking;
-                        ctx.say(format!("Asking {site} for a guest name."));
+                        self.ask(ctx, format!("Asking {site} for a guest name."));
                     }
                     Choice::NewName => {
                         ctx.online.new_guest_name();
-                        self.waiting = true;
-                        self.heard = Connect::Asking;
-                        ctx.say("Asking for a new name.");
+                        self.ask(ctx, "Asking for a new name.".to_string());
                     }
                     Choice::Account => {
                         // Codes are what the rest of this screen speaks.
                         self.choices.clear();
                         ctx.online.connect();
-                        self.waiting = true;
-                        self.heard = Connect::Asking;
-                        ctx.say(format!("Asking {site} for a code."));
+                        self.ask(ctx, format!("Asking {site} for a code."));
                     }
                     Choice::Disconnect => {
                         ctx.online.disconnect();
@@ -257,8 +290,8 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 ctx.say(format!("Still asking {site}."));
             }
             // A held Enter repeats; only a fresh press disconnects.
-            Key::Return if self.connected && event.is_repeat() => {}
-            Key::Return if self.connected => {
+            Key::Return if self.phases.is(Account::Connected) && event.is_repeat() => {}
+            Key::Return if self.phases.is(Account::Connected) => {
                 ctx.online.disconnect();
                 ctx.play_ui(UiSound::Select);
                 ctx.pop_with(format!("Disconnected from {site}."));
@@ -269,9 +302,7 @@ impl<G: Game> State<G> for OnlineAccountScreen {
                 }
                 Connect::Failed(_) | Connect::Idle => {
                     ctx.online.connect();
-                    self.waiting = true;
-                    self.heard = Connect::Asking;
-                    ctx.say(format!("Asking {site} for a code."));
+                    self.ask(ctx, format!("Asking {site} for a code."));
                 }
                 Connect::Asking => ctx.say(format!("Still asking {site} for a code.")),
                 Connect::Connected { .. } | Connect::Renamed { .. } => {}
@@ -291,7 +322,7 @@ impl<G: Game> State<G> for OnlineAccountScreen {
             return lines;
         }
         match ctx.online.connect_state() {
-            _ if self.connected => vec![format!(
+            _ if self.phases.is(Account::Connected) => vec![format!(
                 "Connected to {site} as {}.",
                 ctx.online.player_name().unwrap_or("your account")
             )],
@@ -307,9 +338,13 @@ impl<G: Game> State<G> for OnlineAccountScreen {
         }
     }
 
+    fn phase(&self) -> Option<&'static str> {
+        Some(self.phases.name())
+    }
+
     fn help(&self, ctx: &Ctx<G>) -> String {
         let site = ctx.online.site();
-        if self.connected {
+        if self.phases.is(Account::Connected) {
             format!("Enter disconnects this computer from {site}. Escape goes back and stays connected.")
         } else if !self.choices.is_empty() {
             format!(
