@@ -168,6 +168,15 @@ impl<G: Game> App<G> {
             }
             _ => {}
         }
+        // The chat keys act on the room in focus from any screen that is
+        // not taking typed text; with no room they are the game's.
+        #[cfg(feature = "online")]
+        if let Some(chat) = G::chat() {
+            let typing = self.states.last().is_some_and(|s| s.takes_text());
+            if !typing && self.ctx.chat_key(&chat, event) {
+                return;
+            }
+        }
         if let Some(top) = self.states.last_mut() {
             top.handle_input(&mut self.ctx, event);
         }

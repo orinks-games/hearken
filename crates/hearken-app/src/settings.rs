@@ -150,10 +150,18 @@ pub struct OnlineSettings {
     /// A guest: a player with no account, named by the server.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub guest: bool,
+    /// How other players' chat lines are heard.
+    #[cfg(feature = "online")]
+    #[serde(default, skip_serializing_if = "crate::chat::ChatLevel::is_default")]
+    pub chat: crate::chat::ChatLevel,
 }
 
 impl OnlineSettings {
     pub fn is_empty(&self) -> bool {
+        #[cfg(feature = "online")]
+        if !self.chat.is_default() {
+            return false;
+        }
         self.token.is_none() && self.name.is_none()
     }
 }

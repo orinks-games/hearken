@@ -6,6 +6,8 @@
 pub mod agent_server;
 pub mod app;
 pub mod bindings;
+#[cfg(feature = "online")]
+pub mod chat;
 pub mod clock;
 pub mod commentary;
 pub mod controller;
@@ -41,6 +43,8 @@ pub mod visuals;
 
 pub use app::App;
 pub use bindings::{Action, Chord, KeyBindings, NoAction, PadChord};
+#[cfg(feature = "online")]
+pub use chat::{ChatConfig, ChatLevel};
 pub use clock::LocalTime;
 pub use commentary::{Commentary, Line};
 pub use controller::{ControllerManager, InputDevice};

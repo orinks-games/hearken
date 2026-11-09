@@ -40,6 +40,13 @@ pub trait State<G: Game> {
         ctx.queued_speech(|ctx| self.resume(ctx));
     }
     fn handle_input(&mut self, _ctx: &mut Ctx<G>, _event: &InputEvent) {}
+
+    /// Whether the screen takes typed text or any key as a whole (a text
+    /// field, a key-binding capture), so engine-wide letter keys such as
+    /// the chat keys stay out of its way.
+    fn takes_text(&self) -> bool {
+        false
+    }
     /// An event from the game's rules, after `Game::observe`.
     fn on_event(&mut self, _ctx: &mut Ctx<G>, _event: &G::Event) {}
     /// Once per frame, top screen only.
