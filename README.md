@@ -708,13 +708,17 @@ written once the value has sat still for 50 ms, and a change smaller
 than 0.01 is nothing. A take stops itself at an hour or 250,000 events
 and is marked `cut`.
 
-A `Track::take` is open from the start, plays in the menu as
+A `Track::take` (or `Track::take_shared` for an `Rc<Take>` the game
+keeps loaded) is open from the start, plays in the menu as
 `TakePerformer` (`Replay`: waiting, playing, ringing out, done) and
 exports like any other track; on an album with export on, Shift and
 Enter on any unlocked track saves that one track as a file, numbered
 as the album lists it, and a take's export runs for the take's own
 length, not the 15-minute cap of a piece that never ends. A take replays
-on the music bus whatever buses it followed.
+on the music bus whatever buses it followed. A game's own "Save this
+run's song" row opens the menu with
+`SoundtrackScreen::new().album("Runs").saving("run-7")`, which starts
+that save on arrival.
 
 #### Exporting an album
 

@@ -797,7 +797,13 @@ impl Track {
     /// timing. Open from the start, since the player has heard it already,
     /// and never varied.
     pub fn take(id: impl Into<String>, title: impl Into<String>, take: Take) -> Track {
-        let mut t = Track::new(id, title, Piece::Take(Rc::new(take)));
+        Track::take_shared(id, title, Rc::new(take))
+    }
+
+    /// [`Track::take`] for a take the game keeps loaded, so listing it
+    /// again copies a pointer, not the events.
+    pub fn take_shared(id: impl Into<String>, title: impl Into<String>, take: Rc<Take>) -> Track {
+        let mut t = Track::new(id, title, Piece::Take(take));
         t.open = true;
         t
     }
@@ -1589,6 +1595,8 @@ pub struct SoundtrackScreen<G: Game> {
     was_listening: bool,
     /// The track each row stands for, by row; `None` for the other rows.
     rows: Vec<Option<String>>,
+    /// A track to start saving on arrival (see [`SoundtrackScreen::saving`]).
+    save_first: Option<String>,
     /// Tracks being written to files.
     #[cfg(feature = "kira")]
     export: Option<Export>,
@@ -1657,9 +1665,20 @@ impl<G: Game> SoundtrackScreen<G> {
             held_music: None,
             was_listening: true,
             rows: Vec::new(),
+            save_first: None,
             #[cfg(feature = "kira")]
             export: None,
         }
+    }
+
+    /// Opens on track `id` and starts saving it as a sound file at once,
+    /// as Shift and Enter on it would, saying "Saving ..." in place of the
+    /// screen's title: for a game's own "Save this run's song" row. A
+    /// track that is not listed, locked, or in an album that does not
+    /// export opens the screen as usual.
+    pub fn saving(mut self, id: impl Into<String>) -> Self {
+        self.save_first = Some(id.into());
+        self
     }
 
     /// Lists only `album`'s tracks, under the title `"<album> soundtrack"`.
@@ -1845,16 +1864,24 @@ impl<G: Game> SoundtrackScreen<G> {
     /// album that does not export.
     #[cfg(feature = "kira")]
     fn save_current(&mut self, ctx: &mut Ctx<G>) {
+        self.start_save(ctx);
+    }
+
+    /// Starts saving the current row's track as a sound file: false when
+    /// the row is not an unlocked track of an exporting album, or a save
+    /// is already running (which is said).
+    #[cfg(feature = "kira")]
+    fn start_save(&mut self, ctx: &mut Ctx<G>) -> bool {
         let Some(id) = self.rows.get(self.core.index).cloned().flatten() else {
-            return;
+            return false;
         };
         ctx.load_soundtrack();
         let Some(track) = ctx.soundtrack.track(&id).cloned() else {
-            return;
+            return false;
         };
         let album = track.album.clone();
         if !ctx.soundtrack.album_options(&album).export || !ctx.soundtrack.is_unlocked(&id) {
-            return;
+            return false;
         }
         if let Some(e) = &self.export {
             let n = e.tracks.len();
@@ -1862,7 +1889,7 @@ impl<G: Game> SoundtrackScreen<G> {
                 ExportWhat::Track => "Still saving.".to_string(),
                 ExportWhat::Album => format!("Exporting, track {} of {n}.", (e.at + 1).min(n)),
             });
-            return;
+            return false;
         }
         let number = ctx
             .soundtrack
@@ -1889,10 +1916,16 @@ impl<G: Game> SoundtrackScreen<G> {
             written: 0,
             failed: 0,
         });
+        true
     }
 
     #[cfg(not(feature = "kira"))]
     fn save_current(&mut self, _ctx: &mut Ctx<G>) {}
+
+    #[cfg(not(feature = "kira"))]
+    fn start_save(&mut self, _ctx: &mut Ctx<G>) -> bool {
+        false
+    }
 
     /// Works on the export for up to [`EXPORT_SLICE`].
     #[cfg(feature = "kira")]
@@ -2197,6 +2230,18 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
     }
 
     fn announce(&mut self, ctx: &mut Ctx<G>) {
+        if let Some(id) = self.save_first.take() {
+            let row = self
+                .rows
+                .iter()
+                .position(|r| r.as_deref() == Some(id.as_str()));
+            if let Some(row) = row {
+                self.core.index = row;
+                if self.start_save(ctx) {
+                    return;
+                }
+            }
+        }
         let (unlocked, listed) = self.counts(ctx);
         let title = crate::text::end_sentence(&self.core.title);
         let tracks = if listed == 1 { "track" } else { "tracks" };

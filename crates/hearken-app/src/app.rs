@@ -263,6 +263,15 @@ impl<G: Game> App<G> {
         self.states.len()
     }
 
+    /// Holds, resumes or drops the take for the stack as it stands (see
+    /// [`Ctx::begin_take`]).
+    fn sync_take(&mut self) {
+        if self.ctx.take_owner.is_some() {
+            let names: Vec<&'static str> = self.states.iter().map(|s| s.name()).collect();
+            self.ctx.sync_take(&names);
+        }
+    }
+
     /// Keeps `ctx.top_screen()` in step with the stack, after a change.
     fn note_top(&mut self) {
         self.ctx.screen = self.top_name();
@@ -286,6 +295,13 @@ impl<G: Game> App<G> {
     /// `enter` logs or sets a phase on is filed under its own name.
     fn enter_top(&mut self, mut next: Box<dyn State<G>>) {
         self.ctx.screen = next.name();
+        // A take is held before the new screen arrives, so what it does on
+        // arrival (a pause menu pausing every sound) is not in the take.
+        if self.ctx.take_owner.is_some() {
+            let mut names: Vec<&'static str> = self.states.iter().map(|s| s.name()).collect();
+            names.push(next.name());
+            self.ctx.sync_take(&names);
+        }
         next.enter(&mut self.ctx);
         self.states.push(next);
     }
@@ -368,6 +384,11 @@ impl<G: Game> App<G> {
                         reveal = None;
                     }
                 }
+                // Held as soon as another screen is on top, so what that
+                // screen does on arrival (a pause menu pausing the sound)
+                // is not in the take; recording again before the owner
+                // resumes.
+                self.sync_take();
             }
             if let (Some(how), Some(top)) = (reveal, self.states.last_mut()) {
                 let name = top.name();
@@ -396,10 +417,7 @@ impl<G: Game> App<G> {
             log::error!("screen changes kept queueing themselves; dropping the rest");
             self.ctx.clear_pending();
         }
-        if self.ctx.take_owner.is_some() {
-            let names: Vec<&'static str> = self.states.iter().map(|s| s.name()).collect();
-            self.ctx.sync_take(&names);
-        }
+        self.sync_take();
         if self.states.is_empty() {
             self.note_top();
             self.ctx.running = false;

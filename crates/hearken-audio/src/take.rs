@@ -268,6 +268,10 @@ pub(crate) struct Recorder {
     /// The listener as last recorded, and a move waiting to be.
     listener: Option<(Vec3, f32)>,
     listener_pending: Option<(f64, Vec3, f32)>,
+    /// The followed sounds paused right now, so a pause of something
+    /// already paused, or a resume of something playing (a pause menu's
+    /// `resume_all` after the take was held) is nothing.
+    paused: HashSet<u32>,
     cut: bool,
 }
 
@@ -287,6 +291,7 @@ impl Recorder {
             last: HashMap::new(),
             listener: None,
             listener_pending: None,
+            paused: HashSet::new(),
             cut: false,
         };
         r.set_state(TakeState::Recording);
@@ -470,6 +475,14 @@ impl Recorder {
         let Some(&id) = self.ids.get(&sound) else {
             return;
         };
+        let changed = if paused {
+            self.paused.insert(id)
+        } else {
+            self.paused.remove(&id)
+        };
+        if !changed || self.state != TakeState::Recording {
+            return;
+        }
         self.flush_for(id);
         let t = self.clock;
         self.push(TakeEvent::Pause { t, id, paused });
@@ -479,6 +492,7 @@ impl Recorder {
     /// its clip ends the same way when performed.
     pub(crate) fn freed(&mut self, sound: Sound) {
         if let Some(id) = self.ids.remove(&sound) {
+            self.paused.remove(&id);
             self.flush_for(id);
         }
     }

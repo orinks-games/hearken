@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use common::{Probe, TestGame};
 use hearken_app::audio::Start;
+use hearken_app::screens::PauseScreen;
 use hearken_app::soundtrack::AlbumOptions;
 use hearken_app::{
     Bus, Call, Headless, InputEvent, Key, Mods, Performer, Replay, SoundtrackScreen, Take,
@@ -405,4 +406,113 @@ fn escape_stops_a_save_and_says_so() {
     let folder = dir.path().join("Test Game").join("Runs");
     let leftovers = std::fs::read_dir(&folder).map(|d| d.count()).unwrap_or(0);
     assert_eq!(leftovers, 0, "a part file was left behind");
+}
+
+#[test]
+fn a_pause_menu_over_the_run_leaves_no_pause_in_the_take() {
+    let mut h = game();
+    h.app.ctx.begin_take(&[Bus::MUSIC]);
+    let bed = h.app.ctx.audio.start_loop("music/bed", None, Bus::MUSIC);
+    h.frame(1.0);
+    // The pause screen pauses every sound on arrival and resumes them on
+    // leaving; the take is held before either happens.
+    h.app.ctx.push(PauseScreen::new("", |_ctx| {}));
+    h.frame(0.0);
+    assert_eq!(h.app.ctx.take_state(), TakeState::Held);
+    assert!(h.app.ctx.audio.is_paused(bed));
+    h.frame(3.0);
+    h.app.ctx.pop();
+    h.frame(0.0);
+    assert!(!h.app.ctx.audio.is_paused(bed));
+    h.frame(1.0);
+    h.app.ctx.audio.stop(bed, 0);
+    let take = h.app.ctx.end_take().expect("a take");
+    assert!(
+        !take
+            .events
+            .iter()
+            .any(|e| matches!(e, TakeEvent::Pause { .. })),
+        "{:?}",
+        take.events
+    );
+    assert!((take.length_s - 2.0).abs() < 0.01, "{}", take.length_s);
+    // The game's own pause is still in the take.
+    h.app.ctx.begin_take(&[Bus::MUSIC]);
+    let bed = h.app.ctx.audio.start_loop("music/bed", None, Bus::MUSIC);
+    h.frame(0.5);
+    h.app.ctx.audio.pause(bed);
+    h.app.ctx.audio.pause(bed);
+    h.frame(0.5);
+    h.app.ctx.audio.resume(bed);
+    h.frame(0.1);
+    let take = h.app.ctx.end_take().expect("a take");
+    let pauses: Vec<bool> = take
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            TakeEvent::Pause { paused, .. } => Some(*paused),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pauses, vec![true, false]);
+}
+
+#[test]
+fn a_screen_opened_to_save_a_track_starts_saving_on_arrival() {
+    let mut h = game();
+    h.app.ctx.begin_take(&[Bus::MUSIC]);
+    let bed = h.app.ctx.audio.start_loop("music/bed", None, Bus::MUSIC);
+    h.frame(2.0);
+    h.app.ctx.audio.stop(bed, 0);
+    let take = h.app.ctx.end_take().expect("a take");
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Headless::new(Default::default(), Probe::new("base"));
+    h.app.ctx.soundtrack.set_tracks(vec![
+        Track::clip("theme", "Theme", "music/theme").album("Runs"),
+        Track::take("run-1", "Morning run", take).album("Runs"),
+    ]);
+    h.app.ctx.soundtrack.set_album(
+        "Runs",
+        AlbumOptions {
+            export: true,
+            vary_export: false,
+        },
+    );
+    h.app
+        .ctx
+        .soundtrack
+        .set_export_dir(Some(dir.path().to_path_buf()));
+    h.frame(0.0);
+    h.clear();
+    h.app
+        .ctx
+        .push(SoundtrackScreen::new().album("Runs").saving("run-1"));
+    h.frame(0.0);
+    assert_eq!(h.spoken()[0], "Saving Morning run. Escape stops it.");
+    let began = Instant::now();
+    while !h.spoken().iter().any(|l| l.starts_with("Saved ")) {
+        h.frame(0.016);
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "{:?}",
+            h.spoken()
+        );
+    }
+    let folder = dir.path().join("Test Game").join("Runs");
+    assert!(folder.join("02 Morning run.ogg").is_file());
+
+    // A track that cannot be saved opens the screen as usual.
+    h.app.ctx.pop();
+    h.frame(0.0);
+    h.clear();
+    h.app
+        .ctx
+        .push(SoundtrackScreen::new().album("Runs").saving("theme"));
+    h.frame(0.0);
+    assert!(
+        h.spoken()[0].starts_with("Runs soundtrack."),
+        "{:?}",
+        h.spoken()
+    );
 }
