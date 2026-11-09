@@ -68,6 +68,9 @@ impl<G: Game> App<G> {
         #[cfg(feature = "update")]
         self.ctx
             .update_updates(self.states.last().is_some_and(|s| s.allows_update_prompt()));
+        #[cfg(feature = "report")]
+        self.ctx
+            .update_reports(self.states.last().is_some_and(|s| s.allows_update_prompt()));
         self.ctx.speech.poll(dt);
         self.ctx.update_audio();
         self.ctx.update_soundtrack();
@@ -210,6 +213,9 @@ impl<G: Game> App<G> {
             shell.render_scene(&self.visual_scene());
         }
         G::on_exit(&mut self.ctx);
+        // A clean exit, so the next start does not offer to report a crash.
+        #[cfg(feature = "report")]
+        self.ctx.reports.end_session();
         self.ctx.controller.shutdown();
         // Saved before the audio shutdown, which can wait up to
         // `SHUTDOWN_WAIT` for a hung driver: a force-close during that wait

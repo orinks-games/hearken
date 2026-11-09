@@ -8,8 +8,9 @@ use crate::input::InputEvent;
 pub trait State<G: Game> {
     /// A stable identifier for logs and tests.
     fn name(&self) -> &'static str;
-    /// Whether an automatic update offer may cover this screen. Opt in
-    /// only on a safe home/title menu, never during play or another modal.
+    /// Whether an automatic offer (an update, or reporting a crash) may
+    /// cover this screen. Opt in only on a safe home/title menu, never
+    /// during play or another modal.
     fn allows_update_prompt(&self) -> bool {
         false
     }

@@ -1,0 +1,27 @@
+[package]
+name = "hearken-report"
+description = "Problem reports from a Hearken game: what happened, the copy and system it happened on, and the log, sent to a relay that emails the developer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["http"]
+# Sending a report over HTTPS through ureq. A relay only needs the report
+# type, and so does a game that posts reports its own way.
+http = ["dep:ureq", "dep:flate2"]
+
+# No audio, speech or window code, so `cargo test -p hearken-report` is
+# quick, and a relay written in Rust can read reports with the same type.
+[dependencies]
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flate2 = { version = "1", optional = true }
+ureq = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

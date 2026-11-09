@@ -57,6 +57,7 @@ A game depends on one crate, `hearken`, which brings in the rest:
 | `hearken-replay` | Verified online runs: a run recorded as its seed and inputs, and the game's rules built for WebAssembly so a server can replay it and trust only the result it computes (`hearken::replay`, `ctx.online` with the `online` feature). The server side is `server/`; see `docs/online.md`. |
 | `hearken-bake` | Build scripts only: puts a release's keys into the program as scattered shares. |
 | `hearken-update` | A released game updating itself from GitHub releases, any HTTPS host, or a source of its own, with every update signed (`ctx.updates`, with the `update` feature). See `docs/updates.md`. |
+| `hearken-report` | Problem reports from the player, emailed to the developer through a relay the game names, with the session log attached, and an offer to report a crash at the next start (`ctx.reports`, with the `report` feature). See `docs/reports.md`. |
 | `hearken-discord` | Discord Rich Presence: the "Playing ..." status friends see, from the game's own Discord application. Off the game loop, throttled, and silent when Discord is not running (`ctx.discord`, with the `discord` feature). |
 | `hearken-radio` | Internet radio, played as a sound: HTTP and ICY stations, playlists and live HLS, with now-playing titles. Optional. |
 
@@ -739,6 +740,8 @@ What this cannot protect, as no offline game can:
 - `discord`: Discord Rich Presence. See Discord status.
 - `update`: a released copy checks for, downloads and installs its own
   updates, from wherever the game publishes them. See Updates.
+- `report`: the player reports a problem from Settings, with the game log,
+  and is offered to report a crash at the next start. See Problem reports.
 
 ## Discord status
 
@@ -823,6 +826,33 @@ Now never update themselves.
 
 `docs/updates.md` covers publishing, keys, the manifest format and what
 this cannot protect against.
+
+## Problem reports
+
+A game can take a problem report from the player and have it emailed to
+its developer, with the session log attached. Turn on `hearken`'s `report`
+feature and name the relay the reports go to:
+
+```rust
+impl Game for MyGame {
+    // ...
+    fn reports() -> Option<hearken::ReportConfig> {
+        hearken::ReportConfig::new("My Game", env!("CARGO_PKG_VERSION"),
+            "https://example.com/api/problem-reports")
+    }
+}
+```
+
+Settings gets a Report a problem row: what happened, an email address for
+a reply, whether the log goes along, Read the report, and Send. A run that
+never exited cleanly is noticed at the next start, and the game offers to
+report it, with Don't ask again. Sending runs off the game loop, and a
+report the relay will not take can be saved to a file instead. The relay
+is a small web service that emails each report to one address; the game
+never holds a mail password. The format is mailbag's, so a
+`mailbag-server` takes these reports too.
+
+`docs/reports.md` covers the screens, the format and running a relay.
 
 ## Commentary voices
 

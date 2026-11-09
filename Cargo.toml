@@ -37,6 +37,8 @@ hearken-rooms = { path = "crates/hearken-rooms" }
 hearken-discord = { path = "crates/hearken-discord" }
 # The engine side turns on `http`; `hearken release` only signs.
 hearken-update = { path = "crates/hearken-update", default-features = false }
+# The engine side turns on `http`; a relay reads reports with the type alone.
+hearken-report = { path = "crates/hearken-report", default-features = false }
 kira = { version = "0.12", default-features = false, features = ["cpal", "symphonia"] }
 # Kira's own versions: hearken-audio opens the device itself.
 cpal = "0.18"
