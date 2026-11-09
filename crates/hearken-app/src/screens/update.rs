@@ -14,6 +14,7 @@ use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::{InputEvent, Key};
 use crate::menu::{Menu, MenuCore, MenuItem};
+use crate::phase::{Phase as ScreenPhase, Phases};
 use crate::sound::UiSound;
 use crate::state::State;
 use crate::text::end_sentence;
@@ -40,6 +41,29 @@ pub fn download_size(update: &Update) -> String {
     }
 }
 
+/// Where a check for updates has got to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Check {
+    /// Asking the update server.
+    Checking,
+    /// An update is found; finding which files this copy already has.
+    Planning,
+    /// The answer is spoken: up to date, blocked, or a failure. Enter or
+    /// Escape leaves. An update found replaces this screen with the offer
+    /// instead.
+    Done,
+}
+
+impl ScreenPhase for Check {
+    fn name(self) -> &'static str {
+        match self {
+            Check::Checking => "checking",
+            Check::Planning => "planning",
+            Check::Done => "done",
+        }
+    }
+}
+
 /// Checks for an update when the player asks, from Settings.
 pub struct UpdateCheckScreen {
     automatic: bool,
@@ -47,9 +71,9 @@ pub struct UpdateCheckScreen {
     /// left to find, not the update itself.
     found: Option<Update>,
     checker: Option<Checker>,
+    /// The answer, once there is one.
     message: String,
-    /// Whether it said it is finding which files the player already has.
-    planning: bool,
+    phases: Phases<Check>,
 }
 
 /// What the check screen says while it hashes the player's files.
@@ -62,17 +86,23 @@ impl UpdateCheckScreen {
             found: None,
             checker: None,
             message: String::new(),
-            planning: false,
+            phases: Phases::new(Check::Checking),
         }
     }
 
     fn status(&self) -> &str {
-        if !self.message.is_empty() {
-            &self.message
-        } else if self.planning {
-            PLANNING_LINE
-        } else {
-            "Checking for updates."
+        match self.phases.get() {
+            Check::Done => &self.message,
+            Check::Planning => PLANNING_LINE,
+            Check::Checking => "Checking for updates.",
+        }
+    }
+
+    /// The answer: spoken once, here, and kept for the screen's text.
+    fn answer<G: Game>(&mut self, ctx: &mut Ctx<G>, message: String) {
+        if self.phases.set(ctx, Check::Done) {
+            self.message = message;
+            ctx.say(self.message.clone());
         }
     }
 
@@ -109,16 +139,16 @@ impl<G: Game> State<G> for UpdateCheckScreen {
 
     fn enter(&mut self, ctx: &mut Ctx<G>) {
         if let Some(line) = ctx.updates.blocked_line() {
-            self.message = line;
-            ctx.say(self.message.clone());
+            self.answer(ctx, line);
             return;
         }
         if self.checker.is_none() {
             ctx.updates.cancel_background();
             if let Some(update) = self.found.take() {
                 self.checker = ctx.updates.plan_found(update);
-                self.planning = true;
-                ctx.say(PLANNING_LINE);
+                if self.phases.set(ctx, Check::Planning) {
+                    ctx.say(PLANNING_LINE);
+                }
                 return;
             }
             let channel = ctx.updates.channel(&ctx.settings.updates);
@@ -128,12 +158,13 @@ impl<G: Game> State<G> for UpdateCheckScreen {
     }
 
     fn update(&mut self, ctx: &mut Ctx<G>, _dt: f64) {
-        if !self.message.is_empty() {
+        if self.phases.is(Check::Done) {
             return;
         }
         let Some(outcome) = self.checker.as_mut().and_then(|c| c.poll()).cloned() else {
-            if !self.planning && self.checker.as_ref().is_some_and(|c| c.planning()) {
-                self.planning = true;
+            if self.checker.as_ref().is_some_and(|c| c.planning())
+                && self.phases.set(ctx, Check::Planning)
+            {
                 ctx.say(PLANNING_LINE);
             }
             return;
@@ -143,21 +174,20 @@ impl<G: Game> State<G> for UpdateCheckScreen {
                 let mut prompt = UpdatePromptScreen::<G>::new(update);
                 prompt.automatic = self.automatic;
                 ctx.replace(prompt);
-                return;
             }
             Ok(None) => {
                 let current = ctx.updates.spoken_current().unwrap_or_default();
-                self.message = format!(
+                let line = format!(
                     "Up to date. You have {} version {current}.",
                     ctx.updates.name()
                 );
+                self.answer(ctx, line);
             }
             Err(line) => {
                 ctx.play_ui(UiSound::Error);
-                self.message = format!("{} Try again later.", end_sentence(&line));
+                self.answer(ctx, format!("{} Try again later.", end_sentence(&line)));
             }
         }
-        ctx.say(self.message.clone());
     }
 
     fn handle_input(&mut self, ctx: &mut Ctx<G>, event: &InputEvent) {
@@ -181,13 +211,15 @@ impl<G: Game> State<G> for UpdateCheckScreen {
         ]
     }
 
+    fn phase(&self) -> Option<&'static str> {
+        Some(self.phases.name())
+    }
+
     fn help(&self, _ctx: &Ctx<G>) -> String {
-        if self.message.is_empty() && self.planning {
-            format!("{PLANNING_LINE} Escape stops and goes back.")
-        } else if self.message.is_empty() {
-            "Checking for a newer version. Escape goes back.".to_string()
-        } else {
-            format!("{} Escape goes back.", self.message)
+        match self.phases.get() {
+            Check::Planning => format!("{PLANNING_LINE} Escape stops and goes back."),
+            Check::Checking => "Checking for a newer version. Escape goes back.".to_string(),
+            Check::Done => format!("{} Escape goes back.", self.message),
         }
     }
 }
@@ -389,8 +421,36 @@ struct Outcome {
     error: Option<String>,
 }
 
-const PHASE_DOWNLOADING: u8 = 0;
-const PHASE_UNPACKING: u8 = 1;
+/// The worker's two phases, as it reports them.
+const WORKER_DOWNLOADING: u8 = 0;
+const WORKER_UNPACKING: u8 = 1;
+
+/// Where the download has got to, on the screen's side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Download {
+    /// Made, not yet entered.
+    Ready,
+    /// Bytes arriving; a stall for [`STALL_TIMEOUT_S`] gives up.
+    Downloading,
+    /// Everything downloaded; the worker unpacks, for at most
+    /// [`UNPACK_TIMEOUT_S`]. Goes back to downloading when only the
+    /// changed files did not work out and the whole update downloads.
+    Unpacking,
+    /// Over: canceled, given up, handed to the swap, or stashed for a
+    /// manual install. Keys do nothing more.
+    Done,
+}
+
+impl ScreenPhase for Download {
+    fn name(self) -> &'static str {
+        match self {
+            Download::Ready => "ready",
+            Download::Downloading => "downloading",
+            Download::Unpacking => "unpacking",
+            Download::Done => "done",
+        }
+    }
+}
 
 /// Seconds without a byte before the screen gives up on the worker: the
 /// worker's own idle bound, plus a moment for it to say why. The backstop
@@ -413,17 +473,17 @@ pub struct UpdateDownloadScreen {
     /// only the changed files download.
     bytes: Arc<AtomicU64>,
     total: Arc<AtomicU64>,
-    phase: Arc<AtomicU8>,
+    /// Downloading or unpacking, as the worker reports it; the screen's
+    /// own phase follows it a frame later, in `watch`.
+    worker_phase: Arc<AtomicU8>,
     install: Option<Install>,
     spoken_quarter: u64,
     /// The total the screen last spoke progress against.
     seen_total: u64,
-    started: bool,
-    finished: bool,
+    phases: Phases<Download>,
     seen_bytes: u64,
+    /// Seconds since the last byte arrived.
     idle_s: f64,
-    unpack_s: f64,
-    unpack_spoken: bool,
 }
 
 impl UpdateDownloadScreen {
@@ -436,16 +496,13 @@ impl UpdateDownloadScreen {
             done: Arc::new(AtomicBool::new(false)),
             outcome: Arc::new(Mutex::new(Outcome::default())),
             bytes: Arc::new(AtomicU64::new(0)),
-            phase: Arc::new(AtomicU8::new(PHASE_DOWNLOADING)),
+            worker_phase: Arc::new(AtomicU8::new(WORKER_DOWNLOADING)),
             install: None,
             spoken_quarter: 0,
             seen_total: size,
-            started: false,
-            finished: false,
+            phases: Phases::new(Download::Ready),
             seen_bytes: 0,
             idle_s: 0.0,
-            unpack_s: 0.0,
-            unpack_spoken: false,
         }
     }
 
@@ -459,8 +516,9 @@ impl UpdateDownloadScreen {
         (self.progress() * 100.0).floor() as u64
     }
 
+    /// Whether the worker is unpacking.
     fn unpacking(&self) -> bool {
-        self.phase.load(Ordering::SeqCst) == PHASE_UNPACKING
+        self.worker_phase.load(Ordering::SeqCst) == WORKER_UNPACKING
     }
 
     fn outcome(&self) -> std::sync::MutexGuard<'_, Outcome> {
@@ -476,13 +534,13 @@ impl UpdateDownloadScreen {
             .running()
             .map_or_else(|| "hearken".to_string(), |r| r.game.clone());
         let update = self.update.clone();
-        let (cancelled, done, outcome, bytes, total, phase) = (
+        let (cancelled, done, outcome, bytes, total, worker_phase) = (
             self.cancelled.clone(),
             self.done.clone(),
             self.outcome.clone(),
             self.bytes.clone(),
             self.total.clone(),
-            self.phase.clone(),
+            self.worker_phase.clone(),
         );
         let spawned = std::thread::Builder::new()
             .name("update-download".into())
@@ -507,10 +565,10 @@ impl UpdateDownloadScreen {
                         },
                         &mut |now| {
                             let code = match now {
-                                Phase::Downloading => PHASE_DOWNLOADING,
-                                Phase::Unpacking => PHASE_UNPACKING,
+                                Phase::Downloading => WORKER_DOWNLOADING,
+                                Phase::Unpacking => WORKER_UNPACKING,
                             };
-                            phase.store(code, Ordering::SeqCst);
+                            worker_phase.store(code, Ordering::SeqCst);
                         },
                         &cancelled,
                     )?;
@@ -567,30 +625,30 @@ impl UpdateDownloadScreen {
     fn abandon<G: Game>(&mut self, ctx: &mut Ctx<G>, reason: &str) {
         log::warn!("update abandoned: {reason}");
         self.cancel();
-        self.finished = true;
+        self.phases.set(ctx, Download::Done);
         ctx.play_ui(UiSound::Error);
         ctx.say(unchanged_line(ctx, reason));
         ctx.pop_quiet();
     }
 
-    /// The stall and unpack watchdogs, on this screen's own clock.
+    /// Follows the worker's phase, and runs the stall and unpack
+    /// watchdogs on this screen's own clock.
     fn watch<G: Game>(&mut self, ctx: &mut Ctx<G>, dt: f64) {
-        if !self.unpacking() && self.unpack_spoken {
-            // Back to downloading: the whole update, after all.
-            self.unpack_spoken = false;
-            self.unpack_s = 0.0;
-            self.idle_s = 0.0;
-        }
         if self.unpacking() {
-            if !self.unpack_spoken {
-                self.unpack_spoken = true;
+            if self
+                .phases
+                .set_for(ctx, Download::Unpacking, UNPACK_TIMEOUT_S)
+            {
                 ctx.say_queued("Download complete. Unpacking the update.");
             }
-            self.unpack_s += dt;
-            if self.unpack_s >= UNPACK_TIMEOUT_S {
+            if self.phases.tick(dt) {
                 self.abandon(ctx, "Unpacking the update took too long.");
             }
             return;
+        }
+        if self.phases.set(ctx, Download::Downloading) {
+            // Back from unpacking: the whole update, after all.
+            self.idle_s = 0.0;
         }
         let bytes = self.bytes.load(Ordering::SeqCst);
         if bytes != self.seen_bytes {
@@ -609,7 +667,7 @@ impl UpdateDownloadScreen {
     }
 
     fn finish<G: Game>(&mut self, ctx: &mut Ctx<G>) {
-        self.finished = true;
+        self.phases.set(ctx, Download::Done);
         if self.cancelled.load(Ordering::SeqCst) {
             self.cancel();
             ctx.pop_quiet();
@@ -706,10 +764,11 @@ impl<G: Game> State<G> for UpdateDownloadScreen {
     }
 
     fn enter(&mut self, ctx: &mut Ctx<G>) {
-        if self.started {
+        // Revealed again, not entered: the download never starts twice.
+        if !self.phases.is(Download::Ready) {
             return;
         }
-        self.started = true;
+        self.phases.set(ctx, Download::Downloading);
         ctx.say(format!(
             "Downloading {}, {}. The game restarts when it is done. Escape cancels.",
             ctx.updates.title(&self.update),
@@ -719,7 +778,7 @@ impl<G: Game> State<G> for UpdateDownloadScreen {
     }
 
     fn update(&mut self, ctx: &mut Ctx<G>, dt: f64) {
-        if self.finished {
+        if self.phases.is(Download::Done) {
             return;
         }
         let total = self.total.load(Ordering::SeqCst);
@@ -747,7 +806,7 @@ impl<G: Game> State<G> for UpdateDownloadScreen {
     }
 
     fn handle_input(&mut self, ctx: &mut Ctx<G>, event: &InputEvent) {
-        if self.finished {
+        if self.phases.is(Download::Done) {
             return;
         }
         match event.pressed() {
@@ -755,7 +814,7 @@ impl<G: Game> State<G> for UpdateDownloadScreen {
                 // Leave now, whatever the worker is doing; it stops and
                 // tidies up when it next wakes.
                 self.cancel();
-                self.finished = true;
+                self.phases.set(ctx, Download::Done);
                 ctx.play_ui(UiSound::Back);
                 ctx.pop_with("Update canceled.");
             }
@@ -783,6 +842,10 @@ impl<G: Game> State<G> for UpdateDownloadScreen {
             status,
             "Escape cancels, Tab reads progress.".to_string(),
         ]
+    }
+
+    fn phase(&self) -> Option<&'static str> {
+        Some(self.phases.name())
     }
 
     fn help(&self, _ctx: &Ctx<G>) -> String {

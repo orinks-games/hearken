@@ -242,6 +242,14 @@ fn an_update_is_found_offered_downloaded_and_handed_to_the_swap() {
     );
     assert!(offer.contains("You have version 1.0.0."), "{offer}");
     assert!(offer.contains("Download and restart."), "{offer}");
+    assert_eq!(
+        w.h.screens(),
+        [
+            "start on settings",
+            "push update_check over settings",
+            "replace update_check with update_prompt"
+        ]
+    );
 
     // What's new reads the notes as plain lines.
     w.h.press(Key::Down);
@@ -256,6 +264,7 @@ fn an_update_is_found_offered_downloaded_and_handed_to_the_swap() {
 
     w.h.press(Key::Return);
     assert!(w.h.spoken()[0].starts_with("Downloading Patched version 1.1.0"));
+    assert_eq!(w.h.phase(), Some("downloading"));
     for _ in 0..500 {
         w.h.frame(0.016);
         if !w.applied.lock().unwrap().is_empty() {
@@ -275,6 +284,17 @@ fn an_update_is_found_offered_downloaded_and_handed_to_the_swap() {
         .iter()
         .any(|l| l.contains("The game closes and starts again by itself")));
     assert!(!w.h.app.ctx.running, "the game quits so the swap can run");
+    // The download may finish between two frames, so unpacking is not
+    // always seen; it starts and ends the same way regardless.
+    let phases = w.h.transitions();
+    assert_eq!(
+        phases.first().map(String::as_str),
+        Some("update_download: ready -> downloading")
+    );
+    assert!(
+        phases.last().is_some_and(|t| t.ends_with("-> done")),
+        "{phases:?}"
+    );
     let _ = std::fs::remove_dir_all(staging);
 }
 
@@ -289,6 +309,8 @@ fn up_to_date_says_so_with_the_version() {
         .h
         .spoken()
         .contains(&"Up to date. You have Patched version 1.0.0.".to_string()));
+    assert_eq!(w.h.phase(), Some("done"));
+    assert_eq!(w.h.transitions(), ["update_check: checking -> done"]);
 }
 
 #[test]
@@ -616,6 +638,15 @@ fn installing_from_settings_looks_for_the_files_the_player_has() {
     w.h.press(Key::Return);
     frames_until(&mut w.h, "Update available");
     assert!(w.table.1.lock().unwrap().contains(&index_url));
+    // Only the files are left to find, so the screen opens planning.
+    assert!(w
+        .h
+        .transitions()
+        .contains(&"update_check: checking -> planning".to_string()));
+    assert!(w
+        .h
+        .screens()
+        .contains(&"replace update_check with update_prompt".to_string()));
 }
 
 #[test]
@@ -628,6 +659,11 @@ fn escape_cancels_a_download() {
     w.h.press(Key::Return);
     w.h.press(Key::Escape);
     assert!(w.h.spoken().iter().any(|l| l.contains("Update canceled")));
+    assert!(w
+        .h
+        .transitions()
+        .contains(&"update_download: downloading -> done".to_string()));
+    assert_eq!(w.h.phase(), None, "back on Settings, which has no phases");
     for _ in 0..30 {
         w.h.frame(0.016);
         std::thread::sleep(Duration::from_millis(10));

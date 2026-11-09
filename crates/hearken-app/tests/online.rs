@@ -80,11 +80,20 @@ fn a_player_connects_and_disconnects_an_account() {
     h.clear();
     h.press(Key::Return);
     assert_eq!(h.spoken(), ["Asking example.test for a code."]);
+    assert_eq!(h.phase(), Some("asking"));
     frames_until(
         &mut h,
         "Code A, B, C, D, then E, F, 3, 4. Go to example.test slash activate and enter it.",
     );
+    assert_eq!(h.phase(), Some("code"));
     frames_until(&mut h, "Connected to example.test as Ada.");
+    assert_eq!(
+        h.transitions(),
+        [
+            "online_account: choosing -> asking",
+            "online_account: asking -> code"
+        ]
+    );
     assert_eq!(
         h.app.ctx.settings.online.token,
         Some(Secret("k".repeat(40)))
@@ -101,6 +110,7 @@ fn a_player_connects_and_disconnects_an_account() {
         h.spoken(),
         ["Connected to example.test as Ada. Enter disconnects this computer, Escape keeps it."]
     );
+    assert_eq!(h.phase(), Some("connected"));
     h.clear();
     h.press(Key::Return);
     h.frame(0.016);
@@ -133,6 +143,11 @@ fn an_expired_code_offers_a_new_one() {
         &mut h,
         "The code expired. Enter asks for a new one, Escape goes back.",
     );
+    assert_eq!(h.phase(), Some("failed"));
+    h.clear();
+    h.press(Key::Return);
+    assert_eq!(h.spoken(), ["Asking example.test for a code."]);
+    assert_eq!(h.transitions(), ["online_account: failed -> asking"]);
 }
 
 struct Guests;
@@ -210,8 +225,10 @@ fn a_guest_plays_renames_connects_an_account_and_stops() {
     h.clear();
     h.press(Key::Return);
     assert_eq!(h.spoken(), ["Not playing online. Play as a guest, 1 of 2"]);
+    assert_eq!(h.phase(), Some("choosing"));
     h.clear();
     h.press(Key::Return);
+    assert_eq!(h.phase(), Some("asking"));
     guest_frames_until(&mut h, "Playing as guest Copper Fox 12.");
     assert!(h.app.ctx.online.is_guest());
     assert!(h.app.ctx.settings.online.guest, "a guest is saved as one");
@@ -227,6 +244,14 @@ fn a_guest_plays_renames_connects_an_account_and_stops() {
     h.press(Key::Return);
     guest_frames_until(&mut h, "You are now Sunny Pine 3.");
     assert_eq!(h.app.ctx.online.player_name(), Some("Sunny Pine 3"));
+    assert_eq!(
+        h.transitions(),
+        [
+            "online_account: choosing -> asking",
+            "online_account: asking -> choosing"
+        ],
+        "a new name hands the choices back"
+    );
 
     // Connecting an account sends the guest's token, so its scores follow.
     h.press(Key::Down);
