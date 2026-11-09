@@ -493,7 +493,7 @@ ids are not sent).
 | `GET rooms` | The player's rooms, newest first, each with `unread`: events since the player last read it. |
 | `GET rooms/<id>?after=<seq>` | The room, the events after `seq` (`more` when there are over 200), and presence. The client's poll; it marks the room read. |
 | `POST rooms/<id>/start` | The host starts with at least `seats.min` filled. `403 not-the-host`, `422 not-enough-players`. |
-| `POST rooms/<id>/events` | One event: `turn {inputs:[[code,value],...]}`, `chat {text}`, `leave`, or `finish`. Answers `{seq}`. |
+| `POST rooms/<id>/events` | One event: `turn {inputs:[[code,value],...]}`, `chat {text}`, `leave`, or `finish`. Answers `{seq}`. `leave` frees a waiting seat, forfeits a match in play, and drops a room that is over from the player's list. |
 
 A room is `{id, kind, code, phase, open, seats:{min,max}, host, members,
 you, seed, context, seq, snapshot, result, updated_at, turn_started_at}`;

@@ -328,3 +328,21 @@ test("the module itself plays a match from turns", { skip }, async () => {
   assert.equal(partial.finished, false);
   assert.equal(partial.outcome.next_seat, 1);
 });
+
+test("leaving a room that is over drops it from my rooms", { skip }, async () => {
+  const { service, ada, bo } = await setup();
+  const { id } = await match(service, ada, bo);
+  for (const [who, n] of [[ada, 3], [bo, 3], [ada, 3], [bo, 1]]) {
+    const turn = await call(service, "POST", `rooms/${id}/events`, who, { type: "turn", inputs: [[1, n]] });
+    assert.equal(turn.status, 200, JSON.stringify(turn.body));
+  }
+  const over = await call(service, "GET", `rooms/${id}?after=0`, ada);
+  assert.equal(over.body.room.phase, "finished");
+  assert.equal((await call(service, "GET", "rooms", ada)).body.rooms.length, 1);
+  const left = await call(service, "POST", `rooms/${id}/events`, ada, { type: "leave" });
+  assert.equal(left.status, 200, JSON.stringify(left.body));
+  assert.equal((await call(service, "GET", "rooms", ada)).body.rooms.length, 0, "gone from Ada's list");
+  assert.equal((await call(service, "GET", "rooms", bo)).body.rooms.length, 1, "still on Bo's");
+  const again = await call(service, "GET", `rooms/${id}?after=0`, ada);
+  assert.equal(again.status, 200, "the room itself can still be read");
+});

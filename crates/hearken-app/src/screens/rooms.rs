@@ -86,6 +86,8 @@ enum Asking {
     List(Ticket),
     Start(Ticket),
     Leave(Ticket),
+    /// Leaving a room that is over, to drop it from My games.
+    Dismiss(Ticket),
 }
 
 impl Asking {
@@ -97,7 +99,8 @@ impl Asking {
             | Asking::Find(t)
             | Asking::List(t)
             | Asking::Start(t)
-            | Asking::Leave(t) => Some(t),
+            | Asking::Leave(t)
+            | Asking::Dismiss(t) => Some(t),
         }
     }
 }
@@ -111,10 +114,12 @@ fn connection_line(site: &str, connection: Connection) -> String {
     }
 }
 
-/// The players as a list: "Ada, you, and Bo".
+/// The players as a list: "Ada (you), host; Bo". A seat that left a match
+/// is still named, as left.
 fn players_line(info: &RoomInfo) -> String {
     let names: Vec<String> = info
-        .seated()
+        .members
+        .iter()
         .map(|m| {
             let mut name = m.name.clone();
             if Some(m.seat) == info.you {
@@ -122,6 +127,9 @@ fn players_line(info: &RoomInfo) -> String {
             }
             if m.seat == info.host {
                 name.push_str(", host");
+            }
+            if m.left {
+                name.push_str(", left");
             }
             name
         })
@@ -549,10 +557,22 @@ impl<G: Game> Menu for RoomScreen<G> {
         if info.phase.is_final() {
             items.push(
                 MenuItem::new("Remove from my games", |s: &mut Self, ctx: &mut Ctx<G>| {
-                    ctx.rooms.forget(&s.id);
-                    ctx.pop_with("Removed.");
+                    if s.asking != Asking::Nothing {
+                        ctx.say(format!("Still asking {}.", Self::site(ctx)));
+                        return;
+                    }
+                    match ctx.rooms.leave(&s.id) {
+                        Ok(ticket) => {
+                            s.asking = Asking::Dismiss(ticket);
+                            ctx.say("Removing.");
+                        }
+                        Err(e) => {
+                            ctx.play_ui(UiSound::Error);
+                            ctx.say(e.spoken(&Self::site(ctx)));
+                        }
+                    }
                 })
-                .help("Forget this finished game on this computer."),
+                .help("Take this finished game off your list."),
             );
         } else {
             let label = if info.phase == Phase::Playing {
@@ -622,6 +642,13 @@ impl<G: Game> Menu for RoomScreen<G> {
                         ctx.rooms.forget(&id);
                         ctx.play_ui(UiSound::Select);
                         ctx.pop_with("Left the game.");
+                        return;
+                    }
+                    (Asking::Dismiss(_), Ok(_)) => {
+                        let id = self.id.clone();
+                        ctx.rooms.forget(&id);
+                        ctx.play_ui(UiSound::Select);
+                        ctx.pop_with("Removed.");
                         return;
                     }
                     (_, Ok(_)) => changed = true,
@@ -698,6 +725,9 @@ pub struct MyGamesScreen<G: Game> {
     rooms: Vec<RoomInfo>,
     listed: bool,
     next_list: Instant,
+    /// The room last opened from the list, to drop from it if the player
+    /// removed it there.
+    opened: Option<RoomId>,
 }
 
 /// How often the list is asked for again while the screen is open.
@@ -712,6 +742,7 @@ impl<G: Game> MyGamesScreen<G> {
             rooms: Vec::new(),
             listed: false,
             next_list: Instant::now(),
+            opened: None,
         }
     }
 
@@ -735,7 +766,19 @@ impl<G: Game> MyGamesScreen<G> {
         };
         let id = info.id.clone();
         ctx.rooms.adopt(info);
+        self.opened = Some(id.clone());
         enter_room(ctx, &self.kind, &id);
+    }
+
+    /// Back from a room: one the player removed there leaves the list at
+    /// once, and the server is asked for the list again.
+    fn back(&mut self, ctx: &mut Ctx<G>) {
+        if let Some(id) = self.opened.take() {
+            if ctx.rooms.room(&id).is_none() {
+                self.rooms.retain(|r| r.id != id);
+            }
+        }
+        self.list(ctx);
     }
 }
 
@@ -760,9 +803,17 @@ impl<G: Game> Menu for MyGamesScreen<G> {
     }
 
     fn resume(&mut self, ctx: &mut Ctx<G>) {
-        self.list(ctx);
+        self.back(ctx);
         self.refresh(ctx, true);
         self.announce(ctx);
+    }
+
+    fn resume_with(&mut self, ctx: &mut Ctx<G>, result: &str) {
+        self.back(ctx);
+        self.refresh(ctx, true);
+        ctx.say(crate::text::end_sentence(result));
+        let current = self.current_text(ctx);
+        ctx.say_queued(current);
     }
 
     fn build_items(&mut self, ctx: &mut Ctx<G>) -> Vec<MenuItem<Self, G>> {
@@ -1105,6 +1156,24 @@ mod tests {
         h.clear();
         press(&mut h, Key::Return);
         wait_for(&mut h, &format!("Playing {ID}."));
+
+        // Back from a room the player removed: it leaves the list at once,
+        // before the server's list comes back.
+        h.app.ctx.pop(); // the match
+        h.app.ctx.rooms.forget(&RoomId(ID.into()));
+        h.app.ctx.pop_with("Removed."); // the room
+        h.frame(0.0);
+        let lines = h.app.top_lines();
+        assert!(
+            !lines.iter().any(|l| l.contains("Pebbles with Bo")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Pebbles: waiting for 1 more")),
+            "{lines:?}"
+        );
     }
 
     #[test]

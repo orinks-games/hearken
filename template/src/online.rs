@@ -191,6 +191,10 @@ impl State<HelloGame> for PebblesMatch {
                 }
             })
             .collect();
+        // Nothing applied (our own turn still on its way): nothing to say.
+        if lines.is_empty() {
+            return;
+        }
         for line in lines {
             ctx.say(line);
         }

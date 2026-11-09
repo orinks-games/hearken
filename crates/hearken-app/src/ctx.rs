@@ -515,8 +515,8 @@ const MAX_ROOM_NOTICES: usize = 256;
 
 /// The game's server: `Game::online`, or in a developer build (not made by
 /// `hearken release`), `<PREFIX>_ONLINE_URL` when it is set. The test
-/// server offers everything (guests, rooms) the game's own would, and
-/// rooms besides, so a game can try them before its server has them.
+/// server offers guests and rooms whatever the game's own does, so a game
+/// can try them before its server has them.
 #[cfg(feature = "online")]
 fn online_config<G: Game>() -> Option<crate::online::OnlineConfig> {
     let config = G::online();
@@ -525,9 +525,19 @@ fn online_config<G: Game>() -> Option<crate::online::OnlineConfig> {
     }
     match std::env::var(format!("{}_ONLINE_URL", G::ENV_PREFIX)) {
         Ok(url) if !url.trim().is_empty() => {
-            let mut test =
-                config.unwrap_or_else(|| crate::online::OnlineConfig::new("", "the test server"));
-            test.url = url.trim().to_string();
+            let url = url.trim().to_string();
+            // Spoken as its host ("127.0.0.1"), the way a real site is.
+            let host = url
+                .split("://")
+                .nth(1)
+                .unwrap_or(&url)
+                .split(['/', ':'])
+                .next()
+                .filter(|h| !h.is_empty())
+                .unwrap_or("the test server")
+                .to_string();
+            let mut test = config.unwrap_or_else(|| crate::online::OnlineConfig::new("", host));
+            test.url = url;
             test.guests = true;
             test.rooms = true;
             Some(test)

@@ -14,6 +14,7 @@
 //   GET  rooms/<id>?after=<seq>   the room and its events after seq
 //   POST rooms/<id>/start         the host starts with enough seats filled
 //   POST rooms/<id>/events        { type: "turn" | "chat" | "leave" | "finish", ... }
+//                                 (leave on a room that is over drops it from my rooms)
 //
 // The room's phase is an explicit state machine (`PHASES`, `transition`):
 //   waiting   -> playing   start, or the last seat filled
@@ -453,6 +454,7 @@ export function roomRoutes(deps) {
     for (const room of await rooms.listFor(player.id)) {
       await sweep(room, roomHandler(room.kind));
       const me = room.members.find((m) => m.id === player.id);
+      if (me?.dismissed) continue;
       out.push({
         ...publicRoom(room, player, t, limits.presentMs),
         unread: Math.max(0, room.seq - (me?.lastRead ?? 0)),
@@ -572,6 +574,9 @@ export function roomRoutes(deps) {
         }
         case "leave": {
           if (FINAL_PHASES.includes(room.phase)) {
+            // Leaving a room that is over takes it off the player's list.
+            me.dismissed = true;
+            await rooms.save(room);
             return json({ ok: true, seq: room.seq, room: publicRoom(room, player, t, limits.presentMs) });
           }
           if (room.phase === "waiting") {
