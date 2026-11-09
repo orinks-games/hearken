@@ -62,6 +62,21 @@ pub fn spoken_char(ch: char) -> String {
 
 /// `phrase` with its first letter capitalised, to open a sentence: "the A
 /// button" becomes "The A button".
+/// Join the non-empty parts with spaces: each part is a whole sentence.
+/// For building a status layer from facts that may each be absent.
+pub fn sentences<I, S>(parts: I) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    parts
+        .into_iter()
+        .filter(|p| !p.as_ref().is_empty())
+        .map(|p| p.as_ref().trim().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn sentence_start(phrase: &str) -> String {
     let mut chars = phrase.chars();
     match chars.next() {

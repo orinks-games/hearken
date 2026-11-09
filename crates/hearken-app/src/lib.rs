@@ -20,6 +20,7 @@ pub mod menu;
 #[cfg(feature = "online")]
 pub mod online;
 pub mod paths;
+pub mod phase;
 pub mod run;
 pub mod screens;
 pub mod sdl_shell;
@@ -30,6 +31,7 @@ pub mod sound;
 pub mod soundtrack;
 pub mod speech_delivery;
 pub mod state;
+pub mod status_key;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod text;
@@ -42,7 +44,7 @@ pub use bindings::{Action, Chord, KeyBindings, NoAction, PadChord};
 pub use clock::LocalTime;
 pub use commentary::{Commentary, Line};
 pub use controller::{ControllerManager, InputDevice};
-pub use ctx::{Ctx, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
+pub use ctx::{Ctx, CHANGES_CAP, PHASE_TARGET, SCREENS_TARGET, TRANSCRIPT_CAP, TRANSCRIPT_TARGET};
 pub use discord::{Discord, DiscordConfig, Presence};
 pub use game::Game;
 pub use hearken_audio as audio;
@@ -70,6 +72,7 @@ pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent
 #[cfg(feature = "online")]
 pub use online::{Connect, Online, OnlineConfig, OnlineError, Plan, Ticket};
 pub use paths::Paths;
+pub use phase::{Phase, Phases};
 pub use run::{already_running_line, run};
 pub use screens::SettingsRow;
 pub use sdl_shell::SdlShell;
@@ -84,6 +87,7 @@ pub use soundtrack::{
 };
 pub use speech_delivery::SayEvent;
 pub use state::{Reveal, StackOp, State};
+pub use status_key::StatusKey;
 #[cfg(feature = "testing")]
 pub use testing::Headless;
 #[cfg(feature = "update")]
