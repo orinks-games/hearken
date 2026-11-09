@@ -2,7 +2,10 @@
 // the game's rules crate. Only the WebAssembly API is used here, so this
 // runs on Node, Deno, Bun, Cloudflare Workers and Vercel alike.
 
-export const ABI = 1;
+// ABI 2 added `hearken_play`, which replays a match from a server's turns;
+// an ABI 1 module still verifies solo runs.
+export const ABI = 2;
+export const OLDEST_ABI = 1;
 export const MAGIC = [0x48, 0x4b, 0x52, 0x4e]; // "HKRN"
 export const FORMAT_VERSION = 1;
 export const BUILD_OFFSET = 5;
@@ -84,9 +87,11 @@ export async function loadRules(source, { build } = {}) {
   }
   const rules = new Rules(compiled, id);
   const abi = rules.call((x) => x.hearken_abi());
-  if (abi !== ABI) {
-    throw new RulesError("bad-module", `the module speaks ABI ${abi}, not ${ABI}`);
+  if (abi < OLDEST_ABI || abi > ABI) {
+    throw new RulesError("bad-module", `the module speaks ABI ${abi}, not ${OLDEST_ABI} to ${ABI}`);
   }
+  rules.abi = abi;
+  rules.plays = exported.has("hearken_play");
   const listed = rules.call((x) => rules.answer(x, x.hearken_rules()));
   if (!Array.isArray(listed.rules)) {
     throw new RulesError("bad-module", "the module does not list its rules");
@@ -104,6 +109,9 @@ export class Rules {
     this.module = module;
     this.build = build;
     this.names = [];
+    this.abi = ABI;
+    /** Whether the module has `hearken_play` (ABI 2), for matches. */
+    this.plays = false;
   }
 
   /** Runs `f` against a fresh instance, so no run leaves state for the next. */
@@ -185,6 +193,35 @@ export class Rules {
       throw error;
     }
   }
+
+  /**
+   * A match from a server's turns: `{ rules, seed, context, turns, finish }`,
+   * each turn `{ seat, inputs: [[code, value], ...] }` or `{ seat, left: true }`.
+   * One tick per turn, each code stamped with its seat; the module builds
+   * the run and replays it. Gives `{ ok: true, finished, ticks, outcome, ... }`
+   * or `{ ok: false, error }`. With `finish`, an unfinished match is
+   * refused as `unfinished`. An ABI 1 module answers `no-play`.
+   */
+  play({ rules, seed, context, turns, finish = false }) {
+    if (!this.plays) return { ok: false, error: "no-play" };
+    if (typeof seed === "number" && !Number.isSafeInteger(seed)) {
+      throw new RulesError("bad-seed", "a seed above 2^53 must be a string or a BigInt");
+    }
+    const request = encoder.encode(
+      JSON.stringify({ rules, seed: String(seed), context: context ?? null, turns: turns ?? [], finish }),
+    );
+    try {
+      return this.call((x) => {
+        const [qp, qn] = this.put(x, request);
+        return this.answer(x, x.hearken_play(qp, qn));
+      });
+    } catch (error) {
+      if (error instanceof WebAssembly.RuntimeError) {
+        return { ok: false, error: "rules-crashed" };
+      }
+      throw error;
+    }
+  }
 }
 
 function asBytes(run) {
@@ -224,6 +261,13 @@ export function publishedRules(list) {
     },
     async builds() {
       return [...(await loaded()).keys()];
+    },
+    /** The first published module (in list order) that has `name` and plays matches. */
+    async forRules(name) {
+      for (const rules of (await loaded()).values()) {
+        if (rules.plays && rules.names.includes(name)) return rules;
+      }
+      return null;
     },
   };
 }

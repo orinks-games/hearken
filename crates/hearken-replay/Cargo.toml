@@ -22,3 +22,9 @@ sha2 = { version = "0.11", default-features = false }
 name = "coin-dash"
 path = "examples/coin_dash.rs"
 crate-type = ["cdylib", "rlib"]
+
+# Two-seat rules, for the tests of seated runs and the server's rooms.
+[[example]]
+name = "pebbles"
+path = "examples/pebbles.rs"
+crate-type = ["cdylib", "rlib"]

@@ -259,6 +259,44 @@ impl From<FormatError> for VerifyError {
 /// than `R::MAX_TICKS`, one with an input `R` has no meaning for, one that
 /// ends before its inputs do, and one whose inputs end before it does.
 pub fn replay<R: Replayable>(run: &Run) -> Result<R, VerifyError> {
+    let sim = play::<R>(run)?;
+    if !sim.finished() {
+        return Err(VerifyError::Unfinished);
+    }
+    Ok(sim)
+}
+
+/// Where a run has got to: the rules replayed through every tick so far,
+/// finished or not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Progress<O> {
+    pub rules: String,
+    pub seed: u64,
+    pub ticks: u64,
+    /// Whether the rules ended on the last tick.
+    pub finished: bool,
+    /// What the run has come to so far.
+    pub outcome: O,
+}
+
+/// Plays `run` again as [`replay`] does, but accepts one that is not over:
+/// a match in progress, replayed by a server to learn whose turn it is and
+/// what each seat should hear about it. The same checks apply, except that
+/// the rules need not have finished.
+pub fn progress<R: Replayable>(run: &Run) -> Result<Progress<R::Outcome>, VerifyError> {
+    let sim = play::<R>(run)?;
+    Ok(Progress {
+        rules: run.rules.clone(),
+        seed: run.seed,
+        ticks: run.ticks,
+        finished: sim.finished(),
+        outcome: sim.outcome(),
+    })
+}
+
+/// The replay itself: every check but the last, and the rules after the
+/// run's last tick.
+fn play<R: Replayable>(run: &Run) -> Result<R, VerifyError> {
     if run.rules != R::RULES {
         return Err(VerifyError::WrongRules);
     }
@@ -304,9 +342,6 @@ pub fn replay<R: Replayable>(run: &Run) -> Result<R, VerifyError> {
             next += 1;
         }
         sim.step(&decoded[start..next]);
-    }
-    if !sim.finished() {
-        return Err(VerifyError::Unfinished);
     }
     Ok(sim)
 }
