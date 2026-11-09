@@ -161,7 +161,7 @@ mod tests {
             (1, i32::from(self.0))
         }
         fn from_code(code: u16, value: i32) -> Option<Self> {
-            (code == 1 && (1..=3).contains(&value)).then(|| Take(value as u8))
+            (code == 1 && (1..=3).contains(&value)).then_some(Take(value as u8))
         }
     }
 

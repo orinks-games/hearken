@@ -16,6 +16,7 @@
 //! covers the whole service.
 
 pub mod format;
+pub mod pebbles;
 pub mod rules;
 pub mod seats;
 pub mod wasm;

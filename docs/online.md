@@ -17,6 +17,7 @@ There are three parts:
 |------|-------|--------------|
 | `hearken-replay` | `crates/hearken-replay` | The run file, the `Replayable` trait a game's rules implement, `Recording`, and `export_rules!`, which builds the rules into a WebAssembly module. |
 | `ctx.online` | `hearken-app`, feature `online` | Connects the player's account from Settings and sends runs in the background. |
+| `hearken-rooms` | `crates/hearken-rooms` | Play between players: rooms with seats, turns the server orders, chat and presence, as a client any game loop can poll. `ctx.rooms` and the Online play screens in `hearken-app` wrap it; see "Play between players". |
 | `@hearken/online` | `server/` | The server: replays runs with a game's published modules and hands the verified outcome to the game's handler. One web-standard `fetch(Request)` function, so it runs on Vercel, Netlify, Cloudflare Workers, Deno, Bun or a plain Node server. |
 
 ## Putting a game online
@@ -228,16 +229,18 @@ before the rules end.
 
 ## The rules module
 
-Built by `export_rules!`. It imports nothing and exports (ABI 1):
+Built by `export_rules!`. It imports nothing and exports (ABI 2; a server
+also takes ABI 1 modules, which lack `hearken_play`):
 
 | Export | What it does |
 |--------|--------------|
 | `memory` | The module's memory, capped at 256 MiB by `hearken release`. |
-| `hearken_abi() -> u32` | The ABI version, 1. |
+| `hearken_abi() -> u32` | The ABI version, 2. |
 | `hearken_alloc(len) -> ptr` / `hearken_free(ptr, len)` | Room for the host to write a run or request into. |
 | `hearken_rules() -> u64` | `{"rules":["sonar-dive"]}`: the rules the module has. |
 | `hearken_inspect(run, len) -> u64` | What a run file says about itself: ID, build, rules, seed, context, ticks. Nothing in it is verified. |
 | `hearken_verify(run, len, request, len) -> u64` | The run checked against the request, then replayed. |
+| `hearken_play(request, len) -> u64` | A match built from a server's turns and played: where it stands, or its outcome once finished (see "Play between players"). |
 
 An answer is a `u64` with a pointer in the high half and a length in the
 low half, JSON, freed by the host. The request is
@@ -346,6 +349,207 @@ handlers.
 leaderboard's top ten, a ghost to download, an event's total. The token is
 optional there. `ctx.online.read("<kind>/<path>")` sends it, with the token
 when an account is connected, and its answer is the whole JSON body.
+
+## Play between players
+
+A match between players is one run with a seat on each input, ordered by
+the server. Nothing new is trusted: the server replays the match with the
+game's published rules module exactly as it replays a solo run, and only
+what it computes counts. It is opt-in per game, on top of verified runs:
+the game's server gains a rooms store and room kinds, and the game turns
+on `with_rooms()`.
+
+| Part | Where | What it does |
+|------|-------|--------------|
+| `Seat`, `Seated<I>` | `hearken-replay` | A seat (0 to 15) in the top 4 bits of an input code; `Seated::Left` when a seat leaves. |
+| `hearken_play` | the rules module (ABI 2) | Builds a run from a server's turns and plays it: where the match stands, or its outcome. |
+| rooms routes and store | `@hearken/online` | Rooms with invite codes, seats, phases and an ordered event log; turns stamped with the sender's seat. |
+| `hearken-rooms` | `crates/hearken-rooms` | The client: `Rooms` (requests on worker threads, polling), `Match<R>` (the rules stepped in server order). No `Ctx`, so a game with its own screens embeds it. |
+| `ctx.rooms` and screens | `hearken-app`, feature `online` | The Online play menu, the Room screen and the My games list, ready made. |
+
+### How a match works
+
+1. A player creates a room of a kind and hears its six-letter invite code,
+   from the same voice-safe alphabet as connect codes (no O, 0, I, 1, L,
+   S, 5, Z, 2). Others join by code, or "Play with anyone" joins the first
+   open room of that kind still waiting and makes one when none is. Each
+   member takes the next seat, 0 upward.
+2. When every seat is filled, or the host starts with at least the
+   minimum, the server asks the kind's handler for the seed and context,
+   as it does for a solo run. The seed is the server's, so no player can
+   prepare the match.
+3. A move is a list of inputs, as the game's `InputCode` encodes them. The
+   client posts it; the server stamps each code with the player's seat,
+   appends it to the room's log with the next sequence number, and
+   answers with that number. Every client, the mover included, applies the
+   turns in server order, one `Recording::step` per turn. The rules are
+   the referee: a move from the wrong seat, or one the rules do not allow,
+   is stepped and ignored, as a hand-written run file would be.
+4. After each turn the server replays the log through `hearken_play`
+   (when the handler asks for `progress`) and keeps the outcome so far as
+   the room's snapshot, so a list of games can say whose move it is
+   without a client replaying anything. When the rules report finished,
+   the match is over: the handler's `accept` gets the verified outcome and
+   the seat list, and the room is read-only.
+5. A player who leaves a match in play forfeits: the rules see a
+   `Seated::Left` input for that seat and decide what it means. A player
+   who merely closes the game keeps the seat, and carries on from My games
+   a day later: the client reads the log from where it left off.
+
+A room is an explicit state machine. Its phase is on the room record and
+changes only through one transition:
+
+| Phase | Enters on | Leaves on |
+|-------|-----------|-----------|
+| `waiting` | create, or find with no open room | start, the last seat filled, the last member leaving, the idle limit |
+| `playing` | start by the host, or the last seat filled | the rules finishing, the idle limit |
+| `finished` | the rules report finished (a turn, a seat leaving) | never |
+| `closed` | a waiting room emptied or sat idle | never |
+| `abandoned` | a match nobody moved in for the idle limit | never |
+
+A turn, chat line or finish on a room that is not playing is refused as
+`409 wrong-phase`, naming the phase, never dropped.
+
+### Rules for a match
+
+Rules that want more than one player take `Seated<Move>` as their input
+and read the seat:
+
+```rust
+impl Replayable for Pebbles {
+    type Input = Seated<Take>;
+    fn step(&mut self, inputs: &[Seated<Take>]) {
+        for input in inputs {
+            match *input {
+                Seated::Left { seat } => self.winner = Some(other(seat)),
+                Seated::Input { seat, input } if seat == self.turn => self.take(input),
+                Seated::Input { .. } => {} // not their move: ignored
+            }
+        }
+    }
+}
+```
+
+Nothing else in `Replayable` changes; `Recording` and `assert_replays`
+work as they do. `hearken_replay::pebbles` is the whole of a two-player
+game (take 1 to 3 from a pile; whoever takes the last pebble loses) and the
+pattern to copy. An outcome that carries `next_seat` (the seat to move) and
+`summary` (one line per seat) lets the engine's My games list say "Pebbles
+with Bo: your move, 7 left" without knowing the game.
+
+Codes above 4,094 cannot be seated: a seated run's codes are 12 bits, and
+4,095 is `Left`.
+
+### The client
+
+`hearken_rooms::Rooms` sends requests from worker threads and answers
+through tickets, as `ctx.online` does; `update` collects the answers, polls
+the rooms the game is watching (every 2 s, then every 10 s after a minute
+without a change) and says what changed as `Notice`s: new events, a changed
+room, a new phase, the connection lost or found. `Match<R>` keeps a
+`Recording<R>` in step with a room: `post` sends the player's inputs,
+`apply_all` or `apply_next` steps the turns the server ordered, and `sync`
+says where the recording stands (`Idle`, `Posting`, `Behind(n)`).
+
+```rust
+let mut game = Match::<Pebbles>::new(&room.info)?;   // from the room's seed and context
+game.post(&mut ctx.rooms, &id, &[Take(2)])?;         // my move, applied when the server orders it
+game.update(&mut ctx.rooms);                          // the answer: ordered, or refused once
+for turn in game.apply_all(ctx.rooms.room(&id)?) {    // every turn read but not applied, in order
+    speak(turn.seat, &turn.inputs, game.sim());
+}
+```
+
+In `hearken-app` the client is `ctx.rooms`, polled by the app and on the
+same token as `ctx.online`; a screen takes `ctx.take_room_notices()` in its
+`update`. A game describes a kind once and pushes the Online play menu:
+
+```rust
+ctx.push(OnlinePlayScreen::new(RoomKind::new(
+    "pebbles", "Pebbles", &Setup { pile: 10 },
+    |ctx, id| ctx.push(PebblesMatch::new(id.clone())),
+)));
+```
+
+The menu offers Create a game, Join with a code, Play with anyone and My
+games, or to connect an account first. The Room screen speaks the invite
+code, the players as they arrive, Start for the host, and the result once
+the match is over; the game's own screen, opened by the closure, plays the
+match. `template/src/online.rs` is the whole of it for Pebbles. A game
+with its own screens (one that does not use `hearken-app`) uses
+`hearken-rooms` directly with its own token.
+
+### The rooms protocol
+
+Relative to the game's base URL, with the bearer token on every request.
+`{ok:true, room}` carries the room as the player sees it (other players'
+ids are not sent).
+
+| Route | What it does |
+|-------|--------------|
+| `POST rooms?kind=K` `{context?, open?}` | A new room with an invite code; the player takes seat 0 as host. `open` lists it for `find`. |
+| `POST rooms/join` `{code}` | The next seat in that room. `404 unknown-code`, `409 full`, `409 started`. The last seat starts the match. |
+| `POST rooms/find?kind=K` | Joins the oldest open room of that kind with a free seat, or makes one. |
+| `GET rooms` | The player's rooms, newest first, each with `unread`: events since the player last read it. |
+| `GET rooms/<id>?after=<seq>` | The room, the events after `seq` (`more` when there are over 200), and presence. The client's poll; it marks the room read. |
+| `POST rooms/<id>/start` | The host starts with at least `seats.min` filled. `403 not-the-host`, `422 not-enough-players`. |
+| `POST rooms/<id>/events` | One event: `turn {inputs:[[code,value],...]}`, `chat {text}`, `leave`, or `finish`. Answers `{seq}`. |
+
+A room is `{id, kind, code, phase, open, seats:{min,max}, host, members,
+you, seed, context, seq, snapshot, result, updated_at, turn_started_at}`;
+`seed` is a decimal string once playing, `you` the reader's seat, `members`
+`{seat, name, guest, here, left}` with `here` true for a member who polled
+in the last 30 s. Events are `{seq, type, at, ...}`: `join` and `leave`
+(`seat`, `name`), `start` (`seed`, `context`, `build`), `turn` (`seat`,
+`inputs`), `left` (`seat`, `reason`: `left` or `turn-limit`), `chat`
+(`seat`, `name`, `text`). Chat lines are at most 200 characters, cleaned
+of control and invisible characters before they are stored, 10 a minute
+per player; a room takes 60 events a minute per player, and a player holds
+at most 20 rooms that are not over.
+
+### The play request
+
+`hearken_play` takes `{rules, seed, context, turns:[{seat, inputs:[[code,
+value],...], left?}], finish}` and builds the run itself: one tick per
+turn, each code stamped with its seat, `left` as the `Left` input for that
+seat. It answers `{ok:true, rules, seed, ticks, finished, outcome}` with the
+outcome so far, or `{ok:false, error}`: `unfinished` when `finish` is set
+and the rules have not ended, `too-many-ticks`, `bad-seat`, `bad-code`.
+The server, not the module, decides which seat sent what, so the request
+is the record of the match and no player can move for another.
+
+### Room kinds on the server
+
+A kind with rooms is a handler with `seats`:
+
+```js
+pebbles: {
+  rules: "pebbles",
+  seats: { min: 2, max: 2 },
+  progress: true,                // replay after each turn: whose move, in the snapshot
+  turn_limit: 3 * 86_400,        // seconds a seat may hold its move, else it is `left`
+  idle_limit: 30 * 86_400,       // seconds without a move before the match is abandoned
+  async start({ kind, room, players, context }) {
+    return { seed: randomSeed(), context: { pile: context?.pile ?? 10 } };
+  },
+  async accept({ kind, room, players, verified }) {
+    const winner = players.find((p) => p.seat === verified.outcome.winner);
+    await ratings.record(winner, players);
+    return { winner: winner?.name };   // the room's `result`, for every player
+  },
+},
+```
+
+`start` runs once, when the room starts; its context is what the rules
+play from, whatever the creator sent. `accept` runs once, after the rules
+finish, with `verified` from the full replay (`run_id`, `build`, `ticks`,
+`outcome`) and `players` as `{seat, id, name, guest, left}`. `turn_limit`
+needs `progress`, since the server must know whose move it is. The service
+takes a `rooms` store (`memoryRooms()` for one process; a real one mirrors
+its guarantees, above all that `append` gives one `seq` per event with no
+gaps) and an optional `screen({text, player, room})` that may refuse a chat
+line with a `Refusal`. `server/examples/handlers.js` has the Pebbles kind,
+and the dev server offers it with `memoryRooms()`.
 
 ## Writing a server
 

@@ -4,9 +4,10 @@
 #[path = "../examples/pebbles.rs"]
 mod pebbles;
 
+use hearken_replay::pebbles::{Pebbles, Setup, Take};
 use hearken_replay::wasm::{PlayRequest, PlayTurn};
 use hearken_replay::{assert_replays, progress, replay, InputCode, Recording, Seat, Seated};
-use pebbles::{hearken_rules, Pebbles, Setup, Take};
+use pebbles::hearken_rules;
 use serde_json::{json, Value};
 
 fn seat(n: u8) -> Seat {

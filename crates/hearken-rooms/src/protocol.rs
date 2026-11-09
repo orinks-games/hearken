@@ -160,6 +160,20 @@ impl RoomInfo {
         self.members.iter().find(|m| m.seat == seat.number())
     }
 
+    /// The host's name, when the host is seated.
+    pub fn host_name(&self) -> Option<&str> {
+        self.members
+            .iter()
+            .find(|m| m.seat == self.host)
+            .map(|m| m.name.as_str())
+    }
+
+    /// How many more players the room needs before it can start.
+    pub fn missing(&self) -> u8 {
+        let seated = self.seated().count().min(usize::from(u8::MAX)) as u8;
+        self.seats.min.saturating_sub(seated)
+    }
+
     /// The outcome so far, from the snapshot the server keeps when its
     /// handler replays after each turn; `None` when it does not.
     pub fn outcome(&self) -> Option<&Value> {

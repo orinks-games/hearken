@@ -1188,6 +1188,7 @@ dependencies = [
  "hearken-discord",
  "hearken-l10n",
  "hearken-replay",
+ "hearken-rooms",
  "hearken-seal",
  "hearken-speech",
  "hearken-synth",
@@ -1306,6 +1307,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+]
+
+[[package]]
+name = "hearken-rooms"
+version = "0.1.0"
+dependencies = [
+ "hearken-replay",
+ "log",
+ "serde",
+ "serde_json",
+ "ureq 2.12.1",
 ]
 
 [[package]]

@@ -2,20 +2,16 @@
 //! polls absorbed into events and notices, a match stepped by the turns
 //! the server ordered, and the connection going offline and back.
 
-#[path = "../../hearken-replay/examples/pebbles.rs"]
-#[allow(dead_code)]
-mod pebbles;
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use hearken_replay::pebbles::{Pebbles, Setup, Take};
 use hearken_replay::Seat;
 use hearken_rooms::transport::{reply, Scripted};
 use hearken_rooms::{
     Answer, Connection, Match, Notice, Phase, RoomId, Rooms, RoomsConfig, RoomsError, Sync,
     POLL_ACTIVE, POLL_QUIET, QUIET_AFTER,
 };
-use pebbles::{Pebbles, Setup, Take};
 use serde_json::{json, Value};
 
 const ID: &str = "0123456789abcdef01234567";

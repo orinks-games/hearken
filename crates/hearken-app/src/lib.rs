@@ -54,6 +54,8 @@ pub use hearken_audio::{
     SilentBackend, Sound, Source, SpatialConfig, Vec3,
 };
 pub use hearken_l10n as l10n;
+#[cfg(feature = "online")]
+pub use hearken_rooms as rooms;
 pub use hearken_seal as seal;
 pub use hearken_seal::{Opened, Tamper, Vault};
 pub use hearken_speech::{

@@ -12,6 +12,10 @@
 // decides, never the run) and `accept` (what to do with the verified
 // outcome, and what to tell the game). `start` (what to play, before the
 // run) and `read` (a GET route) are optional.
+//
+// `pebbles` is a kind with rooms, for the replay crate's two-player Pebbles
+// rules: `seats` makes it one, `start` picks the match's seed when the room
+// starts, and `accept` gets the verified outcome when the rules end.
 
 import { refuse } from "../src/index.js";
 
@@ -40,6 +44,7 @@ export function today(now = new Date()) {
 export function createHandlers({ now = () => new Date(), secret = "dev only: set a real secret" } = {}) {
   const boards = new Map(); // day -> Map(player id -> { name, coins })
   const bests = new Map(); // player id -> best coins
+  const wins = new Map(); // player id -> { name, won, played }
 
   return {
     daily: {
@@ -98,6 +103,32 @@ export function createHandlers({ now = () => new Date(), secret = "dev only: set
         const coins = verified.outcome.coins;
         if (coins > best) bests.set(player.id, coins);
         return { coins, best: Math.max(best, coins) };
+      },
+    },
+    pebbles: {
+      rules: "pebbles",
+      seats: { min: 2, max: 2 },
+      // Replay after each turn, so My games can say whose move it is.
+      progress: true,
+      // A seat that sits on its move for three days has left.
+      turn_limit: 3 * 86_400,
+      async start({ context }) {
+        const seed = new DataView(crypto.getRandomValues(new Uint8Array(8)).buffer).getBigUint64(0, true).toString();
+        const pile = Number.isInteger(context?.pile) ? Math.min(60, Math.max(5, context.pile)) : 10;
+        return { seed, context: { pile } };
+      },
+      async accept({ players, verified }) {
+        const winner = players.find((p) => p.seat === verified.outcome.winner);
+        for (const p of players) {
+          const row = wins.get(p.id) ?? { name: p.name, won: 0, played: 0 };
+          row.played += 1;
+          if (p.id === winner?.id) row.won += 1;
+          wins.set(p.id, row);
+        }
+        return { winner: winner?.name ?? null };
+      },
+      async read() {
+        return { players: [...wins.values()].sort((a, b) => b.won - a.won).slice(0, 10) };
       },
     },
   };

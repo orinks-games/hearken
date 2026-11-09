@@ -40,6 +40,13 @@ pub struct Ctx<G: Game> {
     /// there (see [`crate::online`]).
     #[cfg(feature = "online")]
     pub online: crate::online::Online,
+    /// Play between players: rooms, seats and server-ordered turns, on the
+    /// same server and token as `online` (see `hearken_rooms`). Polled by
+    /// the app; what changed waits in `take_room_notices` for the screen.
+    #[cfg(feature = "online")]
+    pub rooms: hearken_rooms::Rooms,
+    #[cfg(feature = "online")]
+    room_notices: Vec<hearken_rooms::Notice>,
     /// The game's updates (see [`crate::updates`]): what the check at start
     /// found, and the way to check and install.
     #[cfg(feature = "update")]
@@ -106,10 +113,23 @@ impl<G: Game> Ctx<G> {
             .with_witnesses(witnesses)
             .checking_witnesses(checked);
         #[cfg(feature = "online")]
-        let online = crate::online::Online::new(online_config::<G>(), &settings.online);
+        let online_config = online_config::<G>();
+        #[cfg(feature = "online")]
+        let rooms = hearken_rooms::Rooms::new(
+            online_config
+                .as_ref()
+                .filter(|c| c.rooms)
+                .map(|c| hearken_rooms::RoomsConfig::new(c.url.clone(), c.site.clone())),
+        );
+        #[cfg(feature = "online")]
+        let online = crate::online::Online::new(online_config, &settings.online);
         let mut ctx = Ctx {
             #[cfg(feature = "online")]
             online,
+            #[cfg(feature = "online")]
+            rooms,
+            #[cfg(feature = "online")]
+            room_notices: Vec::new(),
             #[cfg(feature = "update")]
             updates: crate::updates::Updates::new(G::updates()),
             speech,
@@ -211,13 +231,33 @@ impl<G: Game> Ctx<G> {
     }
 
     /// Collects finished online requests, and saves the account when it
-    /// changed. Once a frame.
+    /// changed; keeps `rooms` on the account's token and collects what
+    /// changed in its rooms. Once a frame.
     #[cfg(feature = "online")]
     pub(crate) fn update_online(&mut self) {
         if self.online.update() {
             self.settings.online = self.online.saved();
             self.save_settings();
         }
+        self.rooms
+            .set_token(self.online.token().map(str::to_string));
+        let notices = self.rooms.update();
+        if self.rooms.was_signed_out() {
+            self.online.signed_out_elsewhere();
+        }
+        self.room_notices.extend(notices);
+        if self.room_notices.len() > MAX_ROOM_NOTICES {
+            let drop = self.room_notices.len() - MAX_ROOM_NOTICES;
+            self.room_notices.drain(..drop);
+        }
+    }
+
+    /// What changed in the player's rooms since the last call: joins, turns,
+    /// phases and the connection. The top screen takes them in `update`;
+    /// what no screen takes is dropped after a while.
+    #[cfg(feature = "online")]
+    pub fn take_room_notices(&mut self) -> Vec<hearken_rooms::Notice> {
+        std::mem::take(&mut self.room_notices)
     }
 
     /// Collects the check at start, and announces an update it found. Once
@@ -469,8 +509,14 @@ impl<G: Game> Ctx<G> {
     }
 }
 
+/// Room notices kept for a screen to take before the oldest are dropped.
+#[cfg(feature = "online")]
+const MAX_ROOM_NOTICES: usize = 256;
+
 /// The game's server: `Game::online`, or in a developer build (not made by
-/// `hearken release`), `<PREFIX>_ONLINE_URL` when it is set.
+/// `hearken release`), `<PREFIX>_ONLINE_URL` when it is set. The test
+/// server offers everything (guests, rooms) the game's own would, and
+/// rooms besides, so a game can try them before its server has them.
 #[cfg(feature = "online")]
 fn online_config<G: Game>() -> Option<crate::online::OnlineConfig> {
     let config = G::online();
@@ -479,8 +525,12 @@ fn online_config<G: Game>() -> Option<crate::online::OnlineConfig> {
     }
     match std::env::var(format!("{}_ONLINE_URL", G::ENV_PREFIX)) {
         Ok(url) if !url.trim().is_empty() => {
-            let site = config.map_or_else(|| "the test server".to_string(), |c| c.site);
-            Some(crate::online::OnlineConfig::new(url.trim(), site))
+            let mut test =
+                config.unwrap_or_else(|| crate::online::OnlineConfig::new("", "the test server"));
+            test.url = url.trim().to_string();
+            test.guests = true;
+            test.rooms = true;
+            Some(test)
         }
         _ => config,
     }

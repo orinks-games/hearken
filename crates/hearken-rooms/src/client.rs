@@ -292,6 +292,18 @@ impl Rooms {
         self.rooms.remove(id);
     }
 
+    /// Takes in a room the player is in from a `list` answer, so it can be
+    /// watched and played. A room already known keeps its events.
+    pub fn adopt(&mut self, info: RoomInfo) {
+        let now = Instant::now();
+        match self.rooms.get_mut(&info.id) {
+            Some(room) => room.info = info,
+            None => {
+                self.rooms.insert(info.id.clone(), Room::new(info, now));
+            }
+        }
+    }
+
     fn ready(&self, kind: Option<&str>) -> Result<RoomsConfig, RoomsError> {
         let config = self.config.clone().ok_or(RoomsError::NotOffered)?;
         if self.token.is_none() {
