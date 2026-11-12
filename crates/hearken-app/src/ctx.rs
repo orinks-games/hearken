@@ -407,6 +407,7 @@ impl<G: Game> Ctx<G> {
     pub fn stop_speech(&mut self) {
         self.speech.stop();
         self.delivery.main.clear();
+        self.delivery.event_speaking_at = None;
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             pacer.reset();
         }

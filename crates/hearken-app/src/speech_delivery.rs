@@ -122,6 +122,10 @@ pub(crate) struct Delivery<C: 'static> {
     /// Set once the game asks [`Ctx::speech_busy`]: from then on the
     /// voices' own reports correct both projections each frame.
     pub(crate) watch_voices: bool,
+    /// When the event voice last reported speaking, on the pacer's clock;
+    /// `None` once it reports silence or the channel is silenced. Read by
+    /// `speech_busy` alone, so the pacer's own timing is untouched.
+    pub(crate) event_speaking_at: Option<f64>,
 }
 
 impl<C: Category> Delivery<C> {
@@ -149,6 +153,7 @@ impl<C: Category> Delivery<C> {
             clock,
             main,
             watch_voices: false,
+            event_speaking_at: None,
         }
     }
 
@@ -375,6 +380,7 @@ impl<G: Game> Ctx<G> {
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             pacer.pause();
         }
+        self.delivery.event_speaking_at = None;
         self.speech.stop_event();
         self.stop_commentary();
     }
@@ -384,6 +390,7 @@ impl<G: Game> Ctx<G> {
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             pacer.resume();
         }
+        self.delivery.event_speaking_at = None;
         self.speech.stop_event();
     }
 
@@ -477,12 +484,17 @@ impl<G: Game> Ctx<G> {
     pub fn speech_busy(&mut self) -> bool {
         self.delivery.watch_voices = true;
         let now = self.delivery.clock.get();
-        self.delivery.main.busy(now)
-            || self
-                .delivery
-                .pacer
-                .as_mut()
-                .is_some_and(|pacer| pacer.busy())
+        let delivery = &mut self.delivery;
+        delivery.main.busy(now)
+            || delivery.pacer.as_mut().is_some_and(|pacer| {
+                // A fresh "speaking" report bridges the gap between two
+                // reports, which the pacer's short hold does not.
+                let fresh = pacer.config().voice_report_fresh_s;
+                pacer.busy()
+                    || delivery
+                        .event_speaking_at
+                        .is_some_and(|at| now - at <= fresh)
+            })
     }
 
     /// Per frame, once a game has asked `speech_busy`: the voices' own
@@ -496,7 +508,15 @@ impl<G: Game> Ctx<G> {
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             if pacer.wants_voice_report() {
                 if let Some(report) = self.speech.event_voice_report() {
-                    pacer.observe_voice(report.speaking, report.age.as_secs_f64());
+                    let age = report.age.as_secs_f64();
+                    pacer.observe_voice(report.speaking, age);
+                    let at = self.delivery.clock.get() - age.max(0.0);
+                    let newer = self.delivery.event_speaking_at.is_none_or(|was| at >= was);
+                    if !report.speaking {
+                        self.delivery.event_speaking_at = None;
+                    } else if newer {
+                        self.delivery.event_speaking_at = Some(at);
+                    }
                 }
             }
         }

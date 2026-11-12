@@ -8,7 +8,10 @@
 //! starts it over at now plus the line's estimated duration
 //! ([`PacerConfig::duration_s`]), a queued line extends it, and a stop
 //! clears it. A voice that can say whether it is speaking corrects it
-//! ([`SpeechProjection::observe_voice`]) exactly as it corrects the pacer.
+//! ([`SpeechProjection::observe_voice`]) by the pacer's rules, and one
+//! more: while the voice's latest report says it is speaking and is no
+//! older than `voice_report_fresh_s`, the channel reads busy whatever the
+//! estimate says, so the gap between two reports never reads as silence.
 //!
 //! The caller passes the time to every call, so the projection runs on
 //! whatever clock its owner does.
@@ -26,6 +29,8 @@ pub struct SpeechProjection {
     last_submit_at: f64,
     /// When the newest voice report was taken.
     reported_at: f64,
+    /// Whether that report said the voice is speaking.
+    voice_speaking: bool,
 }
 
 impl Default for SpeechProjection {
@@ -43,6 +48,7 @@ impl SpeechProjection {
             clear_at: f64::NEG_INFINITY,
             last_submit_at: f64::NEG_INFINITY,
             reported_at: f64::NEG_INFINITY,
+            voice_speaking: false,
         }
     }
 
@@ -72,6 +78,7 @@ impl SpeechProjection {
     /// The channel was silenced.
     pub fn clear(&mut self) {
         self.clear_at = f64::NEG_INFINITY;
+        self.voice_speaking = false;
     }
 
     /// When the channel is projected to fall silent; `None` when nothing was
@@ -80,9 +87,16 @@ impl SpeechProjection {
         self.clear_at.is_finite().then_some(self.clear_at)
     }
 
-    /// Whether the channel is projected to be speaking at `now`.
+    /// Whether the channel is speaking at `now`: projected to be, or the
+    /// voice said so in a report still fresh.
     pub fn busy(&self, now: f64) -> bool {
-        now < self.clear_at
+        now < self.clear_at || self.voice_speaking_at(now)
+    }
+
+    /// Whether the voice's latest report says it is speaking and is no
+    /// older than `voice_report_fresh_s` at `now`.
+    pub fn voice_speaking_at(&self, now: f64) -> bool {
+        self.voice_speaking && now - self.reported_at <= self.config.voice_report_fresh_s
     }
 
     /// Whether a report from the voice would help at `now`: the projection
@@ -97,14 +111,16 @@ impl SpeechProjection {
     /// seconds before `now`, by the pacer's rules
     /// ([`crate::EventSpeechPacer::observe_voice`]): silence after the
     /// start grace ends it now, and speech past its end holds it
-    /// `voice_hold_s` past the report. A report older than the last one
-    /// taken is ignored.
+    /// `voice_hold_s` past the report, so the voice is asked again. A
+    /// speaking report also keeps [`Self::busy`] true for as long as it is
+    /// fresh. A report older than the last one taken is ignored.
     pub fn observe_voice(&mut self, now: f64, speaking: bool, age_s: f64) {
         let observed_at = now - age_s.max(0.0);
         if observed_at < self.reported_at || !self.clear_at.is_finite() {
             return;
         }
         self.reported_at = observed_at;
+        self.voice_speaking = speaking;
         if speaking {
             if now >= self.clear_at {
                 self.clear_at = self.clear_at.max(observed_at + self.config.voice_hold_s);
@@ -180,14 +196,44 @@ mod tests {
     }
 
     #[test]
-    fn speaking_past_the_estimate_holds_it_until_the_next_report() {
+    fn speaking_past_the_estimate_holds_it_while_the_report_is_fresh() {
         let mut p = SpeechProjection::default();
         p.restart(10.0, "Hi.");
         let end = p.clear_at().unwrap();
         p.observe_voice(end + 1.0, true, 0.0);
-        let hold = p.config().voice_hold_s;
-        assert!(p.busy(end + 1.0 + hold / 2.0));
-        assert!(!p.busy(end + 1.0 + hold));
+        let fresh = p.config().voice_report_fresh_s;
+        assert!(p.busy(end + 1.0 + fresh));
+        assert!(p.wants_voice_report(end + 1.0 + fresh));
+        assert!(
+            !p.busy(end + 1.0 + fresh + 0.01),
+            "reports stopped: the estimate"
+        );
+    }
+
+    #[test]
+    fn old_speaking_reports_in_a_row_never_read_as_silence() {
+        let mut p = SpeechProjection::default();
+        p.restart(10.0, "Hi.");
+        let mut now = 10.0;
+        while now < 40.0 {
+            if p.wants_voice_report(now) {
+                p.observe_voice(now, true, 0.3);
+            }
+            assert!(p.busy(now), "not busy at {now}");
+            assert!(p.busy(now + 0.05), "not busy between reports at {now}");
+            now += 0.1;
+        }
+        p.observe_voice(now, false, 0.3);
+        assert!(!p.busy(now));
+    }
+
+    #[test]
+    fn a_clear_forgets_the_voice_speaking() {
+        let mut p = SpeechProjection::default();
+        p.restart(10.0, LINE);
+        p.observe_voice(11.0, true, 0.0);
+        p.clear();
+        assert!(!p.busy(11.0));
     }
 
     #[test]

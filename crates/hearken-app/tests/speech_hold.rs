@@ -237,7 +237,7 @@ fn the_longest_hold_lets_time_run_and_holds_again_only_after_quiet() {
     let held = frames as f64 * 0.1 - t.total.get();
     let max = t.hold.borrow().max_hold_s;
     assert!((held - max).abs() < 1e-6, "held {held} s");
-    assert_eq!(t.hold.borrow().state(), SpeechHoldState::Expired);
+    assert_eq!(t.hold.borrow().state().name(), "expired");
     assert!(busy(&mut t.h), "still talking");
     t.h.frame(0.1);
     assert_eq!(t.last.get(), 0.1);
@@ -245,9 +245,92 @@ fn the_longest_hold_lets_time_run_and_holds_again_only_after_quiet() {
     t.h.speech.borrow_mut().set_voice_speaking(Some(false));
     t.h.frame(0.1);
     assert_eq!(t.last.get(), 0.1);
+    assert_eq!(
+        t.hold.borrow().state().name(),
+        "expired",
+        "not quiet long enough"
+    );
+    let rearm = t.hold.borrow().rearm_quiet_s;
+    run(&mut t.h, rearm, 0.1);
     assert_eq!(t.hold.borrow().state(), SpeechHoldState::Flowing);
     t.h.app.ctx.say("Again.");
     t.h.frame(0.1);
     assert_eq!(t.last.get(), 0.0);
     assert!(t.hold.borrow().held());
+}
+
+/// A voice that keeps saying it is speaking, in reports `age` old, with the
+/// countdown's hold counting how often it let time through.
+fn never_quiet(t: &mut Timed, frames: usize) -> usize {
+    let mut leaks = 0;
+    for _ in 0..frames {
+        t.h.frame(0.1);
+        if t.last.get() > 0.0 {
+            leaks += 1;
+        }
+        assert!(
+            busy(&mut t.h),
+            "read not busy between frames at {}",
+            t.h.app.ctx.clock
+        );
+    }
+    leaks
+}
+
+#[test]
+fn old_speaking_reports_never_read_as_quiet_on_the_main_channel() {
+    let mut t = countdown();
+    t.hold.borrow_mut().max_hold_s = 1000.0;
+    {
+        let mut speech = t.h.speech.borrow_mut();
+        speech.set_voice_speaking(Some(true));
+        speech.set_voice_report_age(std::time::Duration::from_millis(300));
+    }
+    t.h.app.ctx.say("Hi.");
+    assert_eq!(never_quiet(&mut t, 100), 0);
+    t.h.speech.borrow_mut().set_voice_speaking(Some(false));
+    t.h.frame(0.1);
+    assert!(!busy(&mut t.h));
+}
+
+#[test]
+fn old_speaking_reports_never_read_as_quiet_on_the_event_channel() {
+    let mut t = countdown();
+    t.hold.borrow_mut().max_hold_s = 1000.0;
+    {
+        let mut speech = t.h.speech.borrow_mut();
+        speech.set_voice_speaking(Some(true));
+        speech.set_voice_report_age(std::time::Duration::from_millis(300));
+    }
+    t.h.app.ctx.say_event("Hi.", false);
+    assert_eq!(never_quiet(&mut t, 100), 0);
+}
+
+#[test]
+fn a_voice_that_stops_reporting_falls_back_to_the_estimate() {
+    let mut t = countdown();
+    t.h.speech.borrow_mut().set_voice_speaking(Some(true));
+    t.h.app.ctx.say("Hi.");
+    run(&mut t.h, 5.0, 0.1);
+    assert!(busy(&mut t.h));
+    t.h.speech.borrow_mut().set_voice_speaking(None);
+    run(&mut t.h, 1.5, 0.1);
+    assert!(!busy(&mut t.h), "no fresh report: the estimate, long over");
+}
+
+#[test]
+fn a_blip_of_quiet_does_not_restart_the_longest_hold() {
+    let mut t = countdown();
+    t.h.speech.borrow_mut().set_voice_speaking(Some(true));
+    t.h.app.ctx.say("Hi.");
+    run(&mut t.h, 10.0, 0.1);
+    // One frame of silence, then the voice is reading again.
+    t.h.speech.borrow_mut().set_voice_speaking(Some(false));
+    t.h.frame(0.1);
+    t.h.speech.borrow_mut().set_voice_speaking(Some(true));
+    t.h.app.ctx.say("Hi.");
+    let before = t.total.get();
+    run(&mut t.h, 20.0, 0.1);
+    let ran = t.total.get() - before;
+    assert!(ran > 9.0, "the cap counted on from 10 s, ran {ran}");
 }
