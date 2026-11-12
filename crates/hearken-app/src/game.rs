@@ -112,6 +112,14 @@ pub trait Game: Sized + 'static {
         None
     }
 
+    /// Where the game's problem reports go: a relay that emails them to
+    /// the developer, with the game log attached. `None` (the default)
+    /// takes no reports. See `docs/reports.md`.
+    #[cfg(feature = "report")]
+    fn reports() -> Option<crate::reports::ReportConfig> {
+        None
+    }
+
     /// The game's Discord application, for Rich Presence: friends see
     /// "Playing <the application's name>" and what [`crate::State::presence`] or
     /// [`Game::presence`] reports. `None` (the default) keeps Discord out

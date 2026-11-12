@@ -32,6 +32,10 @@ discord = ["hearken-discord/ipc"]
 # are published in `Game::updates`: the check, the spoken screens and the
 # swap. HTTPS through ureq.
 update = ["dep:hearken-update", "hearken-update/http"]
+# Problem reports emailed to the developer through a relay the game names
+# in `Game::reports`: the Report a problem screen, the log attached, and the
+# offer to report a crash at the next start. HTTPS through ureq.
+report = ["dep:hearken-report", "hearken-report/http"]
 
 [dependencies]
 ab_glyph = { version = "0.2", optional = true }
@@ -54,6 +58,7 @@ ureq = { workspace = true, optional = true }
 hearken-replay = { workspace = true, optional = true }
 hearken-rooms = { workspace = true, optional = true }
 hearken-update = { workspace = true, optional = true }
+hearken-report = { workspace = true, optional = true }
 # Soundtrack exports as Ogg Vorbis (libvorbis, built from source; BSD).
 vorbis_rs = { workspace = true, optional = true }
 

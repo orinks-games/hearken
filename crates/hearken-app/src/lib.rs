@@ -21,6 +21,8 @@ pub mod menu;
 pub mod online;
 pub mod paths;
 pub mod phase;
+#[cfg(feature = "report")]
+pub mod reports;
 pub mod run;
 pub mod screens;
 pub mod sdl_shell;
@@ -56,6 +58,9 @@ pub use hearken_audio::{
     SilentBackend, Sound, Source, SpatialConfig, Vec3,
 };
 pub use hearken_l10n as l10n;
+/// Problem reports, without the engine: the report, its limits, sending.
+#[cfg(feature = "report")]
+pub use hearken_report as report;
 #[cfg(feature = "online")]
 pub use hearken_rooms as rooms;
 pub use hearken_seal as seal;
@@ -73,12 +78,14 @@ pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent
 pub use online::{Connect, Online, OnlineConfig, OnlineError, Plan, Ticket};
 pub use paths::Paths;
 pub use phase::{Phase, Phases};
+#[cfg(feature = "report")]
+pub use reports::{ReportConfig, Reports};
 pub use run::{already_running_line, run};
 pub use screens::SettingsRow;
 pub use sdl_shell::SdlShell;
 pub use settings::{
     default_volume, AudioSettings, ControllerSettings, DiscordSettings, MenuSettings,
-    OnlineSettings, Settings, UpdateSettings,
+    OnlineSettings, ReportSettings, Settings, UpdateSettings,
 };
 pub use shell::{HeadlessShell, Shell, FRAME_SECONDS};
 pub use sound::{SoundConfig, UiSound, UiSounds, BUS_LABELS};
