@@ -16,6 +16,7 @@ use crate::ctx::Ctx;
 use crate::game::Game;
 use crate::input::InputEvent;
 use crate::menu::{menu_input, Label, Menu, MenuCore, MenuItem};
+use crate::phase::{Phase, Phases};
 use crate::reports::Sending;
 use crate::screens::{ConfirmOption, ConfirmScreen, TextEntryScreen};
 use crate::sound::UiSound;
@@ -44,8 +45,25 @@ struct Draft {
     saved: Option<PathBuf>,
 }
 
+/// Where the screen is: writing the report, or waiting for the relay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stage {
+    Writing,
+    Sending,
+}
+
+impl Phase for Stage {
+    fn name(self) -> &'static str {
+        match self {
+            Stage::Writing => "writing",
+            Stage::Sending => "sending",
+        }
+    }
+}
+
 pub struct ReportScreen<G: Game> {
     menu: MenuCore<Self, G>,
+    phases: Phases<Stage>,
     draft: Rc<RefCell<Draft>>,
     /// Whether this report follows a run that did not exit cleanly.
     crashed: bool,
@@ -72,6 +90,7 @@ impl<G: Game> ReportScreen<G> {
         ReportScreen {
             menu: MenuCore::new("Report a problem")
                 .with_intro_help("Up and Down move, Enter chooses, Escape goes back."),
+            phases: Phases::new(Stage::Writing),
             draft: Rc::new(RefCell::new(Draft {
                 include_logs: true,
                 ..Draft::default()
@@ -189,6 +208,7 @@ impl<G: Game> ReportScreen<G> {
         }
         self.sending = Some(ctx.reports.send(report.clone()));
         self.report = Some(report);
+        self.phases.set(ctx, Stage::Sending);
         ctx.say("Sending the report.");
     }
 
@@ -357,6 +377,7 @@ impl<G: Game> Menu for ReportScreen<G> {
             return;
         };
         self.sending = None;
+        self.phases.set(ctx, Stage::Writing);
         match outcome {
             Ok(()) => {
                 self.report = None;
@@ -382,6 +403,10 @@ impl<G: Game> Menu for ReportScreen<G> {
                 self.offer_to_save(ctx, format!("The report could not be sent: {reason}"));
             }
         }
+    }
+
+    fn phase(&self) -> Option<&'static str> {
+        Some(self.phases.name())
     }
 
     fn lines(&self, ctx: &Ctx<G>) -> Vec<String> {

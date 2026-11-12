@@ -58,11 +58,11 @@ pub use hearken_audio::{
     SilentBackend, Sound, Source, SpatialConfig, Vec3,
 };
 pub use hearken_l10n as l10n;
-#[cfg(feature = "online")]
-pub use hearken_rooms as rooms;
 /// Problem reports, without the engine: the report, its limits, sending.
 #[cfg(feature = "report")]
 pub use hearken_report as report;
+#[cfg(feature = "online")]
+pub use hearken_rooms as rooms;
 pub use hearken_seal as seal;
 pub use hearken_seal::{Opened, Tamper, Vault};
 pub use hearken_speech::{

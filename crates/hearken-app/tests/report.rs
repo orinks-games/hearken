@@ -204,8 +204,10 @@ fn a_report_carries_the_description_the_game_and_the_log() {
     let relay = Relay::answering(202);
     let mut h = screen(&relay);
     describe(&mut h, "The dock menu is empty.");
+    assert_eq!(h.phase(), Some("writing"));
     send(&mut h);
     assert_eq!(h.spoken(), ["Sending the report."]);
+    assert_eq!(h.phase(), Some("sending"));
     let spoken = until_spoken(&mut h, SENT);
     assert_eq!(spoken.last().map(String::as_str), Some(SENT));
     assert_eq!(h.app.top_name(), "home");
