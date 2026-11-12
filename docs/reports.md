@@ -156,6 +156,7 @@ machine of your own. Keep these rules whichever you run:
 - Attach each log as a text file. Put the subject the report gives in the
   email's subject, such as `[My Game 1.4.0] crash: The window closed`.
 
-orinks.net runs one at `https://orinks.net/api/problem-reports` for the
+orinks.net runs one at `https://www.orinks.net/api/problem-reports` (the
+bare host answers with a redirect, which the game does not follow) for the
 games it hosts, through Resend, with the web form at `/report/<code>`;
 its code is in the site's repository.
