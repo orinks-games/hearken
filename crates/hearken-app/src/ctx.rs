@@ -331,7 +331,11 @@ impl<G: Game> Ctx<G> {
                 format!("{name} closed unexpectedly the last time it ran. Report the problem?"),
                 vec![
                     crate::screens::ConfirmOption::new("Yes", |ctx: &mut Ctx<G>| {
-                        ctx.replace(crate::screens::ReportScreen::<G>::after_crash())
+                        if ctx.reports.uses_web_form() {
+                            ctx.replace(crate::screens::ReportLinkScreen::<G>::after_crash());
+                        } else {
+                            ctx.replace(crate::screens::ReportScreen::<G>::after_crash());
+                        }
                     })
                     .help("Describe what you were doing and send it, with the game log."),
                     crate::screens::ConfirmOption::close("Not now"),

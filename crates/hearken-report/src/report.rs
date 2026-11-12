@@ -163,13 +163,23 @@ impl Report {
     /// Checks the report against the limits a relay enforces, and returns
     /// the first problem found.
     pub fn validate(&self) -> Result<(), Invalid> {
+        self.check(true)
+    }
+
+    /// Checks a report sent ahead of the web form, which has no
+    /// description yet; everything else is held to the same limits.
+    pub fn validate_sent_ahead(&self) -> Result<(), Invalid> {
+        self.check(false)
+    }
+
+    fn check(&self, needs_description: bool) -> Result<(), Invalid> {
         check_line("app", &self.app, 64)?;
         check_line("version", &self.version, 64)?;
         if let Some(commit) = &self.commit {
             check_line("commit", commit, 64)?;
         }
         check_line("os", &self.os, 200)?;
-        if self.description.trim().is_empty() {
+        if needs_description && self.description.trim().is_empty() {
             return Err(Invalid::Empty("description"));
         }
         if self.description.chars().count() > MAX_DESCRIPTION_CHARS {
@@ -352,6 +362,17 @@ mod tests {
         assert_eq!(
             report().with_log("../secrets", "x").validate(),
             Err(Invalid::BadName)
+        );
+    }
+
+    #[test]
+    fn a_report_sent_ahead_may_have_no_description_but_nothing_else_slides() {
+        let ahead = Report::new("Freight Fate", "1.9.6", "");
+        assert_eq!(ahead.validate(), Err(Invalid::Empty("description")));
+        assert!(ahead.validate_sent_ahead().is_ok());
+        assert_eq!(
+            ahead.with_reply_to("nope").validate_sent_ahead(),
+            Err(Invalid::NotAnAddress)
         );
     }
 

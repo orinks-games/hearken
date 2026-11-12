@@ -73,6 +73,9 @@ pub struct ReportScreen<G: Game> {
     /// A row to move to and read on the next frame: the rows are lent out
     /// while an action runs, so the move waits until they are back.
     focus_next: Option<usize>,
+    /// Spoken before the title on arrival: why the player writes here
+    /// instead of in the browser.
+    notice: Option<String>,
 }
 
 impl<G: Game> ReportScreen<G> {
@@ -84,6 +87,19 @@ impl<G: Game> ReportScreen<G> {
     /// A report of the last run closing unexpectedly, offered at start.
     pub fn after_crash() -> Self {
         ReportScreen::with_crashed(true)
+    }
+
+    /// The screen for a report that follows a crash or not, as
+    /// [`ReportScreen::new`] and [`ReportScreen::after_crash`] are.
+    pub fn for_crash(crashed: bool) -> Self {
+        ReportScreen::with_crashed(crashed)
+    }
+
+    /// Says `notice` before the title on arrival: why the report is
+    /// written here, when the web form could not be opened.
+    pub fn with_notice(mut self, notice: impl Into<String>) -> Self {
+        self.notice = Some(notice.into());
+        self
     }
 
     fn with_crashed(crashed: bool) -> Self {
@@ -99,6 +115,7 @@ impl<G: Game> ReportScreen<G> {
             sending: None,
             report: None,
             focus_next: None,
+            notice: None,
         }
     }
 
@@ -293,13 +310,17 @@ impl<G: Game> Menu for ReportScreen<G> {
         &mut self.menu
     }
 
-    /// After a crash the title says so, once, before the first row.
+    /// After a crash the title says so, once, before the first row; a
+    /// notice about the web form comes first of all.
     fn enter(&mut self, ctx: &mut Ctx<G>) {
         if self.crashed {
             self.menu.title = format!(
                 "Report a problem. {} closed unexpectedly the last time it ran. Say what you were doing when it happened",
                 ctx.reports.name()
             );
+        }
+        if let Some(notice) = self.notice.take() {
+            self.menu.title = format!("{} {}", end_sentence(&notice), self.menu.title);
         }
         crate::menu::menu_enter(self, ctx);
         self.menu.title = "Report a problem".to_string();

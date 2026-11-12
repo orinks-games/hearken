@@ -767,7 +767,11 @@ impl<G: Game> Menu for SettingsScreen<G> {
             rows.push(SettingsRow::new(
                 "report",
                 MenuItem::new("Report a problem", |_s: &mut Self, ctx: &mut Ctx<G>| {
-                    ctx.push(crate::screens::ReportScreen::<G>::new())
+                    if ctx.reports.uses_web_form() {
+                        ctx.push(crate::screens::ReportLinkScreen::<G>::new());
+                    } else {
+                        ctx.push(crate::screens::ReportScreen::<G>::new());
+                    }
                 })
                 .help(
                     "Describe a problem and send it to the game's maker, with the game log \

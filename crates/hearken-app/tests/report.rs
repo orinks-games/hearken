@@ -7,20 +7,25 @@ use std::time::Duration;
 
 use hearken_app::report::{Answer, Report, Sender, Session};
 use hearken_app::screens::report::{BAD_ADDRESS, DESCRIBE_FIRST, SENT};
+use hearken_app::screens::report_link::{NO_BROWSER, OPENED, PREPARING};
 use hearken_app::screens::{ReportScreen, SettingsScreen};
 use hearken_app::{Game, Headless, InputEvent, Key, NoAction, NoCategory, ReportConfig};
 
+/// A game whose reports are written in its own screen.
 struct Reporting;
 
+/// A game whose reports are written on the relay's web page.
+struct WebReporting;
+
 struct Home;
-impl hearken_app::State<Reporting> for Home {
+impl<G: Game> hearken_app::State<G> for Home {
     fn name(&self) -> &'static str {
         "home"
     }
     fn allows_update_prompt(&self) -> bool {
         true
     }
-    fn help(&self, _: &hearken_app::Ctx<Reporting>) -> String {
+    fn help(&self, _: &hearken_app::Ctx<G>) -> String {
         "Home".into()
     }
 }
@@ -42,7 +47,27 @@ impl Game for Reporting {
                 "1.2.0",
                 "https://example.test/api/problem-reports",
             )?
-            .commit("abc123"),
+            .commit("abc123")
+            .in_game_form(),
+        )
+    }
+}
+
+impl Game for WebReporting {
+    const TITLE: &'static str = "Reporting";
+    const DATA_DIR: &'static str = "HearkenWebReportingTest";
+    const ENV_PREFIX: &'static str = "HEARKEN_WEB_REPORTING_TEST";
+    type Event = ();
+    type Data = ();
+    type Settings = ();
+    type Action = NoAction;
+    type Category = NoCategory;
+
+    fn reports() -> Option<ReportConfig> {
+        ReportConfig::new(
+            "Reporting",
+            "1.2.0",
+            "https://example.test/api/problem-reports",
         )
     }
 }
@@ -83,6 +108,8 @@ impl Sender for Relay {
             status: self.status,
             body: if self.status == 403 {
                 "unknown app".into()
+            } else if endpoint.ends_with("/open") && self.status < 300 {
+                r#"{"code":"abc","url":"https://example.test/report/abc"}"#.into()
             } else {
                 String::new()
             },
@@ -93,7 +120,7 @@ impl Sender for Relay {
 /// The report screen over a home screen, with the session log written so
 /// there is something to attach.
 fn screen(relay: &Relay) -> Headless<Reporting> {
-    let mut h = Headless::new((), Home);
+    let mut h = Headless::<Reporting>::new((), Home);
     h.app.ctx.reports.set_sender(Box::new(relay.clone()));
     let log = h.app.ctx.paths.log_file();
     std::fs::write(
@@ -133,7 +160,7 @@ fn send(h: &mut Headless<Reporting>) {
 }
 
 /// Run frames until `needle` is spoken, or give up.
-fn until_spoken(h: &mut Headless<Reporting>, needle: &str) -> Vec<String> {
+fn until_spoken<G: Game>(h: &mut Headless<G>, needle: &str) -> Vec<String> {
     for _ in 0..500 {
         h.frame(0.016);
         let spoken = h.spoken();
@@ -147,7 +174,7 @@ fn until_spoken(h: &mut Headless<Reporting>, needle: &str) -> Vec<String> {
 
 #[test]
 fn settings_lists_report_a_problem_for_a_game_that_takes_reports() {
-    let mut h = Headless::new((), Home);
+    let mut h = Headless::<Reporting>::new((), Home);
     h.app.ctx.push(SettingsScreen::<Reporting>::new());
     h.frame(0.0);
     let lines = h.app.top_lines();
@@ -357,7 +384,7 @@ fn a_refusal_names_the_reason_and_not_now_keeps_the_screen() {
 
 /// A home screen after a run that never exited cleanly.
 fn after_crash() -> Headless<Reporting> {
-    let mut h = Headless::new((), Home);
+    let mut h = Headless::<Reporting>::new((), Home);
     let marker = h.app.ctx.paths.data_dir.join("session.running");
     drop(Session::begin(&marker));
     h.app
@@ -432,7 +459,7 @@ fn dont_ask_again_turns_the_offer_off_in_settings() {
 
 #[test]
 fn a_clean_exit_is_not_a_crash_next_time() {
-    let mut h = Headless::new((), Home);
+    let mut h = Headless::<Reporting>::new((), Home);
     let marker = h.app.ctx.paths.data_dir.join("session.running");
     h.app
         .ctx
@@ -441,4 +468,136 @@ fn a_clean_exit_is_not_a_crash_next_time() {
     assert!(!h.app.ctx.reports.crashed_last_run());
     h.app.ctx.reports.end_session();
     assert!(!Session::begin(&marker).ended_unexpectedly());
+}
+
+/// A browser that records what it was asked to open, and opens it or not.
+fn opener(opens: bool) -> (hearken_app::reports::Opener, Arc<Mutex<Vec<String>>>) {
+    let urls = Arc::new(Mutex::new(Vec::new()));
+    let seen = urls.clone();
+    (
+        Box::new(move |url: &str| {
+            seen.lock().unwrap().push(url.to_string());
+            opens
+        }),
+        urls,
+    )
+}
+
+/// Settings for a game that reports on the web, with a log to send ahead.
+fn web_settings(relay: &Relay, opens: bool) -> (Headless<WebReporting>, Arc<Mutex<Vec<String>>>) {
+    let mut h = Headless::<WebReporting>::new((), Home);
+    h.app.ctx.reports.set_sender(Box::new(relay.clone()));
+    let (open, urls) = opener(opens);
+    h.app.ctx.reports.set_opener(open);
+    let log = h.app.ctx.paths.log_file();
+    std::fs::write(&log, "12:00:01 INFO started\n").unwrap();
+    let marker = h.app.ctx.paths.data_dir.join("session.running");
+    h.app
+        .ctx
+        .reports
+        .adopt_session(Session::begin(&marker), vec![log]);
+    h.app.ctx.push(SettingsScreen::<WebReporting>::new());
+    h.frame(0.0);
+    (h, urls)
+}
+
+/// Choose Report a problem in Settings. Only what it says is kept.
+fn choose_report(h: &mut Headless<WebReporting>) {
+    while !h
+        .app
+        .top_lines()
+        .iter()
+        .any(|l| l.starts_with("> Report a problem"))
+    {
+        h.press(Key::Down);
+    }
+    h.clear();
+    h.press(Key::Return);
+}
+
+#[test]
+fn a_web_form_report_sends_the_log_ahead_and_opens_the_page() {
+    let relay = Relay::answering(201);
+    let (mut h, urls) = web_settings(&relay, true);
+    choose_report(&mut h);
+    assert_eq!(h.app.top_name(), "report_link");
+    assert_eq!(h.phase(), Some("preparing"));
+    assert_eq!(h.spoken(), [PREPARING]);
+    let spoken = until_spoken(&mut h, OPENED);
+    assert_eq!(spoken[0], PREPARING);
+    assert!(spoken.iter().any(|l| l == OPENED), "{spoken:?}");
+    assert_eq!(h.app.top_name(), "settings");
+    let posted = relay.posted.lock().unwrap();
+    assert_eq!(posted.len(), 1);
+    assert_eq!(posted[0].0, "https://example.test/api/problem-reports/open");
+    let report = &posted[0].1;
+    assert_eq!(report.description, "");
+    assert_eq!(report.app, "Reporting");
+    assert_eq!(report.attachments.len(), 1);
+    assert_eq!(report.attachments[0].name, "session.log");
+    assert_eq!(
+        *urls.lock().unwrap(),
+        ["https://example.test/report/abc".to_string()]
+    );
+}
+
+#[test]
+fn a_browser_that_will_not_open_falls_back_to_the_games_own_screen() {
+    let relay = Relay::answering(201);
+    let (mut h, urls) = web_settings(&relay, false);
+    choose_report(&mut h);
+    let spoken = until_spoken(&mut h, NO_BROWSER);
+    assert_eq!(h.app.top_name(), "report");
+    assert!(
+        spoken.contains(&format!("{NO_BROWSER} Report a problem.")),
+        "{spoken:?}"
+    );
+    assert_eq!(urls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_relay_that_cannot_keep_the_log_falls_back_with_the_reason() {
+    let relay = Relay::answering(503);
+    let (mut h, urls) = web_settings(&relay, true);
+    choose_report(&mut h);
+    let spoken = until_spoken(&mut h, "Write the report here");
+    assert_eq!(h.app.top_name(), "report");
+    assert!(
+        spoken.iter().any(|l| l == "The report form could not be opened: the relay answered 503. Write the report here. Report a problem."),
+        "{spoken:?}"
+    );
+    assert!(urls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn escape_leaves_while_the_log_is_on_its_way() {
+    let relay = Relay::answering(201);
+    let (mut h, _urls) = web_settings(&relay, true);
+    choose_report(&mut h);
+    h.press(Key::Escape);
+    assert_eq!(h.app.top_name(), "settings");
+}
+
+#[test]
+fn a_crash_offer_opens_the_web_form_marked_as_a_crash() {
+    let relay = Relay::answering(201);
+    let mut h = Headless::<WebReporting>::new((), Home);
+    h.app.ctx.reports.set_sender(Box::new(relay.clone()));
+    let (open, urls) = opener(true);
+    h.app.ctx.reports.set_opener(open);
+    let marker = h.app.ctx.paths.data_dir.join("session.running");
+    drop(Session::begin(&marker));
+    h.app
+        .ctx
+        .reports
+        .adopt_session(Session::begin(&marker), Vec::new());
+    h.frame(0.0);
+    h.frame(0.0);
+    assert_eq!(h.app.top_name(), "confirm");
+    h.press(Key::Return);
+    assert_eq!(h.app.top_name(), "report_link");
+    until_spoken(&mut h, OPENED);
+    assert_eq!(h.app.top_name(), "home");
+    assert!(relay.posted.lock().unwrap()[0].1.crashed);
+    assert_eq!(urls.lock().unwrap().len(), 1);
 }
