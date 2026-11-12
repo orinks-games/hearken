@@ -40,6 +40,9 @@ impl<G: Game> App<G> {
     pub fn step(&mut self, events: Vec<InputEvent>, dt: f64) {
         // The clock the held-key pulses run on; see `held_keys`.
         self.ctx.held.begin_frame(dt);
+        // What the voices last said of themselves, before any screen asks
+        // whether speech is playing.
+        self.ctx.observe_voices();
         for event in events {
             if self.admit(&event) {
                 self.dispatch(&event);

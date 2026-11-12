@@ -327,6 +327,7 @@ impl<G: Game> Ctx<G> {
         if !self.speech.say_adjustment_preview(setting, &text, true) {
             self.speech.say(&text, true);
         }
+        self.delivery.project_main(&text, true);
         self.record(text);
     }
 
@@ -348,7 +349,9 @@ impl<G: Game> Ctx<G> {
         if text.trim().is_empty() {
             return;
         }
-        self.speech.say(&text, interrupt && !self.hold_interrupt);
+        let interrupt = interrupt && !self.hold_interrupt;
+        self.speech.say(&text, interrupt);
+        self.delivery.project_main(&text, interrupt);
         self.record(text);
     }
 
@@ -403,6 +406,7 @@ impl<G: Game> Ctx<G> {
     /// the pacer was projecting.
     pub fn stop_speech(&mut self) {
         self.speech.stop();
+        self.delivery.main.clear();
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             pacer.reset();
         }

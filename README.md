@@ -87,6 +87,11 @@ Some of what that gives a game:
   A game names its own event categories and what each one does at each
   verbosity level, so a quiet mode can turn chatter into earcons. Speech
   can also go to the braille display alone.
+- **Countdowns that wait for speech.** `ctx.speech_busy()` says whether
+  either voice is still speaking, by the voice's own report or an estimate
+  from the line's length, and `SpeechHold` stops a game clock until the
+  line is heard, so a slow speech rate does not cost the player time. See
+  [`docs/waiting-for-speech.md`](docs/waiting-for-speech.md).
 - **3D sound.** Sounds play at a position around a listener with a heading,
   on buses (UI, effects, ambience, music, voice) the player sets volumes
   for. A game can add buses, muffle sounds behind walls through
