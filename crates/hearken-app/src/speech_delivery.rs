@@ -13,8 +13,8 @@ use std::rc::Rc;
 
 use hearken_audio::Bus;
 use hearken_speech::{
-    Category, Cut, EventPriority, EventSpeechPacer, Level, PacerConfig, Protect, Rule, Valid,
-    Verbosity,
+    Category, Cut, EventPriority, EventSpeechPacer, Level, PacerConfig, Protect, Rule,
+    SpeechProjection, Valid, Verbosity,
 };
 
 use crate::ctx::{Ctx, TRANSCRIPT_TARGET};
@@ -117,6 +117,15 @@ pub(crate) struct Delivery<C: 'static> {
     pub(crate) duck_until: f64,
     /// What the pacer reads as the time.
     pub(crate) clock: Rc<Cell<f64>>,
+    /// When the main channel falls silent, on the pacer's clock.
+    pub(crate) main: SpeechProjection,
+    /// Set once the game asks [`Ctx::speech_busy`]: from then on the
+    /// voices' own reports correct both projections each frame.
+    pub(crate) watch_voices: bool,
+    /// When the event voice last reported speaking, on the pacer's clock;
+    /// `None` once it reports silence or the channel is silenced. Read by
+    /// `speech_busy` alone, so the pacer's own timing is untouched.
+    pub(crate) event_speaking_at: Option<f64>,
 }
 
 impl<C: Category> Delivery<C> {
@@ -129,6 +138,7 @@ impl<C: Category> Delivery<C> {
             .as_ref()
             .map(|config| config.wide_char_weight)
             .unwrap_or(PacerConfig::DEFAULT.wide_char_weight);
+        let main = SpeechProjection::new(pacer.unwrap_or(PacerConfig::DEFAULT));
         let pacer = pacer.map(|config| {
             let clock = clock.clone();
             EventSpeechPacer::with_clock(config, Box::new(move || clock.get()))
@@ -141,21 +151,34 @@ impl<C: Category> Delivery<C> {
             ducked: false,
             duck_until: 0.0,
             clock,
+            main,
+            watch_voices: false,
+            event_speaking_at: None,
         }
     }
 
     /// Raise wide-character pacing for Chinese and Japanese; restore the
     /// game's ordinary weight for every other language.
     pub(crate) fn apply_language_pacing(&mut self, language: &str) {
-        let Some(pacer) = self.pacer.as_mut() else {
-            return;
-        };
         let weight = if crate::language::uses_cjk_pacing(language) {
             crate::language::CJK_WIDE_CHAR_WEIGHT
         } else {
             self.base_wide_char_weight
         };
-        pacer.set_wide_char_weight(weight);
+        self.main.set_wide_char_weight(weight);
+        if let Some(pacer) = self.pacer.as_mut() {
+            pacer.set_wide_char_weight(weight);
+        }
+    }
+
+    /// The main channel spoke `text`, cutting off what it held or after it.
+    pub(crate) fn project_main(&mut self, text: &str, interrupt: bool) {
+        let now = self.clock.get();
+        if interrupt {
+            self.main.restart(now, text);
+        } else {
+            self.main.extend(now, text);
+        }
     }
 }
 
@@ -281,6 +304,10 @@ impl<G: Game> Ctx<G> {
         if let Some(seen) = first_time {
             self.delivery.first_times.insert(seen);
         }
+        if !separate {
+            // Events share the main voice, so the main channel holds them.
+            self.delivery.project_main(&text, interrupt);
+        }
         if self.delivery.pacer.is_none() {
             self.speech.say_event(&text, interrupt);
         } else if separate {
@@ -329,6 +356,7 @@ impl<G: Game> Ctx<G> {
         if self.speech.has_separate_event_voice() {
             self.speech.say_event(&text, interrupt);
         } else {
+            self.delivery.project_main(&text, false);
             self.speech.say(&text, false);
         }
         self.record(format!("[event] {text}"));
@@ -352,6 +380,7 @@ impl<G: Game> Ctx<G> {
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             pacer.pause();
         }
+        self.delivery.event_speaking_at = None;
         self.speech.stop_event();
         self.stop_commentary();
     }
@@ -361,6 +390,7 @@ impl<G: Game> Ctx<G> {
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             pacer.resume();
         }
+        self.delivery.event_speaking_at = None;
         self.speech.stop_event();
     }
 
@@ -440,6 +470,64 @@ impl<G: Game> Ctx<G> {
         self.delivery.ducked = false;
         self.delivery.duck_until = 0.0;
         self.audio.set_duck(1.0);
+    }
+
+    /// Whether speech is still playing on either channel: by the voice's own
+    /// report where it gives one, else by the estimate from each line's
+    /// length. A game that runs a countdown the player must hear a line to
+    /// beat waits while this is true; [`crate::SpeechHold`] does that with
+    /// a bound.
+    ///
+    /// The event channel counts while the game keeps its pacer (the
+    /// default). The first call also starts asking the voices each frame,
+    /// while a report would help, whether they are still speaking.
+    pub fn speech_busy(&mut self) -> bool {
+        self.delivery.watch_voices = true;
+        let now = self.delivery.clock.get();
+        let delivery = &mut self.delivery;
+        delivery.main.busy(now)
+            || delivery.pacer.as_mut().is_some_and(|pacer| {
+                // A fresh "speaking" report bridges the gap between two
+                // reports, which the pacer's short hold does not.
+                let fresh = pacer.config().voice_report_fresh_s;
+                pacer.busy()
+                    || delivery
+                        .event_speaking_at
+                        .is_some_and(|at| now - at <= fresh)
+            })
+    }
+
+    /// Per frame, once a game has asked `speech_busy`: the voices' own
+    /// reports correct the projections, asked only while a projection runs
+    /// or has just run out. The sink answers from its last report, so this
+    /// never waits on the screen reader.
+    pub(crate) fn observe_voices(&mut self) {
+        if !self.delivery.watch_voices {
+            return;
+        }
+        if let Some(pacer) = self.delivery.pacer.as_mut() {
+            if pacer.wants_voice_report() {
+                if let Some(report) = self.speech.event_voice_report() {
+                    let age = report.age.as_secs_f64();
+                    pacer.observe_voice(report.speaking, age);
+                    let at = self.delivery.clock.get() - age.max(0.0);
+                    let newer = self.delivery.event_speaking_at.is_none_or(|was| at >= was);
+                    if !report.speaking {
+                        self.delivery.event_speaking_at = None;
+                    } else if newer {
+                        self.delivery.event_speaking_at = Some(at);
+                    }
+                }
+            }
+        }
+        let now = self.delivery.clock.get();
+        if self.delivery.main.wants_voice_report(now) {
+            if let Some(report) = self.speech.main_voice_report() {
+                self.delivery
+                    .main
+                    .observe_voice(now, report.speaking, report.age.as_secs_f64());
+            }
+        }
     }
 
     /// Per frame, once `clock` has advanced: the pacer sees the same time.

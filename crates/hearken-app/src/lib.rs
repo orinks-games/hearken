@@ -32,6 +32,7 @@ pub mod single_instance;
 pub mod sound;
 pub mod soundtrack;
 pub mod speech_delivery;
+pub mod speech_hold;
 pub mod state;
 pub mod status_key;
 #[cfg(feature = "testing")]
@@ -93,6 +94,7 @@ pub use soundtrack::{
     Performer, Piece, Soundtrack, SoundtrackScreen, Stems, Track, Variation, Variety,
 };
 pub use speech_delivery::SayEvent;
+pub use speech_hold::{SpeechHold, SpeechHoldState};
 pub use state::{Reveal, StackOp, State};
 pub use status_key::StatusKey;
 #[cfg(feature = "testing")]

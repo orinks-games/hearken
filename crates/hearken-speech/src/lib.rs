@@ -68,6 +68,7 @@ pub mod capture;
 pub mod fakes;
 pub mod live;
 pub mod pacer;
+pub mod projection;
 pub mod spoken;
 pub mod threaded;
 pub mod verbosity;
@@ -88,6 +89,7 @@ pub use pacer::{
     monotonic_seconds, Clock, Cut, DeliveryStatus, EventPriority, EventSpeechPacer, PacerConfig,
     Protect, Valid,
 };
+pub use projection::SpeechProjection;
 pub use spoken::{terse_silent, SpokenMessage};
 pub use threaded::ThreadedSpeech;
 pub use verbosity::{Category, Level, NoCategory, Rule, Verbosity};
