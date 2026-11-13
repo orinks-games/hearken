@@ -12,6 +12,8 @@ pub const MAX_LOG_BYTES: usize = 1 << 20;
 pub const MAX_DESCRIPTION_CHARS: usize = 20_000;
 /// The most attachments a report can have.
 pub const MAX_ATTACHMENTS: usize = 4;
+/// The most details a report can carry.
+pub const MAX_DETAILS: usize = 8;
 
 /// A problem report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,9 +35,23 @@ pub struct Report {
     /// Whether the game crashed on its last run.
     #[serde(default)]
     pub crashed: bool,
+    /// Where the player was, as the game knows it: `Game: Tightrope`,
+    /// `Screen: driving`. The first detail is the headline, and goes in the
+    /// subject.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub details: Vec<Detail>,
     /// Logs and other text files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+}
+
+/// One named fact about where the player was: `("Game", "Tightrope")`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Detail {
+    /// What the value is, such as `Game`.
+    pub name: String,
+    /// The value, such as `Tightrope`.
+    pub value: String,
 }
 
 /// A text file sent with a report, such as a log.
@@ -63,6 +79,7 @@ impl Report {
             description: description.into(),
             reply_to: None,
             crashed: false,
+            details: Vec::new(),
             attachments: Vec::new(),
         }
     }
@@ -94,6 +111,36 @@ impl Report {
         self
     }
 
+    /// Adds a detail of where the player was. The first one added is the
+    /// headline. A blank name or value is left out.
+    pub fn with_detail(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        let name = name.into();
+        let value = value.into();
+        if !name.trim().is_empty() && !value.trim().is_empty() {
+            self.details.push(Detail {
+                name: name.trim().to_string(),
+                value: value.trim().to_string(),
+            });
+        }
+        self
+    }
+
+    /// Adds every pair of `details` with [`Report::with_detail`].
+    pub fn with_details<N: Into<String>, V: Into<String>>(
+        mut self,
+        details: impl IntoIterator<Item = (N, V)>,
+    ) -> Self {
+        for (name, value) in details {
+            self = self.with_detail(name, value);
+        }
+        self
+    }
+
+    /// The headline detail's value, such as `Tightrope`, if there is one.
+    pub fn headline(&self) -> Option<&str> {
+        self.details.first().map(|d| d.value.as_str())
+    }
+
     /// Attaches a log, keeping its last [`MAX_LOG_BYTES`] bytes. An empty
     /// log is not attached.
     pub fn with_log(mut self, name: impl Into<String>, text: &str) -> Self {
@@ -107,7 +154,8 @@ impl Report {
     }
 
     /// The subject line of the report's email: `[Freight Fate 1.9.6]
-    /// crash: The window closed`.
+    /// crash: The window closed`, or `[Wicket's 1.6.0, Tightrope] The rope
+    /// swayed` when the report has a headline detail.
     pub fn subject(&self) -> String {
         let first_line = self
             .description
@@ -117,7 +165,11 @@ impl Report {
             .unwrap_or_default();
         let summary: String = first_line.chars().take(80).collect();
         let kind = if self.crashed { "crash: " } else { "" };
-        format!("[{} {}] {kind}{summary}", self.app, self.version)
+        let headline = self
+            .headline()
+            .map(|h| format!(", {h}"))
+            .unwrap_or_default();
+        format!("[{} {}{headline}] {kind}{summary}", self.app, self.version)
     }
 
     /// The description, then the game and system details, as the email
@@ -131,6 +183,9 @@ impl Report {
         );
         if let Some(commit) = &self.commit {
             let _ = write!(body, " (commit {commit})");
+        }
+        for detail in &self.details {
+            let _ = write!(body, "\n{}: {}", detail.name, detail.value);
         }
         let _ = write!(
             body,
@@ -190,6 +245,13 @@ impl Report {
             if !looks_like_address(reply_to) {
                 return Err(Invalid::NotAnAddress);
             }
+        }
+        if self.details.len() > MAX_DETAILS {
+            return Err(Invalid::TooMany("details"));
+        }
+        for detail in &self.details {
+            check_line("detail name", &detail.name, 40)?;
+            check_line("detail", &detail.value, 200)?;
         }
         if self.attachments.len() > MAX_ATTACHMENTS {
             return Err(Invalid::TooMany("attachments"));
@@ -304,6 +366,54 @@ mod tests {
             report().crashed(true).subject(),
             "[Freight Fate 1.9.6] crash: The dock menu is empty."
         );
+    }
+
+    #[test]
+    fn a_headline_detail_goes_in_the_subject_and_every_detail_in_the_body() {
+        let report = report()
+            .with_detail("Game", "Tightrope")
+            .with_detail(" Mode ", "challenge ")
+            .with_detail("", "nothing")
+            .with_detail("Blank", "  ");
+        assert_eq!(report.headline(), Some("Tightrope"));
+        assert_eq!(
+            report.subject(),
+            "[Freight Fate 1.9.6, Tightrope] The dock menu is empty."
+        );
+        assert_eq!(
+            report.clone().crashed(true).subject(),
+            "[Freight Fate 1.9.6, Tightrope] crash: The dock menu is empty."
+        );
+        assert_eq!(
+            report.body(),
+            "The dock menu is empty.\nIt happens at every warehouse.\n\nApp: Freight Fate 1.9.6\nGame: Tightrope\nMode: challenge\nSystem: windows x86_64\nCrashed on its last run: no\n"
+        );
+        assert!(report.validate().is_ok());
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains(r#""details":[{"name":"Game","value":"Tightrope"}"#));
+        let back: Report = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, report);
+        // A report from before details existed still reads.
+        let stripped = json.replace(
+            r#","details":[{"name":"Game","value":"Tightrope"},{"name":"Mode","value":"challenge"}]"#,
+            "",
+        );
+        assert_ne!(stripped, json);
+        let old: Report = serde_json::from_str(&stripped).unwrap();
+        assert!(old.details.is_empty());
+    }
+
+    #[test]
+    fn details_are_held_to_their_limits() {
+        let mut many = report();
+        for i in 0..=MAX_DETAILS {
+            many = many.with_detail(format!("d{i}"), "v");
+        }
+        assert_eq!(many.validate(), Err(Invalid::TooMany("details")));
+        let long = report().with_detail("Game", "x".repeat(201));
+        assert_eq!(long.validate(), Err(Invalid::TooLong("detail")));
+        let broken = report().with_detail("Game", "two\nlines");
+        assert_eq!(broken.validate(), Err(Invalid::ControlCharacter("detail")));
     }
 
     #[test]

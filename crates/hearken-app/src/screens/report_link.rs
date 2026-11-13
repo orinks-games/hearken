@@ -70,7 +70,8 @@ impl<G: Game> State<G> for ReportLinkScreen<G> {
     }
 
     fn enter(&mut self, ctx: &mut Ctx<G>) {
-        let Some(report) = ctx.reports.draft("", "", true, self.crashed) else {
+        let details = crate::reports::details_for(ctx, self.crashed);
+        let Some(report) = ctx.reports.draft("", "", true, self.crashed, &details) else {
             ctx.pop();
             return;
         };

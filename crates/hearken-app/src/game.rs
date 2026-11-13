@@ -120,6 +120,17 @@ pub trait Game: Sized + 'static {
         None
     }
 
+    /// Where the player is, for a problem report: `("Game", "Tightrope")`,
+    /// `("Screen", "driving")`. The first pair is the headline, and goes in
+    /// the report's subject. Read as a report starts, and kept with the
+    /// crash marker whenever it changes, so a report of a crash names where
+    /// the last run was. Empty (the default) says nothing. See
+    /// `docs/reports.md`.
+    #[cfg(feature = "report")]
+    fn report_details(_ctx: &Ctx<Self>) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// The game's Discord application, for Rich Presence: friends see
     /// "Playing <the application's name>" and what [`crate::State::presence`] or
     /// [`Game::presence`] reports. `None` (the default) keeps Discord out
