@@ -1,6 +1,6 @@
 //! What every screen is handed.
 
-use hearken_audio::{Audio, Bus, Sound};
+use hearken_audio::{Audio, Bus, Sound, Take, TakeState};
 use hearken_l10n::Translator;
 use hearken_speech::SpeechSink;
 use std::sync::Arc;
@@ -94,6 +94,8 @@ pub struct Ctx<G: Game> {
     /// The screen on top of the stack, by `State::name`, as the app last
     /// set it; `"none"` before the first screen.
     pub(crate) screen: &'static str,
+    /// The screen whose take is recording (`begin_take`), if any.
+    pub(crate) take_owner: Option<&'static str>,
     pub frame: u64,
     /// Seconds since the run started, the sum of every frame's `dt`.
     pub clock: f64,
@@ -175,6 +177,7 @@ impl<G: Game> Ctx<G> {
             changes: Vec::new(),
             changed: 0,
             screen: "none",
+            take_owner: None,
             frame: 0,
             clock: 0.0,
             audio: Audio::silent(),
@@ -439,6 +442,63 @@ impl<G: Game> Ctx<G> {
     pub(crate) fn note_screen(&mut self, line: String) {
         log::info!(target: SCREENS_TARGET, "{line}");
         self.note_change(format!("[screen] {line}"));
+    }
+
+    /// Starts a take of every clip started on `buses` from now on (see
+    /// [`hearken_audio::take`]). The take belongs to the screen on top: it
+    /// is held while another screen covers that one (a pause menu,
+    /// Settings, the Soundtrack), so the held span is left out of it and a
+    /// covering screen's own music leaves no trace; and it is dropped if
+    /// that screen leaves the stack without ending it. Each change of its
+    /// state is kept in `changes` as `[take] recording -> held`.
+    pub fn begin_take(&mut self, buses: &[Bus]) {
+        let from = self.audio.take_state();
+        self.audio.begin_take(buses);
+        self.take_owner = Some(self.screen);
+        self.note_take(from, TakeState::Recording);
+    }
+
+    /// Ends the take and hands it back; `None` when none was recording.
+    pub fn end_take(&mut self) -> Option<Take> {
+        let from = self.audio.take_state();
+        let take = self.audio.end_take();
+        self.take_owner = None;
+        if take.is_some() {
+            self.note_take(from, TakeState::Ended);
+        }
+        take
+    }
+
+    /// Where the take recorder is: idle with no take.
+    pub fn take_state(&self) -> TakeState {
+        self.audio.take_state()
+    }
+
+    /// Holds the take while a screen other than its owner is on top, lets
+    /// it run when its owner is back, and drops it once its owner has left
+    /// the stack. The app calls it after every stack change, with the
+    /// stack's screen names bottom to top.
+    pub(crate) fn sync_take(&mut self, stack: &[&'static str]) {
+        let Some(owner) = self.take_owner else {
+            return;
+        };
+        let from = self.audio.take_state();
+        if !stack.contains(&owner) {
+            log::warn!(target: hearken_audio::take::TARGET, "{owner} left without ending its take; dropped");
+            self.audio.end_take();
+            self.take_owner = None;
+            self.note_take(from, TakeState::Idle);
+            return;
+        }
+        self.audio.hold_take(stack.last() != Some(&owner));
+        let to = self.audio.take_state();
+        if from != to {
+            self.note_take(from, to);
+        }
+    }
+
+    fn note_take(&mut self, from: TakeState, to: TakeState) {
+        self.note_change(format!("[take] {} -> {}", from.name(), to.name()));
     }
 
     fn note_change(&mut self, line: String) {

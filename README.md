@@ -670,6 +670,61 @@ instead a new performance on every play, from a fresh seed:
   octave. `Variation::NONE` plays a track as recorded.
 - `Track::live` hands the play to the game's own `Performer`, made from
   that play's `Variety`, for music the game composes as it goes.
+- `Track::take` plays a `Take`: one run's music, recorded as the calls
+  that made it (see [Takes](#takes-a-run-as-a-track)).
+
+#### Takes: a run as a track
+
+Music a game builds as it goes (voices joining and dropping, a chorus
+swelling, a fade as the player falters) is different every run, and a
+seed cannot bring it back once the run depended on the player. A take
+keeps it: a timed list of every call the game made on the buses it
+follows, usually `Bus::MUSIC` (each clip's start, with its key, volume,
+pan, pitch, loop, region, offset and position; stops and releases;
+pauses; volume, pitch and pan ramps; positions; listener moves). The
+mixed sound is never recorded, only the calls, so a take of an hour is a
+few hundred kilobytes of JSON (`Take::to_json`), and playing it back
+goes through the pool's own spatial code, so a positioned part lands
+where it did.
+
+```rust
+fn enter(&mut self, ctx: &mut Ctx<MyGame>) {
+    ctx.begin_take(&[Bus::MUSIC]);
+}
+
+fn finish(&mut self, ctx: &mut Ctx<MyGame>) {
+    if let Some(take) = ctx.end_take() {
+        if !take.is_empty() {
+            save(take.to_json());
+            ctx.soundtrack.set_tracks(my_tracks_with(Track::take("run-7", "Tuesday evening", take)));
+        }
+    }
+}
+```
+
+The take belongs to the screen that began it. While another screen is
+on top (a pause, a menu) the take is held: its clock stops and sounds
+started there are not followed, so the song has no gap and no menu
+music. A screen that leaves the stack without ending its take drops it.
+The recorder's state (`TakeState`: idle, recording, held, ended) changes
+in one place and each change goes into `ctx.changes` as
+`[take] recording -> held`, so a test can watch it with
+`Headless::changes`. Ramps set every frame are coalesced: a change is
+written once the value has sat still for 50 ms, and a change smaller
+than 0.01 is nothing. A take stops itself at an hour or 250,000 events
+and is marked `cut`.
+
+A `Track::take` (or `Track::take_shared` for an `Rc<Take>` the game
+keeps loaded) is open from the start, plays in the menu as
+`TakePerformer` (`Replay`: waiting, playing, ringing out, done) and
+exports like any other track; on an album with export on, Shift and
+Enter on any unlocked track saves that one track as a file, numbered
+as the album lists it, and a take's export runs for the take's own
+length, not the 15-minute cap of a piece that never ends. A take replays
+on the music bus whatever buses it followed. A game's own "Save this
+run's song" row opens the menu with
+`SoundtrackScreen::new().album("Runs").saving("run-7")`, which starts
+that save on arrival.
 
 #### Exporting an album
 
@@ -689,7 +744,8 @@ Export plays each track once on a mixer with no device, faster than real
 time, and writes only its finished mix, never the stems, as a stereo
 48 kHz Ogg Vorbis file (quality 6, about 192 kbit/s) to
 `Music/<game>/<album>/01 <title>.ogg`, tagged with its title, album, game
-and track number. A portable
+and track number. Shift and Enter on one unlocked track saves that
+track alone ("Saving Night song. Escape stops it."). A portable
 copy (one with `portable.txt` beside its executable) writes to
 `Music/<album>/` in its own folder instead, as it keeps its saves there,
 and says the path from that folder. When the system has no Music folder
