@@ -75,6 +75,12 @@ fn toggle_update_check<G: Game>(ctx: &mut Ctx<G>) {
     updates.check_at_start = !updates.check_at_start;
 }
 
+#[cfg(feature = "report")]
+fn toggle_crash_offer<G: Game>(ctx: &mut Ctx<G>) {
+    let reports = &mut ctx.settings.reports;
+    reports.ask_after_crash = !reports.ask_after_crash;
+}
+
 /// Whether the built-in voice is speaking or chosen.
 fn builtin_in_use<G: Game>(ctx: &Ctx<G>) -> bool {
     ctx.settings.speech.self_voicing || ctx.speech.backend_name() == hearken_speech::BUILTIN_BACKEND
@@ -752,6 +758,43 @@ impl<G: Game> Menu for SettingsScreen<G> {
                          Enter, Left or Right changes it.",
                     )
                     .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_update_check(ctx)),
+                ));
+            }
+        }
+
+        #[cfg(feature = "report")]
+        if ctx.reports.is_offered() {
+            rows.push(SettingsRow::new(
+                "report",
+                MenuItem::new("Report a problem", |_s: &mut Self, ctx: &mut Ctx<G>| {
+                    ctx.push(crate::screens::ReportScreen::<G>::new())
+                })
+                .help(
+                    "Describe a problem and send it to the game's maker, with the game log \
+                     if you choose.",
+                ),
+            ));
+            if ctx.reports.config().is_some_and(|c| c.offer_after_crash) {
+                rows.push(SettingsRow::new(
+                    "report_after_crash",
+                    MenuItem::new(
+                        Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                            format!(
+                                "Ask to report a problem after a crash: {}",
+                                if ctx.settings.reports.ask_after_crash {
+                                    "on"
+                                } else {
+                                    "off"
+                                }
+                            )
+                        }),
+                        |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, toggle_crash_offer),
+                    )
+                    .help(
+                        "Whether the game offers to send a report when its last run closed \
+                         unexpectedly. Enter, Left or Right changes it.",
+                    )
+                    .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, _delta| toggle_crash_offer(ctx)),
                 ));
             }
         }

@@ -42,6 +42,11 @@ online = ["hearken-app/online"]
 # game's own, with every update signed. HTTPS through ureq.
 update = ["hearken-app/update"]
 
+# Problem reports from the player, emailed to the developer through a relay
+# the game names (`Game::reports`), with the game log attached, and an offer
+# to report a crash at the next start. HTTPS through ureq.
+report = ["hearken-app/report"]
+
 [dependencies]
 hearken-app.workspace = true
 # `hearken::replay`: recording runs, and the rules a server replays them with.

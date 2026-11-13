@@ -168,6 +168,15 @@ jobs:
       - name: Update crate without HTTP
         if: runner.os == 'Linux'
         run: cargo clippy -p hearken-update --no-default-features --all-targets --locked -- -D warnings
+      # Problem reports are behind a feature too.
+      - name: Report tests
+        run: cargo test -p hearken-app --features report --locked
+      - name: Report clippy
+        run: cargo clippy -p hearken-app --features report --all-targets --locked -- -D warnings
+      # A relay reads reports with hearken-report and no HTTP client.
+      - name: Report crate without HTTP
+        if: runner.os == 'Linux'
+        run: cargo clippy -p hearken-report --no-default-features --all-targets --locked -- -D warnings
 
   # Verified runs: the replay crate builds for WebAssembly, and the server
   # library verifies the runs its Rust tests record with the real module.

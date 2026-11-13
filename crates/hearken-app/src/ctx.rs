@@ -61,6 +61,10 @@ pub struct Ctx<G: Game> {
     /// found, and the way to check and install.
     #[cfg(feature = "update")]
     pub updates: crate::updates::Updates,
+    /// Problem reports (see [`crate::reports`]): the relay they go to, the
+    /// logs they carry, and whether the last run crashed.
+    #[cfg(feature = "report")]
+    pub reports: crate::reports::Reports,
     /// The game's Discord status (see [`crate::discord`]). Dormant unless
     /// the game offers it and `run` started it.
     pub discord: crate::discord::Discord,
@@ -152,6 +156,8 @@ impl<G: Game> Ctx<G> {
             room_notices: Vec::new(),
             #[cfg(feature = "update")]
             updates: crate::updates::Updates::new(G::updates()),
+            #[cfg(feature = "report")]
+            reports: crate::reports::Reports::new(G::reports()),
             speech,
             translator: Arc::new(Translator::english()),
             discord: crate::discord::Discord::dormant(),
@@ -304,6 +310,40 @@ impl<G: Game> Ctx<G> {
                 "{title} is available. To install it, choose Check for updates in Settings."
             ));
         }
+    }
+
+    /// Offers to report a crash, once, on the first screen that allows an
+    /// offer. Once a frame.
+    #[cfg(feature = "report")]
+    pub(crate) fn update_reports(&mut self, safe_to_prompt: bool) {
+        if !safe_to_prompt || self.has_pending() || !self.reports.offers_crash_report() {
+            return;
+        }
+        if !self.reports.take_crash_offer() {
+            return;
+        }
+        if !self.settings.reports.ask_after_crash {
+            return;
+        }
+        let name = self.reports.name().to_string();
+        self.push(
+            crate::screens::ConfirmScreen::with_options(
+                format!("{name} closed unexpectedly the last time it ran. Report the problem?"),
+                vec![
+                    crate::screens::ConfirmOption::new("Yes", |ctx: &mut Ctx<G>| {
+                        ctx.replace(crate::screens::ReportScreen::<G>::after_crash())
+                    })
+                    .help("Describe what you were doing and send it, with the game log."),
+                    crate::screens::ConfirmOption::close("Not now"),
+                    crate::screens::ConfirmOption::new("Don't ask again", |ctx: &mut Ctx<G>| {
+                        ctx.settings.reports.ask_after_crash = false;
+                        ctx.save_settings();
+                    })
+                    .help("Never offers to report a crash. Settings can turn it back on."),
+                ],
+            )
+            .cancel(1),
+        );
     }
 
     /// Speak on the main channel now, cutting off what it was saying.
