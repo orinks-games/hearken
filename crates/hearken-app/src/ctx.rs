@@ -316,6 +316,10 @@ impl<G: Game> Ctx<G> {
     /// offer. Once a frame.
     #[cfg(feature = "report")]
     pub(crate) fn update_reports(&mut self, safe_to_prompt: bool) {
+        if self.reports.is_offered() {
+            let details = G::report_details(self);
+            self.reports.note_details(details);
+        }
         if !safe_to_prompt || self.has_pending() || !self.reports.offers_crash_report() {
             return;
         }

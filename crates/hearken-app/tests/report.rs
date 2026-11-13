@@ -53,6 +53,20 @@ impl Game for Reporting {
     }
 }
 
+thread_local! {
+    /// Where WebReporting says its player is, for the test to set.
+    static WHERE: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn set_where(details: &[(&str, &str)]) {
+    WHERE.with(|w| {
+        *w.borrow_mut() = details
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .collect()
+    });
+}
+
 impl Game for WebReporting {
     const TITLE: &'static str = "Reporting";
     const DATA_DIR: &'static str = "HearkenWebReportingTest";
@@ -69,6 +83,10 @@ impl Game for WebReporting {
             "1.2.0",
             "https://example.test/api/problem-reports",
         )
+    }
+
+    fn report_details(_ctx: &hearken_app::Ctx<Self>) -> Vec<(String, String)> {
+        WHERE.with(|w| w.borrow().clone())
     }
 }
 
@@ -600,4 +618,95 @@ fn a_crash_offer_opens_the_web_form_marked_as_a_crash() {
     assert_eq!(h.app.top_name(), "home");
     assert!(relay.posted.lock().unwrap()[0].1.crashed);
     assert_eq!(urls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_report_names_where_the_player_was() {
+    set_where(&[("Game", "Tightrope"), ("Mode", "challenge")]);
+    let relay = Relay::answering(201);
+    let (mut h, _urls) = web_settings(&relay, true);
+    choose_report(&mut h);
+    until_spoken(&mut h, OPENED);
+    set_where(&[]);
+    let report = &relay.reports()[0];
+    assert_eq!(
+        report
+            .details
+            .iter()
+            .map(|d| (d.name.as_str(), d.value.as_str()))
+            .collect::<Vec<_>>(),
+        [("Game", "Tightrope"), ("Mode", "challenge")]
+    );
+    assert!(!report.crashed);
+    assert_eq!(report.subject(), "[Reporting 1.2.0, Tightrope] ");
+}
+
+#[test]
+fn where_the_player_is_goes_in_the_session_marker_as_it_changes() {
+    // The marker stays locked while the game runs (Windows refuses to read
+    // it), and a clean exit clears it, so the note is read back through what
+    // the session has noted; the session's own tests prove the round trip.
+    set_where(&[("Game", "Belfry")]);
+    let mut h = Headless::<WebReporting>::new((), Home);
+    let marker = h.app.ctx.paths.data_dir.join("session.running");
+    h.app
+        .ctx
+        .reports
+        .adopt_session(Session::begin(&marker), Vec::new());
+    assert!(h.app.ctx.reports.noted_details().is_empty());
+    h.frame(0.0);
+    assert_eq!(
+        h.app.ctx.reports.noted_details(),
+        &[("Game".to_string(), "Belfry".to_string())]
+    );
+    set_where(&[("Game", "Belfry"), ("Round", "3")]);
+    h.frame(0.0);
+    assert_eq!(
+        h.app.ctx.reports.noted_details(),
+        &[
+            ("Game".to_string(), "Belfry".to_string()),
+            ("Round".to_string(), "3".to_string())
+        ]
+    );
+
+    // Leaving the game clears the note.
+    set_where(&[]);
+    h.frame(0.0);
+    assert!(h.app.ctx.reports.noted_details().is_empty());
+    drop(h);
+    let after = Session::begin(&marker);
+    assert!(!after.ended_unexpectedly());
+    after.end();
+}
+
+#[test]
+fn a_crash_report_names_where_the_last_run_was_not_where_this_one_is() {
+    let relay = Relay::answering(201);
+    let mut h = Headless::<WebReporting>::new((), Home);
+    h.app.ctx.reports.set_sender(Box::new(relay.clone()));
+    let (open, _urls) = opener(true);
+    h.app.ctx.reports.set_opener(open);
+    let marker = h.app.ctx.paths.data_dir.join("session.running");
+    // The last run was in Belfry when it died.
+    let mut last = Session::begin(&marker);
+    last.note("Game\tBelfry");
+    drop(last);
+    // This run is in the lobby.
+    set_where(&[("Screen", "lobby")]);
+    h.app
+        .ctx
+        .reports
+        .adopt_session(Session::begin(&marker), Vec::new());
+    h.frame(0.0);
+    h.frame(0.0);
+    assert_eq!(h.app.top_name(), "confirm");
+    h.press(Key::Return);
+    until_spoken(&mut h, OPENED);
+    set_where(&[]);
+    let report = &relay.reports()[0];
+    assert!(report.crashed);
+    assert_eq!(report.details.len(), 1);
+    assert_eq!(report.details[0].name, "Game");
+    assert_eq!(report.details[0].value, "Belfry");
+    assert_eq!(report.subject(), "[Reporting 1.2.0, Belfry] crash: ");
 }

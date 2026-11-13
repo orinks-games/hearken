@@ -199,8 +199,14 @@ impl<G: Game> ReportScreen<G> {
             ctx.say(DESCRIBE_FIRST);
             return None;
         }
-        ctx.reports
-            .draft(&d.description, &d.reply_to, d.include_logs, self.crashed)
+        let details = crate::reports::details_for(ctx, self.crashed);
+        ctx.reports.draft(
+            &d.description,
+            &d.reply_to,
+            d.include_logs,
+            self.crashed,
+            &details,
+        )
     }
 
     fn read_report(&mut self, ctx: &mut Ctx<G>) {

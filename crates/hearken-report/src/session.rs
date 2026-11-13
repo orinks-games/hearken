@@ -7,17 +7,20 @@ use std::path::Path;
 const RUNNING: &str = "running";
 
 /// Tells whether the game's last run ended without exiting normally, such
-/// as by crashing.
+/// as by crashing, and where it was.
 ///
 /// [`Session::begin`] marks a file as running, and [`Session::end`] clears
 /// the mark. A mark still there at the next start means the last run never
 /// got to `end`: it crashed, was killed, or the computer lost power. The
 /// file stays locked while the game runs, so a second copy that finds it
-/// locked does not mistake the first copy for a crash.
+/// locked does not mistake the first copy for a crash. [`Session::note`]
+/// keeps a line of text under the mark, such as which game was open, and
+/// the next start reads it back as [`Session::last_note`].
 #[derive(Debug)]
 pub struct Session {
     file: Option<File>,
     ended_unexpectedly: bool,
+    last_note: Option<String>,
 }
 
 impl Session {
@@ -31,6 +34,7 @@ impl Session {
         let unknown = Session {
             file: None,
             ended_unexpectedly: false,
+            last_note: None,
         };
         if let Some(dir) = path.parent() {
             let _ = fs::create_dir_all(dir);
@@ -59,21 +63,38 @@ impl Session {
             }
         }
         let mut contents = String::new();
-        let ended_unexpectedly =
-            file.read_to_string(&mut contents).is_ok() && contents.trim() == RUNNING;
-        let marked = file.set_len(0).is_ok()
-            && file.seek(SeekFrom::Start(0)).is_ok()
-            && file.write_all(RUNNING.as_bytes()).is_ok()
-            && file.sync_all().is_ok();
+        let _ = file.read_to_string(&mut contents);
+        let (mark, note) = contents.split_once('\n').unwrap_or((&contents, ""));
+        let ended_unexpectedly = mark.trim() == RUNNING;
+        let last_note =
+            (ended_unexpectedly && !note.trim().is_empty()).then(|| note.trim().to_string());
+        let marked = write_mark(&mut file, "");
         Session {
             file: marked.then_some(file),
             ended_unexpectedly,
+            last_note,
         }
     }
 
     /// Whether the last run ended without calling [`Session::end`].
     pub fn ended_unexpectedly(&self) -> bool {
         self.ended_unexpectedly
+    }
+
+    /// The last run's note, when it ended unexpectedly and had left one.
+    pub fn last_note(&self) -> Option<&str> {
+        self.last_note.as_deref()
+    }
+
+    /// Keeps `text` under the running mark for the next start to read if
+    /// this run never ends: where the player is, in a few lines. Replaces
+    /// the last note; call it when that changes, not every frame.
+    pub fn note(&mut self, text: &str) {
+        if let Some(file) = self.file.as_mut() {
+            if !write_mark(file, text.trim()) {
+                log::warn!("could not note where the game is in the session marker");
+            }
+        }
     }
 
     /// Records that this run exited normally. Call it as the game exits; a
@@ -87,9 +108,44 @@ impl Session {
     }
 }
 
+/// Writes the running mark, then `note` on the lines after it.
+fn write_mark(file: &mut File, note: &str) -> bool {
+    let mut text = RUNNING.to_string();
+    if !note.is_empty() {
+        text.push('\n');
+        text.push_str(note);
+    }
+    file.set_len(0).is_ok()
+        && file.seek(SeekFrom::Start(0)).is_ok()
+        && file.write_all(text.as_bytes()).is_ok()
+        && file.sync_all().is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_note_comes_back_after_a_crash_and_not_after_a_clean_exit() {
+        let (_dir, path) = marker();
+        let mut first = Session::begin(&path);
+        assert_eq!(first.last_note(), None);
+        first.note("Game\tTightrope");
+        first.note("Game\tBelfry\nMode\tchallenge");
+        drop(first);
+        let next = Session::begin(&path);
+        assert!(next.ended_unexpectedly());
+        assert_eq!(next.last_note(), Some("Game\tBelfry\nMode\tchallenge"));
+        // The note is gone with the mark once this run is noticed.
+        drop(next);
+        let again = Session::begin(&path);
+        assert!(again.ended_unexpectedly());
+        assert_eq!(again.last_note(), None);
+        again.end();
+        let clean = Session::begin(&path);
+        assert!(!clean.ended_unexpectedly());
+        assert_eq!(clean.last_note(), None);
+    }
 
     fn marker() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();

@@ -25,7 +25,8 @@ mod send;
 mod session;
 
 pub use report::{
-    tail, Attachment, Invalid, Report, MAX_ATTACHMENTS, MAX_DESCRIPTION_CHARS, MAX_LOG_BYTES,
+    tail, Attachment, Detail, Invalid, Report, MAX_ATTACHMENTS, MAX_DESCRIPTION_CHARS, MAX_DETAILS,
+    MAX_LOG_BYTES,
 };
 #[cfg(feature = "http")]
 pub use send::HttpSender;

@@ -48,6 +48,24 @@ as they are, and a relay written for Hearken takes mailbag's.
      instead of on the relay's web page, for a relay with no web form
      (such as `mailbag-server`). See Writing the report on the web.
 
+   To say where the player was, give `Game::report_details`:
+
+   ```rust
+   fn report_details(ctx: &Ctx<Self>) -> Vec<(String, String)> {
+       match ctx.game.open {
+           Some(game) => vec![("Game".into(), game.name.into())],
+           None => Vec::new(),
+       }
+   }
+   ```
+
+   Each pair is one line in the report (`Game: Tightrope`), and the first
+   is the headline: it goes in the email subject, `[Wicket's 1.6.0,
+   Tightrope] The rope swayed`. The engine reads it as a report starts,
+   and keeps it in the crash marker whenever it changes, so a report of a
+   crash says where the last run was, not where this one is. Up to eight
+   pairs; a name up to 40 characters, a value up to 200, on one line.
+
 3. Run a relay, or point the game at one that already takes its reports
    (see Running a relay).
 
@@ -90,10 +108,11 @@ as they are, and a relay written for Hearken takes mailbag's.
   report as `problem-report.txt` in the data folder and says where, so it
   can be sent another way.
 
-A game puts the report wherever it likes with
-`ctx.push(hearken::screens::ReportLinkScreen::new())` (the web page) or
-`ctx.push(hearken::screens::ReportScreen::new())` (the game's screen);
-`ctx.reports.uses_web_form()` says which the game is set up for. Mark the
+A game puts the report wherever it likes, such as on a pause menu, with
+`hearken::reports::open_report_screen(ctx)`, which opens the web page or
+the game's screen as the game is set up for (`ctx.reports.uses_web_form()`
+says which; the screens are `hearken::screens::ReportLinkScreen` and
+`ReportScreen`). Mark the
 home or title screen with `allows_update_prompt() -> true` so the offer
 after a crash can appear there; it waits while any other screen is open.
 Tests (`Headless`) and agent sessions never send a report or open a
@@ -113,6 +132,7 @@ application/json` and `Content-Encoding: gzip`:
 | `description` | What the player wrote, up to 20,000 characters. |
 | `reply_to` | The player's email address, if given. |
 | `crashed` | Whether the report follows a crash. |
+| `details` | Up to eight `{ name, value }` pairs saying where the player was, such as `{ "name": "Game", "value": "Tightrope" }`; the first is the headline. A name is up to 40 characters, a value up to 200. Optional. |
 | `attachments` | Up to four `{ name, text }` text files. A name is letters, digits, `.`, `-` and `_`; a text is at most 1 MB. A longer log keeps its end. |
 
 The relay answers `202` when the email went out, `400` for a malformed

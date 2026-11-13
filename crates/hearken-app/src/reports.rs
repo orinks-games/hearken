@@ -9,6 +9,11 @@
 //! offer (see [`crate::State::allows_update_prompt`]). Everything that is
 //! not a screen is in `hearken-report`.
 //!
+//! A report also says where the player was, as the game tells it in
+//! [`Game::report_details`]: read live for a report the player starts, and
+//! kept in the crash marker as it changes, so a report of a crash names
+//! where the last run was.
+//!
 //! An agent session never sends a report: its sandbox is not a player's
 //! game.
 
@@ -20,6 +25,8 @@ use std::sync::Arc;
 
 pub use hearken_report::{Invalid, Opened, Report, SendError, Sender, Session};
 
+use crate::ctx::Ctx;
+use crate::game::Game;
 use crate::paths::Paths;
 
 /// The file the report is saved to when it cannot be sent, in the data
@@ -104,6 +111,10 @@ pub struct Reports {
     offer_pending: bool,
     /// The session log and the one before it, attached when they exist.
     logs: Vec<PathBuf>,
+    /// Where the last run was when it ended unexpectedly, from its note.
+    crash_details: Vec<(String, String)>,
+    /// Where this run is, as last noted in the session marker.
+    noted: Vec<(String, String)>,
     sender: Arc<dyn Sender>,
     /// Opens the web form in the browser; `None` in tests and agent runs.
     opener: Option<Opener>,
@@ -118,6 +129,8 @@ impl Reports {
             crashed_last_run: false,
             offer_pending: false,
             logs: Vec::new(),
+            crash_details: Vec::new(),
+            noted: Vec::new(),
             sender: Arc::new(hearken_report::HttpSender::new()),
             opener: None,
         }
@@ -158,8 +171,32 @@ impl Reports {
         if self.crashed_last_run {
             log::warn!("the last run did not exit cleanly");
         }
+        self.crash_details = session.last_note().map(parse_note).unwrap_or_default();
         self.session = Some(session);
         self.logs = logs;
+    }
+
+    /// Where the last run was when it ended unexpectedly, as it last noted;
+    /// empty when it did not crash or had noted nothing.
+    pub fn crash_details(&self) -> &[(String, String)] {
+        &self.crash_details
+    }
+
+    /// Where this run is, as last noted in the session marker.
+    pub fn noted_details(&self) -> &[(String, String)] {
+        &self.noted
+    }
+
+    /// Notes where this run is in the session marker, for a report of a
+    /// crash at the next start. Writes only when `details` changed.
+    pub fn note_details(&mut self, details: Vec<(String, String)>) {
+        if details == self.noted {
+            return;
+        }
+        if let Some(session) = self.session.as_mut() {
+            session.note(&note_text(&details));
+        }
+        self.noted = details;
     }
 
     /// Records a clean exit. Called once as the game closes.
@@ -200,18 +237,21 @@ impl Reports {
     }
 
     /// The report the player's answers make, with the logs attached when
-    /// asked. `None` when the game takes no reports.
+    /// asked and `details` of where the player was (see [`details_for`]).
+    /// `None` when the game takes no reports.
     pub fn draft(
         &self,
         description: &str,
         reply_to: &str,
         include_logs: bool,
         crashed: bool,
+        details: &[(String, String)],
     ) -> Option<Report> {
         let config = self.config.as_ref()?;
         let mut report = Report::new(&config.name, &config.version, description.trim())
             .with_reply_to(reply_to)
-            .crashed(crashed);
+            .crashed(crashed)
+            .with_details(details.iter().cloned());
         if let Some(commit) = &config.commit {
             report = report.with_commit(commit);
         }
@@ -298,6 +338,50 @@ impl Reports {
     }
 }
 
+/// Where the player is, for a report: for a report of a crash, where the
+/// last run was when it ended; otherwise where the game says it is now.
+pub fn details_for<G: Game>(ctx: &Ctx<G>, crashed: bool) -> Vec<(String, String)> {
+    if crashed {
+        ctx.reports.crash_details().to_vec()
+    } else {
+        G::report_details(ctx)
+    }
+}
+
+/// Opens Report a problem the way the game is set up for: the relay's web
+/// page, or the game's own screen. For a Settings row or a pause menu.
+pub fn open_report_screen<G: Game>(ctx: &mut Ctx<G>) {
+    if ctx.reports.uses_web_form() {
+        ctx.push(crate::screens::ReportLinkScreen::<G>::new());
+    } else {
+        ctx.push(crate::screens::ReportScreen::<G>::new());
+    }
+}
+
+/// The session marker's note: one detail a line, name and value parted by
+/// a tab.
+fn note_text(details: &[(String, String)]) -> String {
+    details
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "{}\t{}",
+                name.replace(['\t', '\n', '\r'], " "),
+                value.replace(['\t', '\n', '\r'], " ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn parse_note(note: &str) -> Vec<(String, String)> {
+    note.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+        .filter(|(name, value)| !name.is_empty() && !value.is_empty())
+        .collect()
+}
+
 /// A report on its way to the relay.
 pub struct Sending {
     rx: Receiver<Result<(), SendError>>,
@@ -362,16 +446,19 @@ mod tests {
             vec![log, dir.path().join("session.log.prev")],
         );
         assert!(reports.has_logs());
+        let details = [("Game".to_string(), "Belfry".to_string())];
         let report = reports
-            .draft("It broke.", " me@example.com ", true, false)
+            .draft("It broke.", " me@example.com ", true, false, &details)
             .unwrap();
+        assert_eq!(report.headline(), Some("Belfry"));
         assert_eq!(report.app, "My Game");
         assert_eq!(report.version, "1.2.0");
         assert_eq!(report.commit.as_deref(), Some("abc"));
         assert_eq!(report.reply_to.as_deref(), Some("me@example.com"));
         assert_eq!(report.attachments.len(), 1);
         assert_eq!(report.attachments[0].name, "session.log");
-        let without = reports.draft("It broke.", "", false, true).unwrap();
+        let without = reports.draft("It broke.", "", false, true, &[]).unwrap();
+        assert!(without.details.is_empty());
         assert!(without.attachments.is_empty());
         assert!(without.crashed);
         reports.end_session();
