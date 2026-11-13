@@ -182,6 +182,11 @@ impl Reports {
         &self.crash_details
     }
 
+    /// Where this run is, as last noted in the session marker.
+    pub fn noted_details(&self) -> &[(String, String)] {
+        &self.noted
+    }
+
     /// Notes where this run is in the session marker, for a report of a
     /// crash at the next start. Writes only when `details` changed.
     pub fn note_details(&mut self, details: Vec<(String, String)>) {

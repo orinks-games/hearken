@@ -643,6 +643,9 @@ fn a_report_names_where_the_player_was() {
 
 #[test]
 fn where_the_player_is_goes_in_the_session_marker_as_it_changes() {
+    // The marker stays locked while the game runs (Windows refuses to read
+    // it), and a clean exit clears it, so the note is read back through what
+    // the session has noted; the session's own tests prove the round trip.
     set_where(&[("Game", "Belfry")]);
     let mut h = Headless::<WebReporting>::new((), Home);
     let marker = h.app.ctx.paths.data_dir.join("session.running");
@@ -650,20 +653,30 @@ fn where_the_player_is_goes_in_the_session_marker_as_it_changes() {
         .ctx
         .reports
         .adopt_session(Session::begin(&marker), Vec::new());
+    assert!(h.app.ctx.reports.noted_details().is_empty());
     h.frame(0.0);
     assert_eq!(
-        std::fs::read_to_string(&marker).unwrap(),
-        "running\nGame\tBelfry"
+        h.app.ctx.reports.noted_details(),
+        &[("Game".to_string(), "Belfry".to_string())]
     );
     set_where(&[("Game", "Belfry"), ("Round", "3")]);
     h.frame(0.0);
     assert_eq!(
-        std::fs::read_to_string(&marker).unwrap(),
-        "running\nGame\tBelfry\nRound\t3"
+        h.app.ctx.reports.noted_details(),
+        &[
+            ("Game".to_string(), "Belfry".to_string()),
+            ("Round".to_string(), "3".to_string())
+        ]
     );
+
+    // Leaving the game clears the note.
     set_where(&[]);
     h.frame(0.0);
-    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "running");
+    assert!(h.app.ctx.reports.noted_details().is_empty());
+    drop(h);
+    let after = Session::begin(&marker);
+    assert!(!after.ended_unexpectedly());
+    after.end();
 }
 
 #[test]
