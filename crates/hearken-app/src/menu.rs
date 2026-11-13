@@ -264,6 +264,11 @@ pub trait Menu: Sized + 'static {
         None
     }
 
+    /// See [`State::phase`]: `None` for a plain menu.
+    fn phase(&self) -> Option<&'static str> {
+        None
+    }
+
     /// F1: the focused row's help, or the menu's own help when the row has
     /// none.
     fn help(&self, ctx: &Ctx<Self::Game>) -> String {
@@ -533,5 +538,8 @@ impl<M: Menu> State<M::Game> for M {
     }
     fn presence(&self, ctx: &Ctx<M::Game>) -> Option<crate::discord::Presence> {
         Menu::presence(self, ctx)
+    }
+    fn phase(&self) -> Option<&'static str> {
+        Menu::phase(self)
     }
 }

@@ -124,6 +124,8 @@ pub struct CaptureSpeech {
     shutdown_calls: u32,
     /// What `event_voice_report` answers; `None` until a test scripts it.
     voice_speaking: Option<bool>,
+    /// How old each scripted report claims to be.
+    voice_report_age: std::time::Duration,
     voice_reports: u32,
 }
 
@@ -163,6 +165,7 @@ impl CaptureSpeech {
             refresh_requests: 0,
             shutdown_calls: 0,
             voice_speaking: None,
+            voice_report_age: std::time::Duration::ZERO,
             voice_reports: 0,
         }
     }
@@ -171,6 +174,12 @@ impl CaptureSpeech {
     /// answer like a voice that can say whether it is talking.
     pub fn set_voice_speaking(&mut self, speaking: Option<bool>) {
         self.voice_speaking = speaking;
+    }
+
+    /// Make every scripted report this old, as a worker-backed sink's
+    /// reports are by the time the game reads them.
+    pub fn set_voice_report_age(&mut self, age: std::time::Duration) {
+        self.voice_report_age = age;
     }
 
     /// How many times the event voice was asked whether it is speaking.
@@ -369,7 +378,7 @@ impl SpeechSink for CaptureSpeech {
         self.voice_reports += 1;
         self.voice_speaking.map(|speaking| super::VoiceReport {
             speaking,
-            age: std::time::Duration::ZERO,
+            age: self.voice_report_age,
         })
     }
     fn main_voice_report(&mut self) -> Option<super::VoiceReport> {

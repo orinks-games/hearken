@@ -61,6 +61,10 @@ pub struct Ctx<G: Game> {
     /// found, and the way to check and install.
     #[cfg(feature = "update")]
     pub updates: crate::updates::Updates,
+    /// Problem reports (see [`crate::reports`]): the relay they go to, the
+    /// logs they carry, and whether the last run crashed.
+    #[cfg(feature = "report")]
+    pub reports: crate::reports::Reports,
     /// The game's Discord status (see [`crate::discord`]). Dormant unless
     /// the game offers it and `run` started it.
     pub discord: crate::discord::Discord,
@@ -154,6 +158,8 @@ impl<G: Game> Ctx<G> {
             room_notices: Vec::new(),
             #[cfg(feature = "update")]
             updates: crate::updates::Updates::new(G::updates()),
+            #[cfg(feature = "report")]
+            reports: crate::reports::Reports::new(G::reports()),
             speech,
             translator: Arc::new(Translator::english()),
             discord: crate::discord::Discord::dormant(),
@@ -309,6 +315,48 @@ impl<G: Game> Ctx<G> {
         }
     }
 
+    /// Offers to report a crash, once, on the first screen that allows an
+    /// offer. Once a frame.
+    #[cfg(feature = "report")]
+    pub(crate) fn update_reports(&mut self, safe_to_prompt: bool) {
+        if self.reports.is_offered() {
+            let details = G::report_details(self);
+            self.reports.note_details(details);
+        }
+        if !safe_to_prompt || self.has_pending() || !self.reports.offers_crash_report() {
+            return;
+        }
+        if !self.reports.take_crash_offer() {
+            return;
+        }
+        if !self.settings.reports.ask_after_crash {
+            return;
+        }
+        let name = self.reports.name().to_string();
+        self.push(
+            crate::screens::ConfirmScreen::with_options(
+                format!("{name} closed unexpectedly the last time it ran. Report the problem?"),
+                vec![
+                    crate::screens::ConfirmOption::new("Yes", |ctx: &mut Ctx<G>| {
+                        if ctx.reports.uses_web_form() {
+                            ctx.replace(crate::screens::ReportLinkScreen::<G>::after_crash());
+                        } else {
+                            ctx.replace(crate::screens::ReportScreen::<G>::after_crash());
+                        }
+                    })
+                    .help("Describe what you were doing and send it, with the game log."),
+                    crate::screens::ConfirmOption::close("Not now"),
+                    crate::screens::ConfirmOption::new("Don't ask again", |ctx: &mut Ctx<G>| {
+                        ctx.settings.reports.ask_after_crash = false;
+                        ctx.save_settings();
+                    })
+                    .help("Never offers to report a crash. Settings can turn it back on."),
+                ],
+            )
+            .cancel(1),
+        );
+    }
+
     /// Speak on the main channel now, cutting off what it was saying.
     pub fn say(&mut self, text: impl Into<String>) {
         self.speak(text.into(), true);
@@ -330,6 +378,7 @@ impl<G: Game> Ctx<G> {
         if !self.speech.say_adjustment_preview(setting, &text, true) {
             self.speech.say(&text, true);
         }
+        self.delivery.project_main(&text, true);
         self.record(text);
     }
 
@@ -351,7 +400,9 @@ impl<G: Game> Ctx<G> {
         if text.trim().is_empty() {
             return;
         }
-        self.speech.say(&text, interrupt && !self.hold_interrupt);
+        let interrupt = interrupt && !self.hold_interrupt;
+        self.speech.say(&text, interrupt);
+        self.delivery.project_main(&text, interrupt);
         self.record(text);
     }
 
@@ -463,6 +514,8 @@ impl<G: Game> Ctx<G> {
     /// the pacer was projecting.
     pub fn stop_speech(&mut self) {
         self.speech.stop();
+        self.delivery.main.clear();
+        self.delivery.event_speaking_at = None;
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             pacer.reset();
         }
