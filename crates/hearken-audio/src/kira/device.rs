@@ -10,9 +10,25 @@
 //! way, but a device that fails to open is retried on the next check, and
 //! nothing on the watcher thread panics.
 //!
+//! A stream can also end without saying the device is gone, so the watcher
+//! judges it dead in three ways, and closes and reopens it on each:
+//!
+//! - it reports that the device was lost or the stream is no longer valid;
+//! - it reports any other error (other than an underrun or a reroute) and
+//!   then stops asking for sound for 0.5 s, which is how a Windows stream
+//!   ends on an error;
+//! - it stops asking for sound for 2 s with no error at all, as a Bluetooth
+//!   link that is neither up nor down does. A stream that stays silent after
+//!   a reopen is given 4, 8, then 16 s before the next one, whichever way
+//!   the first was judged.
+//!
+//! The rules live in [`health`]; the stream's callback only counts itself.
+//!
 //! The stream handling follows Kira 0.12's `CpalBackend` (MIT or Apache-2.0).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+mod health;
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,12 +37,18 @@ use cpal::{Device, Stream, StreamConfig};
 use kira::backend::{Backend, Renderer};
 use rtrb::{Consumer, Producer, RingBuffer};
 
+use health::{Event, Health, Verdict, Why};
+
 /// How often the watcher checks the stream and the default device.
 const CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 /// How long the watcher waits for a dropped stream to hand the renderer
-/// back before it gives up on sound for the session.
+/// back before it stops waiting and looks again on each check.
 const RENDERER_RETURN_WAIT: Duration = Duration::from_millis(500);
+
+/// Stream errors held for the watcher, and the most it reads per check: a
+/// stream that reports errors in a loop must not hold the watcher.
+const ERROR_RING: usize = 64;
 
 /// The default output device, re-opened whenever it changes or fails.
 pub struct DeviceBackend {
@@ -102,6 +124,7 @@ impl Backend for DeviceBackend {
             device_id: device_id(&device),
             sample_rate: config.sample_rate,
             failed_opens: 0,
+            health: Health::default(),
         };
         // The first open reports its error to the caller, as Kira's does, so
         // a machine with no working device starts silent with the notice.
@@ -133,9 +156,14 @@ enum Output {
         stream: Stream,
         renderer_back: Consumer<Renderer>,
         errors: Consumer<cpal::Error>,
+        /// Callbacks so far; the stream's callback adds one each time.
+        beats: Arc<AtomicU64>,
     },
-    /// The renderer was lost with a stream; sound is off for the session.
-    Lost,
+    /// A dropped stream has not handed the renderer back yet; each check
+    /// looks for it.
+    Returning(Consumer<Renderer>),
+    /// Only while `open` or `close` moves the renderer; never left here.
+    Moving,
 }
 
 struct Watcher {
@@ -145,6 +173,8 @@ struct Watcher {
     /// Opens failed in a row, so a missing device is logged once, not twice
     /// a second.
     failed_opens: u32,
+    /// Whether the running stream still plays.
+    health: Health,
 }
 
 impl Watcher {
@@ -161,25 +191,35 @@ impl Watcher {
     }
 
     fn check(&mut self) {
-        if let Output::Running { errors, .. } = &mut self.output {
-            let mut lost = false;
-            while let Ok(error) = errors.pop() {
-                match error.kind() {
-                    cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated => {
-                        log::warn!("audio: the sound device went away ({error})");
-                        lost = true;
-                    }
-                    _ => log::debug!("audio: stream error ({error})"),
-                }
+        if let Output::Returning(renderer_back) = &mut self.output {
+            let Ok(renderer) = renderer_back.pop() else {
+                return;
+            };
+            log::info!("audio: the sound device handed the mixer back");
+            self.output = Output::Idle(renderer);
+        }
+        if let Output::Running { errors, beats, .. } = &mut self.output {
+            let health = &mut self.health;
+            // The callbacks first, then the errors: a suspect error is judged
+            // by the next interval, not cleared by callbacks that ran before
+            // it.
+            let beats = beats.load(Ordering::Relaxed);
+            let mut reopen = judge(health, Event::Check { beats }, None);
+            for _ in 0..ERROR_RING {
+                let Ok(error) = errors.pop() else {
+                    break;
+                };
+                let why = judge(health, Event::Error(error.kind()), Some(&error));
+                reopen = reopen.or(why);
             }
-            if lost {
+            if reopen.is_some() {
                 self.close();
             }
         }
         match &self.output {
             Output::Idle(_) => self.reopen(),
             Output::Running { .. } => self.follow_default(),
-            Output::Lost => {}
+            Output::Returning(_) | Output::Moving => {}
         }
     }
 
@@ -229,9 +269,14 @@ impl Watcher {
     /// Starts a stream on `device`. Only from `Idle`; on failure the
     /// renderer stays idle for the next try.
     fn open(&mut self, device: &Device, config: StreamConfig) -> Result<(), DeviceError> {
-        let Output::Idle(mut renderer) = std::mem::replace(&mut self.output, Output::Lost) else {
-            // Already running or lost: nothing to start.
-            return Ok(());
+        let mut renderer = match std::mem::replace(&mut self.output, Output::Moving) {
+            Output::Idle(renderer) => renderer,
+            other => {
+                // Already running or waiting for the renderer: nothing to
+                // start.
+                self.output = other;
+                return Ok(());
+            }
         };
         if config.sample_rate != self.sample_rate {
             renderer.on_change_sample_rate(config.sample_rate);
@@ -239,13 +284,16 @@ impl Watcher {
         }
         self.device_id = device_id(device);
         let (renderer, renderer_back) = ReturnOnDrop::new(renderer);
-        let (mut error_tx, errors) = RingBuffer::new(64);
+        let (mut error_tx, errors) = RingBuffer::new(ERROR_RING);
+        let beats = Arc::new(AtomicU64::new(0));
         let channels = config.channels;
         let built = device.build_output_stream(
             config,
             {
                 let mut renderer = renderer;
+                let beats = Arc::clone(&beats);
                 move |data: &mut [f32], _| {
+                    beats.fetch_add(1, Ordering::Relaxed);
                     if let Some(r) = renderer.get() {
                         r.on_start_processing();
                         r.process(data, channels);
@@ -268,11 +316,17 @@ impl Watcher {
             .and_then(|stream| stream.play().map(|()| stream).map_err(DeviceError::from));
         match result {
             Ok(stream) => {
-                log::info!("audio: sound device open ({} Hz)", self.sample_rate);
+                // A reopen for silence logs when sound comes back instead,
+                // not on every attempt.
+                if self.health.stalls() == 0 {
+                    log::info!("audio: sound device open ({} Hz)", self.sample_rate);
+                }
+                self.health.next(Event::Opened);
                 self.output = Output::Running {
                     stream,
                     renderer_back,
                     errors,
+                    beats,
                 };
                 Ok(())
             }
@@ -285,21 +339,55 @@ impl Watcher {
 
     /// Drops the stream and takes the renderer back.
     fn close(&mut self) {
-        if let Output::Running {
-            stream,
-            renderer_back,
-            ..
-        } = std::mem::replace(&mut self.output, Output::Lost)
-        {
-            drop(stream);
-            self.output = take_renderer(renderer_back);
+        self.output = match std::mem::replace(&mut self.output, Output::Moving) {
+            Output::Running {
+                stream,
+                renderer_back,
+                ..
+            } => {
+                drop(stream);
+                take_renderer(renderer_back)
+            }
+            other => other,
+        };
+    }
+}
+
+/// Feeds one event to the stream's health and logs what it decided.
+/// Returns why the stream should be reopened, if it should.
+fn judge(health: &mut Health, event: Event, error: Option<&cpal::Error>) -> Option<Why> {
+    let error = error.map(ToString::to_string).unwrap_or_default();
+    match health.next(event) {
+        Verdict::Keep => {
+            if matches!(event, Event::Error(_)) {
+                log::debug!("audio: stream error ({error})");
+            }
+            None
+        }
+        Verdict::Suspect => {
+            log::warn!("audio: the sound device reported an error ({error})");
+            None
+        }
+        Verdict::Resumed => {
+            log::info!("audio: sound is playing again");
+            None
+        }
+        Verdict::Reopen(Why::Lost) => {
+            log::warn!("audio: the sound device went away ({error})");
+            Some(Why::Lost)
+        }
+        Verdict::Reopen(Why::Stalled) => {
+            if health.stalls() == 1 {
+                log::warn!("audio: the sound device stopped taking sound; reopening it");
+            }
+            Some(Why::Stalled)
         }
     }
 }
 
 /// Waits a bounded time for a dropped stream's callback to return the
 /// renderer. cpal drops the callback with the stream, so this is normally
-/// immediate.
+/// immediate; if not, each later check looks again.
 fn take_renderer(mut renderer_back: Consumer<Renderer>) -> Output {
     let deadline = std::time::Instant::now() + RENDERER_RETURN_WAIT;
     loop {
@@ -307,8 +395,10 @@ fn take_renderer(mut renderer_back: Consumer<Renderer>) -> Output {
             return Output::Idle(renderer);
         }
         if std::time::Instant::now() >= deadline {
-            log::error!("audio: the sound device kept the mixer; sound is off until restart");
-            return Output::Lost;
+            log::error!(
+                "audio: the sound device kept the mixer; sound is off until it hands it back"
+            );
+            return Output::Returning(renderer_back);
         }
         std::thread::sleep(Duration::from_millis(5));
     }

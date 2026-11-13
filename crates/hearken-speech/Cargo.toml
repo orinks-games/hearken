@@ -31,3 +31,7 @@ objc2.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[[example]]
+name = "builtin_voice_watch"
+required-features = ["genny-voice"]

@@ -13,6 +13,14 @@
 //! the output stream, so a long help page starts speaking after its first
 //! sentence. An interrupting line bumps a generation counter: the renderer
 //! drops anything older and the queue is cleared at once.
+//!
+//! When the sound device goes away, fails or stops asking for sound, the
+//! voice opens the default device again, whatever rate it runs at, and
+//! renders from then on at that rate; what was queued for the old device is
+//! dropped. Until a device opens the voice reports itself unusable, so
+//! speech can move to another voice. See [`output`].
+
+mod output;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -61,9 +69,43 @@ struct Shared {
     /// f32 bits of the volume, 0..1.
     volume: AtomicU32,
     voicing: Mutex<Voicing>,
+    /// The output stream's sample rate in whole Hz. The renderer renders
+    /// each sentence at it, and changes it only under the queue's lock.
+    rate: AtomicU32,
     /// The output stream is open and healthy.
     output_ok: AtomicBool,
     quit: AtomicBool,
+}
+
+impl Shared {
+    fn new(rate: u32, output_ok: bool) -> Shared {
+        Shared {
+            queue: Mutex::new(VecDeque::new()),
+            generation: AtomicU64::new(0),
+            pending: AtomicUsize::new(0),
+            volume: AtomicU32::new(1.0f32.to_bits()),
+            voicing: Mutex::new(Voicing {
+                voice: 0,
+                rate: 0.5,
+                pitch: 0.5,
+            }),
+            rate: AtomicU32::new(rate),
+            output_ok: AtomicBool::new(output_ok),
+            quit: AtomicBool::new(false),
+        }
+    }
+
+    /// The output now plays at `hz`. On a change, what was queued for the
+    /// old rate is dropped; the renderer sees the new rate before it queues
+    /// anything more, since both happen under the queue's lock.
+    fn follow_rate(&self, hz: u32) {
+        let queue = self.queue.lock();
+        if self.rate.swap(hz, Ordering::AcqRel) != hz {
+            if let Ok(mut queue) = queue {
+                queue.clear();
+            }
+        }
+    }
 }
 
 struct Job {
@@ -82,26 +124,14 @@ impl BuiltinEngine {
     /// Open the default sound device and start the renderer. A machine with
     /// no sound device yields an engine whose voice is never usable.
     pub fn start() -> Arc<BuiltinEngine> {
-        let shared = Arc::new(Shared {
-            queue: Mutex::new(VecDeque::new()),
-            generation: AtomicU64::new(0),
-            pending: AtomicUsize::new(0),
-            volume: AtomicU32::new(1.0f32.to_bits()),
-            voicing: Mutex::new(Voicing {
-                voice: 0,
-                rate: 0.5,
-                pitch: 0.5,
-            }),
-            output_ok: AtomicBool::new(false),
-            quit: AtomicBool::new(false),
-        });
-        let sample_rate = output::open(Arc::clone(&shared));
+        let shared = Arc::new(Shared::new(0, false));
+        let opened = output::open(Arc::clone(&shared));
         let (jobs, rx) = mpsc::channel::<Job>();
-        if let Some(sr) = sample_rate {
+        if opened {
             let worker = Arc::clone(&shared);
             let spawned = std::thread::Builder::new()
                 .name("builtin-voice".into())
-                .spawn(move || render_loop(&worker, &rx, sr));
+                .spawn(move || render_loop(&worker, &rx));
             if let Err(err) = spawned {
                 log::warn!("Built-in voice: no renderer thread: {err}");
                 shared.output_ok.store(false, Ordering::Release);
@@ -113,23 +143,18 @@ impl BuiltinEngine {
     /// An engine with no sound device that still renders, its samples
     /// left in the queue: for tests, and for checking a line's length.
     pub fn offline() -> Arc<BuiltinEngine> {
-        let shared = Arc::new(Shared {
-            queue: Mutex::new(VecDeque::new()),
-            generation: AtomicU64::new(0),
-            pending: AtomicUsize::new(0),
-            volume: AtomicU32::new(1.0f32.to_bits()),
-            voicing: Mutex::new(Voicing {
-                voice: 0,
-                rate: 0.5,
-                pitch: 0.5,
-            }),
-            output_ok: AtomicBool::new(true),
-            quit: AtomicBool::new(false),
-        });
+        let shared = Arc::new(Shared::new(16_000, true));
         let (jobs, rx) = mpsc::channel::<Job>();
         let worker = Arc::clone(&shared);
-        std::thread::spawn(move || render_loop(&worker, &rx, 16_000.0));
+        std::thread::spawn(move || render_loop(&worker, &rx));
         Arc::new(BuiltinEngine { shared, jobs })
+    }
+
+    /// What the output thread does when it opens a device at `hz`: tests
+    /// call it to stand in for a device at another rate.
+    #[doc(hidden)]
+    pub fn follow_rate(&self, hz: u32) {
+        self.shared.follow_rate(hz);
     }
 
     /// Samples rendered and not yet played.
@@ -193,7 +218,16 @@ impl Drop for BuiltinEngine {
     }
 }
 
-fn render_loop(shared: &Shared, rx: &mpsc::Receiver<Job>, sr: f64) {
+/// How far a sentence got into the queue.
+enum Queued {
+    All,
+    /// An interrupting line came first.
+    Cut,
+    /// The output's rate changed; render it again at the new one.
+    Stale,
+}
+
+fn render_loop(shared: &Shared, rx: &mpsc::Receiver<Job>) {
     let voices: Vec<hearken_genny::Voice> = hearken_genny::VOICE_NAMES
         .iter()
         .filter_map(|name| hearken_genny::voice(name))
@@ -202,33 +236,16 @@ fn render_loop(shared: &Shared, rx: &mpsc::Receiver<Job>, sr: f64) {
         if shared.quit.load(Ordering::Acquire) {
             return;
         }
-        for sentence in hearken_genny::sentences(&job.text) {
-            if shared.generation.load(Ordering::Acquire) != job.generation {
-                break;
-            }
-            let (mut voice, rate) = {
-                let v = shared.voicing.lock().expect("built-in voice settings lock");
-                let voice = voices
-                    .get(v.voice)
-                    .cloned()
-                    .unwrap_or_else(|| voices[0].clone());
-                (voice, (v.pitch, v.rate))
-            };
-            voice.pitch *= pitch_factor(rate.0);
-            let multiplier = rate_multiplier(rate.1);
-            let mut samples = hearken_genny::speak(sentence, &voice, sr, multiplier);
-            if samples.is_empty() {
-                continue;
-            }
-            // The pause genny leaves between sentences of one line.
-            let gap = (0.2 / multiplier * sr) as usize;
-            samples.extend(std::iter::repeat_n(0.0, gap));
-            for chunk in samples.chunks(4096) {
+        'sentences: for sentence in hearken_genny::sentences(&job.text) {
+            loop {
                 if shared.generation.load(Ordering::Acquire) != job.generation {
-                    break;
+                    break 'sentences;
                 }
-                if let Ok(mut queue) = shared.queue.lock() {
-                    queue.extend(chunk);
+                let hz = shared.rate.load(Ordering::Acquire);
+                match render(shared, &voices, sentence, &job, hz) {
+                    Queued::All => continue 'sentences,
+                    Queued::Cut => break 'sentences,
+                    Queued::Stale => {}
                 }
             }
         }
@@ -236,107 +253,47 @@ fn render_loop(shared: &Shared, rx: &mpsc::Receiver<Job>, sr: f64) {
     }
 }
 
-/// The output stream, on a thread of its own that holds it (a cpal stream
-/// may not move between threads on every platform). Passing stream errors
-/// are logged and ignored, as the game's own audio does; a lost device is
-/// reopened every second until one answers.
-mod output {
-    use super::*;
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-
-    /// Open the default output; the device's sample rate, or `None`.
-    pub(super) fn open(shared: Arc<Shared>) -> Option<f64> {
-        let (tx, rx) = mpsc::channel::<Option<f64>>();
-        let spawned = std::thread::Builder::new()
-            .name("builtin-voice-output".into())
-            .spawn(move || {
-                let lost = Arc::new(AtomicBool::new(false));
-                let Some((mut stream, rate)) = build(&shared, &lost) else {
-                    let _ = tx.send(None);
-                    return;
-                };
-                let _ = tx.send(Some(rate));
-                while !shared.quit.load(Ordering::Acquire) {
-                    std::thread::park_timeout(Duration::from_millis(250));
-                    if !lost.swap(false, Ordering::AcqRel) {
-                        continue;
-                    }
-                    drop(stream);
-                    shared.output_ok.store(false, Ordering::Release);
-                    // Back at the rate the renderer was started with, or
-                    // not at all: a voice an octave off is worse than none
-                    // for the second it takes the next check to come round.
-                    loop {
-                        if shared.quit.load(Ordering::Acquire) {
-                            return;
-                        }
-                        std::thread::sleep(Duration::from_secs(1));
-                        match build(&shared, &lost) {
-                            Some((again, r)) if (r - rate).abs() < 0.5 => {
-                                stream = again;
-                                break;
-                            }
-                            Some(_) => log::warn!(
-                                "Built-in voice: the new sound device runs at another rate"
-                            ),
-                            None => {}
-                        }
-                    }
-                }
-                drop(stream);
-            });
-        if spawned.is_err() {
-            return None;
+/// Renders one sentence at `hz` and queues it a chunk at a time.
+fn render(
+    shared: &Shared,
+    voices: &[hearken_genny::Voice],
+    sentence: &str,
+    job: &Job,
+    hz: u32,
+) -> Queued {
+    let sr = f64::from(hz);
+    let (mut voice, rate) = {
+        let v = shared.voicing.lock().expect("built-in voice settings lock");
+        let voice = voices
+            .get(v.voice)
+            .cloned()
+            .unwrap_or_else(|| voices[0].clone());
+        (voice, (v.pitch, v.rate))
+    };
+    voice.pitch *= pitch_factor(rate.0);
+    let multiplier = rate_multiplier(rate.1);
+    let mut samples = hearken_genny::speak(sentence, &voice, sr, multiplier);
+    if samples.is_empty() {
+        return Queued::All;
+    }
+    // The pause genny leaves between sentences of one line.
+    let gap = (0.2 / multiplier * sr) as usize;
+    samples.extend(std::iter::repeat_n(0.0, gap));
+    for chunk in samples.chunks(4096) {
+        // Checked under the lock that `cut` and `follow_rate` clear
+        // the queue under, so a chunk is never queued after either.
+        let Ok(mut queue) = shared.queue.lock() else {
+            continue;
+        };
+        if shared.generation.load(Ordering::Acquire) != job.generation {
+            return Queued::Cut;
         }
-        rx.recv_timeout(Duration::from_secs(5)).ok().flatten()
+        if shared.rate.load(Ordering::Acquire) != hz {
+            return Queued::Stale;
+        }
+        queue.extend(chunk);
     }
-
-    fn build(shared: &Arc<Shared>, lost: &Arc<AtomicBool>) -> Option<(cpal::Stream, f64)> {
-        let Some(device) = cpal::default_host().default_output_device() else {
-            log::warn!("Built-in voice: no sound device");
-            return None;
-        };
-        let config = match device.default_output_config() {
-            Ok(config) => config.config(),
-            Err(err) => {
-                log::warn!("Built-in voice: no output format: {err}");
-                return None;
-            }
-        };
-        let channels = usize::from(config.channels.max(1));
-        let sample_rate = f64::from(config.sample_rate);
-        let callback_shared = Arc::clone(shared);
-        let lost = Arc::clone(lost);
-        let built = device.build_output_stream(
-            config,
-            move |data: &mut [f32], _| {
-                let volume = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
-                let mut queue = callback_shared.queue.lock().ok();
-                for frame in data.chunks_mut(channels) {
-                    let s = queue.as_mut().and_then(|q| q.pop_front()).unwrap_or(0.0) * volume;
-                    frame.fill(s);
-                }
-            },
-            move |err| match err.kind() {
-                cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated => {
-                    log::warn!("Built-in voice: the sound device went away ({err})");
-                    lost.store(true, Ordering::Release);
-                }
-                _ => log::debug!("Built-in voice: stream error ({err})"),
-            },
-            None,
-        );
-        let stream = match built.and_then(|stream| stream.play().map(|()| stream)) {
-            Ok(stream) => stream,
-            Err(err) => {
-                log::warn!("Built-in voice: could not open the sound device: {err}");
-                return None;
-            }
-        };
-        shared.output_ok.store(true, Ordering::Release);
-        log::info!("Built-in voice ready ({sample_rate} Hz)");
-        Some((stream, sample_rate))
-    }
+    Queued::All
 }
 
 /// A handle on the shared engine: what `acquire` returns.
