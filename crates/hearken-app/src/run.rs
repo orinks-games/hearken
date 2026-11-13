@@ -192,6 +192,9 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
         let mut prev = log.clone().into_os_string();
         prev.push(".prev");
         ctx.reports.adopt_session(session, vec![log, prev.into()]);
+        // The report's web form opens in the browser.
+        ctx.reports
+            .set_opener(Box::new(|url: &str| sdl2::url::open_url(url).is_ok()));
     }
 
     // Off the game loop; an agent session never updates the real game.

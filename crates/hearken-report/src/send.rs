@@ -54,6 +54,22 @@ impl Display for SendError {
 
 impl std::error::Error for SendError {}
 
+/// A report opened on the relay's web form: the page the player writes
+/// it on, with the logs already there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opened {
+    pub url: String,
+}
+
+/// `scheme://host[:port]` of `url`, or `None` when it has no scheme.
+fn origin(url: &str) -> Option<&str> {
+    let after_scheme = url.find("://")? + 3;
+    let end = url[after_scheme..]
+        .find('/')
+        .map_or(url.len(), |i| after_scheme + i);
+    Some(&url[..end])
+}
+
 impl Report {
     /// Sends the report to the relay at `endpoint` through `sender`.
     ///
@@ -77,6 +93,51 @@ impl Report {
     #[cfg(feature = "http")]
     pub fn send(&self, endpoint: &str) -> Result<(), SendError> {
         self.send_with(endpoint, &HttpSender::new())
+    }
+
+    /// Sends the report's logs ahead to `{endpoint}/open` through `sender`
+    /// and returns the page the player writes the rest on. The description
+    /// may be empty; the page takes it.
+    ///
+    /// The relay answers `201` with `{ "url": ... }`; the page must be on
+    /// the relay's own origin, so a relay cannot send the browser
+    /// elsewhere. Refusals are the ones [`Report::send_with`] gives.
+    pub fn open_with(&self, endpoint: &str, sender: &dyn Sender) -> Result<Opened, SendError> {
+        self.validate_sent_ahead().map_err(SendError::Invalid)?;
+        let json = serde_json::to_vec(self).map_err(|e| SendError::Failed(e.to_string()))?;
+        let open = format!("{}/open", endpoint.trim_end_matches('/'));
+        let answer = sender.post(&open, &json).map_err(SendError::Failed)?;
+        match answer.status {
+            200..=299 => {}
+            422 => return Err(SendError::ReplyAddressTakesNoMail),
+            429 => return Err(SendError::RateLimited),
+            400..=499 => return Err(SendError::Rejected(answer.body)),
+            status => return Err(SendError::Failed(format!("the relay answered {status}"))),
+        }
+        #[derive(serde::Deserialize)]
+        struct Link {
+            url: String,
+        }
+        let link: Link = serde_json::from_str(&answer.body)
+            .map_err(|_| SendError::Failed("the relay gave no page to open".into()))?;
+        let same_site = origin(endpoint).is_some_and(|site| {
+            link.url
+                .strip_prefix(site)
+                .is_some_and(|rest| rest.starts_with('/'))
+        });
+        if !same_site {
+            return Err(SendError::Failed(
+                "the relay gave a page on another site".into(),
+            ));
+        }
+        Ok(Opened { url: link.url })
+    }
+
+    /// Sends the report's logs ahead to the relay at `endpoint` over HTTPS
+    /// and returns the page to open; see [`Report::open_with`].
+    #[cfg(feature = "http")]
+    pub fn open(&self, endpoint: &str) -> Result<Opened, SendError> {
+        self.open_with(endpoint, &HttpSender::new())
     }
 }
 
@@ -214,6 +275,58 @@ mod tests {
             .send_with("https://example.test/report", &relay);
         assert_eq!(result, Err(SendError::Invalid(Invalid::NotAnAddress)));
         assert!(relay.posted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn opening_posts_to_the_open_route_and_takes_the_page_from_the_answer() {
+        let relay = Table::answering(
+            201,
+            r#"{"code":"abc","url":"https://example.test/report/abc"}"#,
+        );
+        let ahead = Report::new("Freight Fate", "1.9.6", "").with_log("session.log", "x\n");
+        assert_eq!(
+            ahead.open_with("https://example.test/api/problem-reports/", &relay),
+            Ok(Opened {
+                url: "https://example.test/report/abc".into()
+            })
+        );
+        let posted = relay.posted.lock().unwrap();
+        assert_eq!(posted[0].0, "https://example.test/api/problem-reports/open");
+        let json: Report = serde_json::from_slice(&posted[0].1).unwrap();
+        assert_eq!(json.description, "");
+        assert_eq!(json.attachments.len(), 1);
+    }
+
+    #[test]
+    fn a_page_off_the_relays_site_or_a_refusal_is_not_opened() {
+        let endpoint = "https://example.test/api/problem-reports";
+        let ahead = Report::new("Freight Fate", "1.9.6", "");
+        let elsewhere = Table::answering(201, r#"{"url":"https://example.test.evil/report/abc"}"#);
+        assert_eq!(
+            ahead.open_with(endpoint, &elsewhere),
+            Err(SendError::Failed(
+                "the relay gave a page on another site".into()
+            ))
+        );
+        let nothing = Table::answering(201, "");
+        assert_eq!(
+            ahead.open_with(endpoint, &nothing),
+            Err(SendError::Failed("the relay gave no page to open".into()))
+        );
+        assert_eq!(
+            ahead.open_with(endpoint, &Table::answering(429, "")),
+            Err(SendError::RateLimited)
+        );
+        assert_eq!(
+            ahead.open_with(endpoint, &Table::answering(503, "")),
+            Err(SendError::Failed("the relay answered 503".into()))
+        );
+        assert_eq!(
+            ahead
+                .with_reply_to("nope")
+                .open_with(endpoint, &Table::answering(201, "")),
+            Err(SendError::Invalid(Invalid::NotAnAddress))
+        );
     }
 
     #[test]

@@ -848,14 +848,17 @@ impl Game for MyGame {
 }
 ```
 
-Settings gets a Report a problem row: what happened, an email address for
-a reply, whether the log goes along, Read the report, and Send. A run that
-never exited cleanly is noticed at the next start, and the game offers to
-report it, with Don't ask again. Sending runs off the game loop, and a
-report the relay will not take can be saved to a file instead. The relay
-is a small web service that emails each report to one address; the game
-never holds a mail password. The format is mailbag's, so a
-`mailbag-server` takes these reports too.
+Settings gets a Report a problem row. It sends the game log ahead and
+opens the relay's web page in the browser, where the player writes what
+happened with the log already attached; with `.in_game_form()`, or when
+the page cannot be opened, the game's own screen takes the report instead:
+what happened, an email address for a reply, whether the log goes along,
+Read the report, and Send. A run that never exited cleanly is noticed at
+the next start, and the game offers to report it, with Don't ask again.
+Sending runs off the game loop, and a report the relay will not take can
+be saved to a file instead. The relay is a small web service that emails
+each report to one address; the game never holds a mail password. The
+format is mailbag's, so a `mailbag-server` takes these reports too.
 
 `docs/reports.md` covers the screens, the format and running a relay.
 

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
-pub use hearken_report::{Invalid, Report, SendError, Sender, Session};
+pub use hearken_report::{Invalid, Opened, Report, SendError, Sender, Session};
 
 use crate::paths::Paths;
 
@@ -39,6 +39,10 @@ pub struct ReportConfig {
     pub commit: Option<String>,
     /// Whether a start after a crash offers to report it.
     pub offer_after_crash: bool,
+    /// Whether the report is written on the relay's web page, in the
+    /// browser, with the logs sent ahead; otherwise in the game's own
+    /// screen.
+    pub web_form: bool,
 }
 
 impl ReportConfig {
@@ -63,6 +67,7 @@ impl ReportConfig {
             version: version.into(),
             commit: None,
             offer_after_crash: true,
+            web_form: true,
         })
     }
 
@@ -77,7 +82,17 @@ impl ReportConfig {
         self.offer_after_crash = false;
         self
     }
+
+    /// The report is written in the game's own screen, never in the
+    /// browser: for a relay with no web form, such as `mailbag-server`.
+    pub fn in_game_form(mut self) -> ReportConfig {
+        self.web_form = false;
+        self
+    }
 }
+
+/// Opens `url` in the player's browser, `true` when it did.
+pub type Opener = Box<dyn Fn(&str) -> bool + Send>;
 
 /// The report service: the game's relay, the logs a report carries, and
 /// whether the last run crashed.
@@ -90,6 +105,8 @@ pub struct Reports {
     /// The session log and the one before it, attached when they exist.
     logs: Vec<PathBuf>,
     sender: Arc<dyn Sender>,
+    /// Opens the web form in the browser; `None` in tests and agent runs.
+    opener: Option<Opener>,
 }
 
 impl Reports {
@@ -102,6 +119,7 @@ impl Reports {
             offer_pending: false,
             logs: Vec::new(),
             sender: Arc::new(hearken_report::HttpSender::new()),
+            opener: None,
         }
     }
 
@@ -113,6 +131,12 @@ impl Reports {
     /// Whether the game takes problem reports, so Settings lists the row.
     pub fn is_offered(&self) -> bool {
         self.config.is_some()
+    }
+
+    /// Whether a report is written on the relay's web page (see
+    /// [`crate::screens::ReportLinkScreen`]) rather than in the game.
+    pub fn uses_web_form(&self) -> bool {
+        self.config.as_ref().is_some_and(|c| c.web_form)
     }
 
     pub fn config(&self) -> Option<&ReportConfig> {
@@ -229,6 +253,37 @@ impl Reports {
         Sending { rx }
     }
 
+    /// Sends `report`'s logs ahead to the relay on a worker thread and
+    /// brings back the page to write the rest on. Poll it from the screen.
+    pub fn open(&self, report: Report) -> Opening {
+        let (tx, rx) = mpsc::channel();
+        let sender = self.sender.clone();
+        let endpoint = self.config.as_ref().map(|c| c.endpoint.clone());
+        std::thread::spawn(move || {
+            let result = match endpoint {
+                Some(endpoint) => report.open_with(&endpoint, sender.as_ref()),
+                None => Err(SendError::Failed("this game takes no reports".into())),
+            };
+            match &result {
+                Ok(opened) => log::info!("problem report opened at {}", opened.url),
+                Err(e) => log::warn!("problem report not opened: {e}"),
+            }
+            let _ = tx.send(result);
+        });
+        Opening { rx }
+    }
+
+    /// Opens the web form at `url` in the player's browser with the opener
+    /// the app set; false when there is none or it could not.
+    pub fn open_url(&self, url: &str) -> bool {
+        self.opener.as_ref().is_some_and(|opener| opener(url))
+    }
+
+    /// Opens pages in the browser with `opener`, as the app does at start.
+    pub fn set_opener(&mut self, opener: Opener) {
+        self.opener = Some(opener);
+    }
+
     /// Saves `report` as [`SAVED_REPORT`] in the data folder, for a player
     /// to send another way, and says where.
     pub fn save(&self, report: &Report, paths: &Paths) -> io::Result<PathBuf> {
@@ -251,6 +306,24 @@ pub struct Sending {
 impl Sending {
     /// The outcome, once there is one. The worker dying counts as a failure.
     pub fn poll(&mut self) -> Option<Result<(), SendError>> {
+        match self.rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                Some(Err(SendError::Failed("the send stopped".into())))
+            }
+        }
+    }
+}
+
+/// A report's logs on their way to the relay, ahead of the web form.
+pub struct Opening {
+    rx: Receiver<Result<Opened, SendError>>,
+}
+
+impl Opening {
+    /// The outcome, once there is one. The worker dying counts as a failure.
+    pub fn poll(&mut self) -> Option<Result<Opened, SendError>> {
         match self.rx.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,

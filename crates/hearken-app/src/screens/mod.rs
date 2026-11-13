@@ -8,6 +8,8 @@ pub mod online;
 pub mod pause;
 #[cfg(feature = "report")]
 pub mod report;
+#[cfg(feature = "report")]
+pub mod report_link;
 #[cfg(feature = "online")]
 pub mod rooms;
 pub mod settings;
@@ -24,6 +26,8 @@ pub use online::OnlineAccountScreen;
 pub use pause::PauseScreen;
 #[cfg(feature = "report")]
 pub use report::{ReportPreviewScreen, ReportScreen};
+#[cfg(feature = "report")]
+pub use report_link::ReportLinkScreen;
 #[cfg(feature = "online")]
 pub use rooms::{MyGamesScreen, OnlinePlayScreen, RoomKind, RoomScreen};
 pub use settings::{SettingsRow, SettingsScreen};

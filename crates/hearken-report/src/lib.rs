@@ -29,5 +29,5 @@ pub use report::{
 };
 #[cfg(feature = "http")]
 pub use send::HttpSender;
-pub use send::{Answer, SendError, Sender};
+pub use send::{Answer, Opened, SendError, Sender};
 pub use session::Session;

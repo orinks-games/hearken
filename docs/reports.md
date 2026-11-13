@@ -44,14 +44,27 @@ as they are, and a relay written for Hearken takes mailbag's.
      report's details.
    - `.no_offer_after_crash()`: never asks to report a crash. The player
      can still report from Settings.
+   - `.in_game_form()`: the report is written in the game's own screen
+     instead of on the relay's web page, for a relay with no web form
+     (such as `mailbag-server`). See Writing the report on the web.
 
 3. Run a relay, or point the game at one that already takes its reports
    (see Running a relay).
 
 ## What players get
 
-- **Report a problem**, in Settings. The screen has a row for what
-  happened, a row for an email address if the player wants a reply, a
+- **Report a problem**, in Settings. By default it says "Preparing the
+  report.", sends the game log ahead to the relay, and opens the relay's
+  web page in the browser: "The report opened in your browser. The game
+  log is already attached; finish it there." The page has the game and
+  version filled in, the logs listed as attached with a box each so one
+  can be left out, a field for an email address if the player wants a
+  reply, and a box for what happened. Writing there, in a real text box
+  with the screen reader's own editing, beats typing into a game window.
+- **The game's own screen** instead, with `.in_game_form()`, or whenever
+  the web page cannot be opened (the relay could not keep the log, or the
+  browser would not open; the game says which, then "Write the report
+  here"). It has a row for what happened, a row for an email address, a
   switch for whether the log goes along (on when a log exists), Read the
   report, and Send. Each text row opens the usual text field, so what was
   typed can be reviewed a character at a time. Read the report speaks
@@ -61,13 +74,15 @@ as they are, and a relay written for Hearken takes mailbag's.
 - **An offer after a crash.** When the last run ended without exiting
   cleanly (a crash, a kill, a power cut), the next start asks, once the
   game is on a screen that allows an offer: "My Game closed unexpectedly
-  the last time it ran. Report the problem?" Yes opens the report screen,
-  which says what it is reporting; Not now closes the question; Don't ask
-  again turns the offer off, and Settings gets a row to turn it back on.
-  A report sent from there is marked as a crash, and the previous
-  session's log, the one with the crash in it, goes along.
-- **Nothing waits on the network.** Sending runs on a worker thread. The
-  screen speaks the outcome when it arrives, and Escape leaves at once.
+  the last time it ran. Report the problem?" Yes opens the report (the
+  web page, or the screen, which says what it is reporting); Not now
+  closes the question; Don't ask again turns the offer off, and Settings
+  gets a row to turn it back on. A report from there is marked as a
+  crash, and the previous session's log, the one with the crash in it,
+  goes along.
+- **Nothing waits on the network.** Sending the log ahead, and sending a
+  report, run on a worker thread. The screen speaks the outcome when it
+  arrives, and Escape leaves at once.
 - **What a refusal does.** An address whose domain takes no mail puts the
   player back on the address row with "Email cannot be delivered to that
   address. Check it, or leave it blank." When the relay has taken its
@@ -75,12 +90,14 @@ as they are, and a relay written for Hearken takes mailbag's.
   report as `problem-report.txt` in the data folder and says where, so it
   can be sent another way.
 
-A game puts the screen wherever it likes with
-`ctx.push(hearken::screens::ReportScreen::new())`. Mark the home or title
-screen with `allows_update_prompt() -> true` so the offer after a crash
-can appear there; it waits while any other screen is open. Tests
-(`Headless`) and agent sessions never send a report: an agent session's
-sandbox is not a player's game.
+A game puts the report wherever it likes with
+`ctx.push(hearken::screens::ReportLinkScreen::new())` (the web page) or
+`ctx.push(hearken::screens::ReportScreen::new())` (the game's screen);
+`ctx.reports.uses_web_form()` says which the game is set up for. Mark the
+home or title screen with `allows_update_prompt() -> true` so the offer
+after a crash can appear there; it waits while any other screen is open.
+Tests (`Headless`) and agent sessions never send a report or open a
+browser: an agent session's sandbox is not a player's game.
 
 ## What a report holds
 
@@ -105,6 +122,22 @@ no mail, `429` when a limit is reached, and `502` when the email could not
 be sent. `Report::validate` checks the same limits before anything is
 posted.
 
+## Writing the report on the web
+
+`Report::open` posts the same JSON, with an empty `description`, to
+`{endpoint}/open`. A relay with a web form keeps the logs under a code
+nobody can guess and answers `201` with `{ "code": ..., "url": ... }`,
+where `url` is the page the player writes the rest on; the game opens it
+in the browser. The page must be on the relay's own origin, or the game
+does not open it. The refusals are the ones above; a relay without the
+route answers `404` or `405`, and the game falls back to its own screen,
+so a game can keep `web_form` on against any relay.
+
+What the page does with the report is the relay's business: orinks.net's
+shows the game and version, the logs with a box each, an email field and
+a text box, and emails the report when it is sent. A code that was used,
+or is a day old, shows an expired-link page instead.
+
 ## Running a relay
 
 A relay is whatever takes that JSON and sends an email: a Next.js route
@@ -123,5 +156,7 @@ machine of your own. Keep these rules whichever you run:
 - Attach each log as a text file. Put the subject the report gives in the
   email's subject, such as `[My Game 1.4.0] crash: The window closed`.
 
-orinks.net runs one at `https://orinks.net/api/problem-reports` for the
-games it hosts, through Resend; its code is in the site's repository.
+orinks.net runs one at `https://www.orinks.net/api/problem-reports` (the
+bare host answers with a redirect, which the game does not follow) for the
+games it hosts, through Resend, with the web form at `/report/<code>`;
+its code is in the site's repository.
