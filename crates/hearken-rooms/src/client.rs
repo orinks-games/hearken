@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::error::RoomsError;
-use crate::protocol::{Event, EventKind, Phase, RoomId, RoomInfo};
+use crate::protocol::{Event, EventKind, Mute, MuteMode, Phase, RoomId, RoomInfo};
 #[cfg(not(feature = "http"))]
 use crate::transport::Reply;
 use crate::transport::Transport;
@@ -65,6 +65,10 @@ pub enum Answer {
     List(Vec<RoomInfo>),
     /// The sequence number an event was stored at (turn, chat, leave, finish).
     Seq(u64),
+    /// The players the player has muted or blocked (mutes).
+    Mutes(Vec<Mute>),
+    /// Done, with nothing more to say (set_mute, report).
+    Done,
 }
 
 /// What changed in `update`, for a screen to speak.
@@ -91,6 +95,9 @@ pub const QUIET_AFTER: Duration = Duration::from_secs(60);
 pub const MAX_IN_FLIGHT: usize = 8;
 /// Events kept per room in memory; older ones are dropped from the front.
 pub const MAX_KEPT_EVENTS: usize = 4096;
+/// The lines read back when a channel is first watched: what was said
+/// before the player came in.
+pub const HISTORY_LINES: usize = 20;
 /// Finished answers kept until the game takes them.
 const MAX_KEPT_ANSWERS: usize = 64;
 
@@ -105,6 +112,9 @@ pub struct Room {
     /// When to poll next; `None` is at the next `update`.
     next_poll: Option<Instant>,
     changed_at: Instant,
+    /// How many past lines to read before polling onward: a channel
+    /// first watched starts from its recent history, not its first line.
+    history: Option<usize>,
 }
 
 impl Room {
@@ -116,6 +126,7 @@ impl Room {
             poll: None,
             next_poll: None,
             changed_at: now,
+            history: None,
         }
     }
 
@@ -141,6 +152,11 @@ impl Room {
     /// Events after `seq`, in order.
     pub fn events_after(&self, seq: u64) -> impl Iterator<Item = &Event> {
         self.events.iter().filter(move |e| e.seq > seq)
+    }
+
+    /// Chat events read so far, oldest first.
+    pub fn chat_events(&self) -> impl Iterator<Item = &Event> {
+        self.events.iter().filter(|e| e.kind == EventKind::Chat)
     }
 
     /// Chat lines read so far, oldest first, as `(name, text)`.
@@ -185,6 +201,9 @@ enum Request {
     Start,
     Post(RoomId),
     Poll(RoomId),
+    Mutes,
+    SetMute,
+    Report,
 }
 
 enum Msg {
@@ -205,6 +224,8 @@ pub struct Rooms {
     in_flight: HashMap<Ticket, Request>,
     done: VecDeque<(Ticket, Result<Answer, RoomsError>)>,
     rooms: BTreeMap<RoomId, Room>,
+    /// The room the player is looking at: the one chat keys send to.
+    focus: Option<RoomId>,
     connection: Connection,
     poll_failures: u32,
     signed_out: bool,
@@ -228,6 +249,7 @@ impl Rooms {
             in_flight: HashMap::new(),
             done: VecDeque::new(),
             rooms: BTreeMap::new(),
+            focus: None,
             connection: Connection::Polling,
             poll_failures: 0,
             signed_out: false,
@@ -249,6 +271,7 @@ impl Rooms {
         self.token_gen += 1;
         self.signed_out = false;
         self.rooms.clear();
+        self.focus = None;
         self.in_flight.clear();
     }
 
@@ -290,6 +313,27 @@ impl Rooms {
     /// is done with a finished one.
     pub fn forget(&mut self, id: &RoomId) {
         self.rooms.remove(id);
+        if self.focus.as_ref() == Some(id) {
+            self.focus = None;
+        }
+    }
+
+    /// The room the player is looking at, if any: the last one watched,
+    /// until it is unwatched or forgotten. Chat keys send here.
+    pub fn focus(&self) -> Option<&RoomId> {
+        self.focus
+            .as_ref()
+            .filter(|id| self.rooms.contains_key(*id))
+    }
+
+    /// The room the player is looking at, itself.
+    pub fn focused(&self) -> Option<&Room> {
+        self.focus().and_then(|id| self.rooms.get(id))
+    }
+
+    /// Points the chat keys at `id` without watching it.
+    pub fn set_focus(&mut self, id: Option<RoomId>) {
+        self.focus = id;
     }
 
     /// Takes in a room the player is in from a `list` answer, so it can be
@@ -354,6 +398,76 @@ impl Rooms {
         Ok(self.send(Request::Find, Method::Post(json!({})), url))
     }
 
+    /// Joins the channel of `kind` called `name`, made the first time
+    /// anyone asks for it. Answers [`Answer::Room`].
+    pub fn channel(&mut self, kind: &str, name: &str) -> Result<Ticket, RoomsError> {
+        let config = self.ready(Some(kind))?;
+        let name = crate::clean_text(name, crate::MAX_NAME_CHARS);
+        if name.is_empty() {
+            return Err(RoomsError::BadKind);
+        }
+        let url = config.endpoint(&format!(
+            "rooms/find?kind={kind}&name={}",
+            percent_encode(&name)
+        ));
+        Ok(self.send(Request::Find, Method::Post(json!({})), url))
+    }
+
+    /// The room of two of `kind` with the player whose handle this is,
+    /// found or made. Answers [`Answer::Room`]; [`RoomsError::Blocked`]
+    /// when either has blocked the other.
+    pub fn direct(&mut self, kind: &str, handle: &str) -> Result<Ticket, RoomsError> {
+        let config = self.ready(Some(kind))?;
+        if !crate::valid_handle(handle) {
+            return Err(RoomsError::UnknownPlayer);
+        }
+        let url = config.endpoint(&format!("rooms/direct?kind={kind}"));
+        Ok(self.send(
+            Request::Find,
+            Method::Post(json!({ "handle": handle })),
+            url,
+        ))
+    }
+
+    /// Who the player has muted or blocked. Answers [`Answer::Mutes`].
+    pub fn mutes(&mut self) -> Result<Ticket, RoomsError> {
+        let config = self.ready(None)?;
+        let url = config.endpoint("rooms/mutes");
+        Ok(self.send(Request::Mutes, Method::Get, url))
+    }
+
+    /// Mutes, blocks or hears again the player with `handle`. Answers
+    /// [`Answer::Done`]. The other player is never told.
+    pub fn set_mute(&mut self, handle: &str, mode: MuteMode) -> Result<Ticket, RoomsError> {
+        let config = self.ready(None)?;
+        if !crate::valid_handle(handle) {
+            return Err(RoomsError::UnknownPlayer);
+        }
+        let url = config.endpoint("rooms/mutes");
+        Ok(self.send(
+            Request::SetMute,
+            Method::Post(json!({ "handle": handle, "mode": mode })),
+            url,
+        ))
+    }
+
+    /// Reports the player with `handle` for what they said in room `id`:
+    /// the server hands their recent lines there to the game's host, with
+    /// `note` when the player gave one. Answers [`Answer::Done`].
+    pub fn report(&mut self, id: &RoomId, handle: &str, note: &str) -> Result<Ticket, RoomsError> {
+        let config = self.ready(None)?;
+        if !crate::valid_handle(handle) {
+            return Err(RoomsError::UnknownPlayer);
+        }
+        let note = crate::clean_text(note, crate::MAX_CHAT_CHARS);
+        let url = config.endpoint(&format!("rooms/{id}/report"));
+        Ok(self.send(
+            Request::Report,
+            Method::Post(json!({ "handle": handle, "note": note })),
+            url,
+        ))
+    }
+
     /// The player's rooms, newest first. Answers [`Answer::List`], and
     /// refreshes every room this client knows.
     pub fn list(&mut self) -> Result<Ticket, RoomsError> {
@@ -388,6 +502,13 @@ impl Rooms {
 
     /// Sends a line of chat. Answers [`Answer::Seq`].
     pub fn say(&mut self, id: &RoomId, text: &str) -> Result<Ticket, RoomsError> {
+        self.say_tagged(id, text, "")
+    }
+
+    /// Sends a line of chat with a tag: a short line about the sender that
+    /// is spoken with their name ("Ada, Lake Road: ..."). Answers
+    /// [`Answer::Seq`].
+    pub fn say_tagged(&mut self, id: &RoomId, text: &str, tag: &str) -> Result<Ticket, RoomsError> {
         let config = self.ready(None)?;
         let text = crate::clean_text(text, crate::MAX_CHAT_CHARS);
         if text.is_empty() {
@@ -396,12 +517,14 @@ impl Rooms {
                 message: Some("Nothing to send.".into()),
             });
         }
+        let tag = crate::clean_text(tag, crate::MAX_TAG_CHARS);
+        let body = if tag.is_empty() {
+            json!({ "type": "chat", "text": text })
+        } else {
+            json!({ "type": "chat", "text": text, "tag": tag })
+        };
         let url = config.endpoint(&format!("rooms/{id}/events"));
-        Ok(self.send(
-            Request::Post(id.clone()),
-            Method::Post(json!({ "type": "chat", "text": text })),
-            url,
-        ))
+        Ok(self.send(Request::Post(id.clone()), Method::Post(body), url))
     }
 
     /// Leaves the room: a waiting room frees the seat, a match forfeits it.
@@ -429,12 +552,21 @@ impl Rooms {
     }
 
     /// Polls `id` while `on`: a room screen watches its room, and stops
-    /// when it closes. A watched room is polled at once.
+    /// when it closes. A watched room is polled at once, and becomes the
+    /// focus of the chat keys; unwatching it clears that. A channel
+    /// watched for the first time reads its recent lines
+    /// ([`HISTORY_LINES`]) rather than its whole log.
     pub fn watch(&mut self, id: &RoomId, on: bool) {
         if let Some(room) = self.rooms.get_mut(id) {
             room.watched = on;
             if on {
                 room.next_poll = None;
+                if room.events.is_empty() && room.info.is_channel() && room.info.seq > 0 {
+                    room.history = Some(HISTORY_LINES);
+                }
+                self.focus = Some(id.clone());
+            } else if self.focus.as_ref() == Some(id) {
+                self.focus = None;
             }
         }
     }
@@ -530,6 +662,28 @@ impl Rooms {
                     });
                     self.keep(ticket, result);
                 }
+                Request::Mutes => {
+                    let result = answer.and_then(|body| {
+                        let list: Vec<Mute> = body
+                            .get("mutes")
+                            .cloned()
+                            .and_then(|v| serde_json::from_value(v).ok())
+                            .ok_or(RoomsError::Unavailable)?;
+                        Ok(Answer::Mutes(list))
+                    });
+                    self.keep(ticket, result);
+                }
+                Request::SetMute | Request::Report => {
+                    let result = answer.map(|_| Answer::Done);
+                    if matches!(request, Request::SetMute) && result.is_ok() {
+                        // What the player hears changed: read the watched
+                        // rooms again from where they are.
+                        for room in self.rooms.values_mut().filter(|r| r.watched) {
+                            room.next_poll = None;
+                        }
+                    }
+                    self.keep(ticket, result);
+                }
                 Request::Post(id) => {
                     let result = answer.and_then(|body| {
                         let seq = body["seq"].as_u64().ok_or(RoomsError::Unavailable)?;
@@ -605,11 +759,20 @@ impl Rooms {
                     .cloned()
                     .and_then(|v| serde_json::from_value(v).ok())
                     .unwrap_or_default();
+                let history = room.history.take().is_some();
                 if let Some(first) = room.absorb(events) {
                     room.changed_at = now;
                     notices.push(Notice::Events(id.clone(), first));
                 }
-                let more = body["more"] == true;
+                // The page covered up to `read_to`, lines the player does
+                // not hear included: a marker there keeps the client from
+                // asking for them again.
+                if let Some(to) = body["read_to"].as_u64() {
+                    if to > room.read_seq() {
+                        room.events.push(Event::marker(to));
+                    }
+                }
+                let more = !history && body["more"] == true;
                 if let Ok(info) = read_room(&body) {
                     self.take_info(info, now, notices);
                 }
@@ -647,17 +810,20 @@ impl Rooms {
         if self.token.is_none() {
             return;
         }
-        let due: Vec<(RoomId, u64)> = self
+        let due: Vec<(RoomId, u64, Option<usize>)> = self
             .rooms
             .values()
             .filter(|r| r.watched && r.poll.is_none() && r.next_poll.is_none_or(|t| t <= now))
-            .map(|r| (r.info.id.clone(), r.read_seq()))
+            .map(|r| (r.info.id.clone(), r.read_seq(), r.history))
             .collect();
-        for (id, after) in due {
+        for (id, after, history) in due {
             if self.in_flight.len() >= MAX_IN_FLIGHT {
                 break;
             }
-            let url = config.endpoint(&format!("rooms/{id}?after={after}"));
+            let url = match history {
+                Some(last) => config.endpoint(&format!("rooms/{id}?last={last}")),
+                None => config.endpoint(&format!("rooms/{id}?after={after}")),
+            };
             let ticket = self.send(Request::Poll(id.clone()), Method::Get, url);
             if let Some(room) = self.rooms.get_mut(&id) {
                 room.poll = Some(ticket);
@@ -722,6 +888,20 @@ impl Transport for NoTransport {
     fn get(&self, _url: &str, _token: Option<&str>) -> Result<Reply, String> {
         Err("built without the http feature".into())
     }
+}
+
+/// `text` as a URL query value: letters, digits and a few marks as they
+/// are, everything else as UTF-8 percent escapes.
+fn percent_encode(text: &str) -> String {
+    let mut out = String::new();
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 fn read_room(body: &Value) -> Result<RoomInfo, RoomsError> {

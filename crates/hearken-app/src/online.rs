@@ -833,6 +833,7 @@ impl Online {
             token: self.token.clone(),
             name: self.name.clone(),
             guest: self.guest && self.token.is_some(),
+            ..OnlineSettings::default()
         }
     }
 }
@@ -1066,6 +1067,7 @@ pub(crate) mod tests {
             token: Some(Secret("t".repeat(32))),
             name: Some("Ada".into()),
             guest: false,
+            ..OnlineSettings::default()
         }
     }
 

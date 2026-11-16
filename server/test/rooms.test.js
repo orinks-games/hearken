@@ -62,7 +62,11 @@ async function setup(handlerExtra = {}, serviceExtra = {}) {
     runs: memoryRuns(),
     rooms: memoryRooms(),
     limiter: memoryLimiter(),
-    handlers: { match: handler },
+    handlers: {
+      match: handler,
+      lobby: { seats: { min: 1, max: 50 }, history: 7 * 86_400, chat_limit: { per_minute: 20, gap: 3 } },
+      dm: { seats: { min: 2, max: 2 }, history: 86_400 },
+    },
     basePath: "/api/games/pebbles",
     log: () => {},
     now: () => clock.t,
@@ -194,7 +198,7 @@ test("chat rides in the same log and is cleaned and screened", { skip }, async (
   assert.equal(said.status, 200);
   const refused = await call(service, "POST", `rooms/${id}/events`, bo, { type: "chat", text: "rude" });
   assert.equal(refused.status, 422);
-  assert.deepEqual(refused.body, { error: "not-allowed", message: "Keep it kind." });
+  assert.deepEqual(refused.body, { error: "screened", message: "Keep it kind." });
   const empty = await call(service, "POST", `rooms/${id}/events`, bo, { type: "chat", text: "​" });
   assert.equal(empty.status, 400);
   const read = await call(service, "GET", `rooms/${id}?after=2`, ada);
@@ -311,7 +315,7 @@ test("a kind without rooms gets no room", { skip }, async () => {
         runs: memoryRuns(),
         rooms: memoryRooms(),
         limiter: memoryLimiter(),
-        handlers: { duel: { seats: { min: 2 }, start: () => ({}), accept: () => null } },
+        handlers: { duel: { seats: { min: 2 }, rules: "pebbles", start: () => ({}) } },
       }),
     /needs rules/,
   );
@@ -345,4 +349,171 @@ test("leaving a room that is over drops it from my rooms", { skip }, async () =>
   assert.equal((await call(service, "GET", "rooms", bo)).body.rooms.length, 1, "still on Bo's");
   const again = await call(service, "GET", `rooms/${id}?after=0`, ada);
   assert.equal(again.status, 200, "the room itself can still be read");
+});
+
+test("a named channel is made once, joined by everyone, and keeps a week of lines", { skip }, async () => {
+  const { service, clock, accounts, ada, bo } = await setup();
+  const first = await call(service, "POST", "rooms/find?kind=lobby&name=General", ada);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.room.phase, "open");
+  assert.equal(first.body.room.name, "general");
+  const id = first.body.room.id;
+  const second = await call(service, "POST", "rooms/find?kind=lobby&name=general", bo);
+  assert.equal(second.body.room.id, id);
+  assert.equal(second.body.room.members.length, 2);
+  assert.ok(second.body.room.members.every((m) => /^[0-9a-f]{16}$/.test(m.handle)));
+  // Lines, with a place tag, spaced out by the kind's own gap.
+  const said = await call(service, "POST", `rooms/${id}/events`, ada, { type: "chat", text: "evening all", tag: "  Lake  Road " });
+  assert.equal(said.status, 200, JSON.stringify(said.body));
+  const quick = await call(service, "POST", `rooms/${id}/events`, ada, { type: "chat", text: "again" });
+  assert.equal(quick.status, 429);
+  assert.equal(quick.body.error, "too-fast");
+  clock.t += 3_100;
+  assert.equal((await call(service, "POST", `rooms/${id}/events`, ada, { type: "chat", text: "again" })).status, 200);
+  // Turns and starting mean nothing in a channel.
+  assert.equal((await call(service, "POST", `rooms/${id}/events`, ada, { type: "turn", inputs: [[1, 1]] })).status, 409);
+  assert.equal((await call(service, "POST", `rooms/${id}/start`, ada)).status, 409);
+  // A latecomer reads the last lines, newest last, with the tag on them.
+  const cy = await accounts.tokenFor("Cy");
+  await call(service, "POST", "rooms/find?kind=lobby&name=general", cy);
+  const history = await call(service, "GET", `rooms/${id}?last=3`, cy);
+  assert.deepEqual(history.body.events.map((e) => [e.type, e.text ?? null, e.tag ?? null]), [
+    ["chat", "evening all", "Lake Road"],
+    ["chat", "again", null],
+    ["join", null, null],
+  ]);
+  assert.equal(history.body.more, true);
+  const earlier = await call(service, "GET", `rooms/${id}?last=10&before=${history.body.first_seq}`, cy);
+  assert.deepEqual(earlier.body.events.map((e) => e.type), ["join", "join"]);
+  assert.equal(earlier.body.more, false);
+  // Everyone leaves; the channel stays, and forgets lines past its history.
+  for (const who of [ada, bo, cy]) assert.equal((await call(service, "POST", `rooms/${id}/events`, who, { type: "leave" })).status, 200);
+  clock.t += 8 * 86_400_000;
+  const back = await call(service, "POST", "rooms/find?kind=lobby&name=general", ada);
+  assert.equal(back.body.room.id, id, "the same room, a week on");
+  assert.equal(back.body.room.phase, "open");
+  const forgotten = await call(service, "GET", `rooms/${id}?last=20`, ada);
+  assert.deepEqual(forgotten.body.events.map((e) => e.type), ["join"], "only today's join is left");
+  // A match kind is not joined by name.
+  assert.equal((await call(service, "POST", "rooms/find?kind=match&name=general", ada)).status, 422);
+});
+
+test("a direct room is found or made by handle, shows up for both, and closes when either leaves", { skip }, async () => {
+  const { service, ada, bo } = await setup();
+  // Bo has to have been seen before anyone can write to him.
+  const seen = await call(service, "GET", "rooms", bo);
+  assert.equal(seen.status, 200);
+  const lobby = await call(service, "POST", "rooms/find?kind=lobby&name=general", bo);
+  const boHandle = lobby.body.room.members[0].handle;
+  const made = await call(service, "POST", "rooms/direct?kind=dm", ada, { handle: boHandle });
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  assert.equal(made.body.room.direct, true);
+  assert.equal(made.body.room.phase, "open");
+  assert.deepEqual(made.body.room.members.map((m) => m.name), ["Ada", "Bo"]);
+  const id = made.body.room.id;
+  // The same two asking again, from either side, get the same room.
+  const adaHandle = made.body.room.members[0].handle;
+  const again = await call(service, "POST", "rooms/direct?kind=dm", bo, { handle: adaHandle });
+  assert.equal(again.body.room.id, id);
+  // It is on Bo's list, unread.
+  const mine = await call(service, "GET", "rooms", bo);
+  const row = mine.body.rooms.find((r) => r.id === id);
+  assert.ok(row, "on Bo's list");
+  await call(service, "POST", `rooms/${id}/events`, ada, { type: "chat", text: "hello Bo" });
+  const read = await call(service, "GET", `rooms/${id}?after=0`, bo);
+  assert.deepEqual(read.body.events.filter((e) => e.type === "chat").map((e) => e.text), ["hello Bo"]);
+  // Wrong kinds and handles are refused.
+  assert.equal((await call(service, "POST", "rooms/direct?kind=lobby", ada, { handle: boHandle })).status, 422);
+  assert.equal((await call(service, "POST", "rooms/direct?kind=dm", ada, { handle: adaHandle })).status, 422);
+  assert.equal((await call(service, "POST", "rooms/direct?kind=dm", ada, { handle: "0".repeat(16) })).status, 404);
+  assert.equal((await call(service, "POST", "rooms/direct?kind=dm", ada, { handle: "nope" })).status, 400);
+  // Either side leaving closes the room; the next ask makes a new one.
+  const left = await call(service, "POST", `rooms/${id}/events`, bo, { type: "leave" });
+  assert.equal(left.body.room.phase, "closed");
+  const fresh = await call(service, "POST", "rooms/direct?kind=dm", ada, { handle: boHandle });
+  assert.notEqual(fresh.body.room.id, id);
+});
+
+test("mutes are silent and one way; blocks go both ways and keep the two apart", { skip }, async () => {
+  const { service, accounts, clock, ada, bo } = await setup();
+  const cy = await accounts.tokenFor("Cy");
+  const room = await call(service, "POST", "rooms/find?kind=lobby&name=general", ada);
+  const id = room.body.room.id;
+  await call(service, "POST", "rooms/find?kind=lobby&name=general", bo);
+  await call(service, "POST", "rooms/find?kind=lobby&name=general", cy);
+  const read = await call(service, "GET", `rooms/${id}`, ada);
+  const handles = Object.fromEntries(read.body.room.members.map((m) => [m.name, m.handle]));
+
+  // Ada mutes Bo. Bo's lines reach Cy, not Ada; Bo is never told.
+  const muted = await call(service, "POST", "rooms/mutes", ada, { handle: handles.Bo, mode: "mute" });
+  assert.equal(muted.status, 200, JSON.stringify(muted.body));
+  assert.equal(muted.body.name, "Bo");
+  const said = await call(service, "POST", `rooms/${id}/events`, bo, { type: "chat", text: "hi Ada" });
+  assert.equal(said.status, 200);
+  const adaSees = await call(service, "GET", `rooms/${id}?after=3`, ada);
+  assert.deepEqual(adaSees.body.events.map((e) => e.type), []);
+  const cySees = await call(service, "GET", `rooms/${id}?after=3`, cy);
+  assert.deepEqual(cySees.body.events.map((e) => e.text), ["hi Ada"]);
+  // Ada's lines still reach Bo: a mute is one way.
+  clock.t += 3_100;
+  await call(service, "POST", `rooms/${id}/events`, ada, { type: "chat", text: "hi Cy" });
+  const boSees = await call(service, "GET", `rooms/${id}?after=4`, bo);
+  assert.deepEqual(boSees.body.events.map((e) => e.text), ["hi Cy"]);
+  const list = await call(service, "GET", "rooms/mutes", ada);
+  assert.deepEqual(list.body.mutes, [{ handle: handles.Bo, mode: "mute", name: "Bo" }]);
+
+  // Ada blocks Cy: neither hears the other, and they are not paired.
+  await call(service, "POST", "rooms/mutes", ada, { handle: handles.Cy, mode: "block" });
+  clock.t += 3_100;
+  await call(service, "POST", `rooms/${id}/events`, cy, { type: "chat", text: "Cy here" });
+  clock.t += 3_100;
+  await call(service, "POST", `rooms/${id}/events`, ada, { type: "chat", text: "Ada here" });
+  const adaNow = await call(service, "GET", `rooms/${id}?after=5`, ada);
+  assert.deepEqual(adaNow.body.events.map((e) => e.text), ["Ada here"]);
+  const cyNow = await call(service, "GET", `rooms/${id}?after=5`, cy);
+  assert.deepEqual(cyNow.body.events.map((e) => e.text), ["Cy here"]);
+  const boNow = await call(service, "GET", `rooms/${id}?after=5`, bo);
+  assert.deepEqual(boNow.body.events.map((e) => e.text), ["Cy here", "Ada here"]);
+  assert.equal((await call(service, "POST", "rooms/direct?kind=dm", cy, { handle: handles.Ada })).status, 403);
+  assert.equal((await call(service, "POST", "rooms/direct?kind=dm", ada, { handle: handles.Cy })).status, 403);
+  const open = await call(service, "POST", "rooms/find?kind=match", cy);
+  const paired = await call(service, "POST", "rooms/find?kind=match", ada);
+  assert.notEqual(paired.body.room.id, open.body.room.id, "not seated with someone blocked");
+  // Unblocking lets the lines through again, from where they are read.
+  await call(service, "POST", "rooms/mutes", ada, { handle: handles.Cy, mode: "none" });
+  const after = await call(service, "GET", `rooms/${id}?after=5`, ada);
+  assert.deepEqual(after.body.events.map((e) => e.text), ["Cy here", "Ada here"]);
+  assert.equal((await call(service, "POST", "rooms/mutes", ada, { handle: handles.Ada, mode: "mute" })).status, 422);
+  assert.equal((await call(service, "POST", "rooms/mutes", ada, { handle: handles.Bo, mode: "loud" })).status, 400);
+});
+
+test("a report hands the host that player's recent lines, and a screen can name its own refusal", { skip }, async () => {
+  const reports = [];
+  const { service, clock, ada, bo } = await setup({}, {
+    report: (r) => reports.push(r),
+    screen: ({ text, player }) => (player.name === "Bo" && text.includes("quiet") ? { code: "muted", message: "You are muted for a day." } : undefined),
+  });
+  const room = await call(service, "POST", "rooms/find?kind=lobby&name=general", ada);
+  const id = room.body.room.id;
+  await call(service, "POST", "rooms/find?kind=lobby&name=general", bo);
+  for (const text of ["one", "two", "three"]) {
+    clock.t += 3_100;
+    assert.equal((await call(service, "POST", `rooms/${id}/events`, bo, { type: "chat", text })).status, 200);
+  }
+  clock.t += 3_100;
+  const silenced = await call(service, "POST", `rooms/${id}/events`, bo, { type: "chat", text: "quiet" });
+  assert.equal(silenced.status, 422);
+  assert.deepEqual(silenced.body, { error: "muted", message: "You are muted for a day." });
+  const read = await call(service, "GET", `rooms/${id}`, ada);
+  const bob = read.body.room.members.find((m) => m.name === "Bo").handle;
+  const made = await call(service, "POST", `rooms/${id}/report`, ada, { handle: bob, note: "spam" });
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  assert.equal(made.body.lines, 3);
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].reporter.name, "Ada");
+  assert.equal(reports[0].about.name, "Bo");
+  assert.equal(reports[0].note, "spam");
+  assert.deepEqual(reports[0].lines.map((l) => l.text), ["one", "two", "three"]);
+  assert.ok(reports[0].lines.every((l) => !("player" in l)));
+  assert.equal((await call(service, "POST", `rooms/${id}/report`, ada, { handle: "0".repeat(16) })).status, 404);
 });

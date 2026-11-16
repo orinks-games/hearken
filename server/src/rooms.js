@@ -6,35 +6,57 @@
 // module (`hearken_play`) to learn where the match stands and, at the end,
 // what it came to. Nothing the clients say about the outcome is read.
 //
+// A kind with seats but no rules is a channel: a room that is open as soon
+// as it is made, where members come and go and only chat is posted. A
+// channel joined by name (`rooms/find?kind=K&name=N`) is made the first
+// time anyone asks for it and stays open. A direct room (`rooms/direct`)
+// is a channel of two, found or made by the other player's handle.
+//
 // Routes, relative to the base URL (all with a bearer token):
 //   POST rooms?kind=<kind>        { context?, open? }: a new room, with an invite code
 //   POST rooms/join               { code }: take the next seat
-//   POST rooms/find?kind=<kind>   join an open room of that kind, or make one
+//   POST rooms/find?kind=<kind>   join an open room of that kind, or make one;
+//                                 &name=<name> names a channel to join or make
+//   POST rooms/direct?kind=<kind> { handle }: the two-member room with that player
 //   GET  rooms                    my rooms
 //   GET  rooms/<id>?after=<seq>   the room and its events after seq
+//   GET  rooms/<id>?last=<n>      the room and its last n events (&before=<seq> pages back)
 //   POST rooms/<id>/start         the host starts with enough seats filled
 //   POST rooms/<id>/events        { type: "turn" | "chat" | "leave" | "finish", ... }
 //                                 (leave on a room that is over drops it from my rooms)
+//   POST rooms/<id>/report        { handle, note? }: hand a member's recent lines to the host
+//   GET  rooms/mutes              who I have muted or blocked
+//   POST rooms/mutes              { handle, mode: "mute" | "block" | "none" }
+//
+// Players are known to each other by handle: a short stable id made from
+// the account, never the account id itself. Mutes and blocks are kept per
+// handle pair and never shown to the other side: a muted player's lines
+// are left out of what the muter reads; a block does that both ways and
+// keeps the two out of each other's direct rooms and Play-with-anyone games.
 //
 // The room's phase is an explicit state machine (`PHASES`, `transition`):
 //   waiting   -> playing   start, or the last seat filled
 //   waiting   -> closed    the last member left, or idle past the limit
 //   playing   -> finished  the rules ended (a turn, a seat leaving, a forfeit)
 //   playing   -> abandoned idle past the handler's idle_limit
+//   open      -> closed    a channel emptied or idle past its limit (a named
+//                          channel stays open), or a direct room left
 // finished, closed and abandoned are final. An event on a room in the
 // wrong phase is refused as 409 wrong-phase, naming the phase.
 //
 // docs/online.md in the Hearken repository is the protocol in full.
 
 import { Refusal, refuse } from "./refusal.js";
+import { sha256Hex } from "./rules.js";
 
-export const PHASES = ["waiting", "playing", "finished", "closed", "abandoned"];
+export const PHASES = ["waiting", "playing", "finished", "closed", "abandoned", "open"];
 export const FINAL_PHASES = ["finished", "closed", "abandoned"];
 
 /** The phase changes a room may make. Anything else is a bug, not a state. */
 const TRANSITIONS = {
   waiting: ["playing", "closed"],
   playing: ["finished", "abandoned"],
+  open: ["closed"],
   finished: [],
   closed: [],
   abandoned: [],
@@ -71,12 +93,23 @@ export function normalizeRoomCode(text) {
   return raw;
 }
 
+/** Seats in a match: the seat rides in the top four bits of each input code. */
 export const MAX_SEATS = 16;
+/** Members of a channel, which has no input codes to fit them in. */
+export const MAX_CHANNEL_SEATS = 500;
 export const MAX_SEATED_CODE = 0xffe;
 export const MAX_INPUTS_PER_TURN = 256;
 export const MAX_CHAT_CHARS = 200;
+export const MAX_TAG_CHARS = 64;
+export const MAX_NAME_CHARS = 32;
 export const MAX_EVENTS = 65_536;
 export const PAGE = 500;
+/** How many lines a history read hands back at most. */
+export const MAX_HISTORY = 100;
+/** The lines a report carries: the reported member's most recent ones. */
+export const REPORT_LINES = 20;
+export const HANDLE_LENGTH = 16;
+export const MUTE_MODES = ["mute", "block", "none"];
 
 /** A line as it may be spoken: no control or invisible characters, one space between words. */
 export function cleanText(text, max = MAX_CHAT_CHARS) {
@@ -97,6 +130,25 @@ export function cleanText(text, max = MAX_CHAT_CHARS) {
   return [...out].slice(0, max).join("");
 }
 
+/** A channel name as the store keys it: lower case, one space between words. */
+export function normalizeChannelName(text) {
+  return cleanText(text, MAX_NAME_CHARS).toLowerCase();
+}
+
+/**
+ * A player's handle: what other players know them by. Stable for the
+ * account, short enough to compare, and not the account id, which never
+ * leaves the server.
+ */
+export async function handleOf(playerId) {
+  const hex = await sha256Hex(new TextEncoder().encode(`hearken-handle:${playerId}`));
+  return hex.slice(0, HANDLE_LENGTH);
+}
+
+export function isHandle(text) {
+  return typeof text === "string" && new RegExp(`^[0-9a-f]{${HANDLE_LENGTH}}$`).test(text);
+}
+
 function randomId() {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
@@ -113,14 +165,23 @@ function randomId() {
  * - `append` is atomic: one `seq` per event, in order, with no gaps. Two
  *   appends to one room at once get different seqs and both are kept.
  * - `create` gives the room an id and keeps its code unique among rooms
- *   that are not in a final phase.
+ *   that are not in a final phase, and a named channel unique for its kind.
  * - `save` writes the room record as a whole; the service reads, changes
  *   and saves a room within one request, and a store that can should do
  *   that under the room's lock (a Convex mutation does).
+ * - `prune` drops a room's events older than a moment, keeping `seq`
+ *   numbering as it was: a client's `after` cursor still means the same.
+ * - Players are remembered by handle (`rememberPlayer`, `playerByHandle`)
+ *   so a direct room can seat someone who is not in the room yet, and
+ *   `relations` answers who a player has muted or blocked, and who has
+ *   blocked them, in one read.
  */
 export function memoryRooms() {
   const rooms = new Map(); // id -> room
   const logs = new Map(); // id -> events
+  const players = new Map(); // handle -> { id, name, guest, handle }
+  const mutes = new Map(); // player id -> Map(handle -> "mute" | "block")
+  const blockedBy = new Map(); // player id -> Set(handle of who blocked them)
   return {
     async create(room) {
       const id = randomId();
@@ -142,6 +203,22 @@ export function memoryRooms() {
     async byCode(code) {
       for (const room of rooms.values()) {
         if (room.code === code && !FINAL_PHASES.includes(room.phase)) return room;
+      }
+      return null;
+    },
+    /** The named channel of `kind` that is not over, if any. */
+    async byName(kind, name) {
+      for (const room of rooms.values()) {
+        if (room.kind === kind && room.name === name && !FINAL_PHASES.includes(room.phase)) return room;
+      }
+      return null;
+    },
+    /** The room of `kind` between exactly these two players that is not over. */
+    async directBetween(kind, a, b) {
+      for (const room of rooms.values()) {
+        if (room.kind !== kind || FINAL_PHASES.includes(room.phase) || !room.direct) continue;
+        const ids = room.members.map((m) => m.id);
+        if (ids.length === 2 && ids.includes(a) && ids.includes(b)) return room;
       }
       return null;
     },
@@ -168,8 +245,57 @@ export function memoryRooms() {
     },
     async eventsAfter(id, seq, limit = PAGE) {
       const log = logs.get(id) ?? [];
-      const from = Math.max(0, Math.min(seq, log.length));
-      return log.slice(from, from + limit);
+      const out = [];
+      for (const e of log) {
+        if (e.seq <= seq) continue;
+        out.push(e);
+        if (out.length >= limit) break;
+      }
+      return out;
+    },
+    /** The last `limit` events with a seq below `seq` (or the last ones at all), oldest first. */
+    async eventsBefore(id, seq, limit = PAGE) {
+      const log = logs.get(id) ?? [];
+      const out = [];
+      for (let i = log.length - 1; i >= 0 && out.length < limit; i -= 1) {
+        if (seq !== null && log[i].seq >= seq) continue;
+        out.push(log[i]);
+      }
+      return out.reverse();
+    },
+    async prune(id, beforeAt) {
+      const log = logs.get(id);
+      if (!log) return;
+      let keep = 0;
+      while (keep < log.length && log[keep].at < beforeAt) keep += 1;
+      if (keep > 0) log.splice(0, keep);
+    },
+    async rememberPlayer(player) {
+      players.set(player.handle, { id: player.id, name: player.name, guest: Boolean(player.guest), handle: player.handle });
+    },
+    async playerByHandle(handle) {
+      return players.get(handle) ?? null;
+    },
+    async relations(playerId) {
+      const mine = mutes.get(playerId) ?? new Map();
+      return {
+        muted: new Set([...mine].filter(([, mode]) => mode === "mute").map(([h]) => h)),
+        blocked: new Set([...mine].filter(([, mode]) => mode === "block").map(([h]) => h)),
+        blockedBy: new Set(blockedBy.get(playerId) ?? []),
+      };
+    },
+    /** `mode` is "mute", "block" or "none" (forget). `them` is the other player, if known. */
+    async setMute(player, handle, mode, them) {
+      const mine = mutes.get(player.id) ?? new Map();
+      mutes.set(player.id, mine);
+      if (mode === "none") mine.delete(handle);
+      else mine.set(handle, mode);
+      if (them) {
+        const set = blockedBy.get(them.id) ?? new Set();
+        blockedBy.set(them.id, set);
+        if (mode === "block") set.add(player.handle);
+        else set.delete(player.handle);
+      }
     },
   };
 }
@@ -185,13 +311,15 @@ function error(status, code, message, extra) {
   return json({ error: code, ...(message ? { message } : {}), ...extra }, status);
 }
 
-/** A room as a client sees it: no player ids, seats instead. */
+/** A room as a client sees it: no player ids, seats and handles instead. */
 function publicRoom(room, player, now, presentMs) {
   const mine = room.members.find((m) => m.id === player.id);
   return {
     id: room.id,
     kind: room.kind,
     code: room.code,
+    name: room.name ?? null,
+    direct: Boolean(room.direct),
     phase: room.phase,
     open: room.open,
     seats: room.seats,
@@ -199,6 +327,7 @@ function publicRoom(room, player, now, presentMs) {
     members: room.members.map((m) => ({
       seat: m.seat,
       name: m.name,
+      handle: m.handle ?? null,
       guest: Boolean(m.guest),
       here: m.state === "taken" && now - m.lastSeen < presentMs,
       left: m.state === "left",
@@ -216,8 +345,9 @@ function publicRoom(room, player, now, presentMs) {
 
 /**
  * The rooms routes. `deps` is the service's: `rooms` (the store),
- * `accounts`, `limiter`, `rules`, `handlers`, `log`, `now`, `limits`, plus
- * `bearer(request)` and `readJson(request)` from the service.
+ * `accounts`, `limiter`, `rules`, `handlers`, `log`, `now`, `limits`,
+ * `screen`, `report`, plus `bearer(request)` and `readJson(request)` from
+ * the service.
  */
 export function roomRoutes(deps) {
   const { rooms, accounts, limiter, rules, handlers, log, bearer, readJson } = deps;
@@ -226,9 +356,13 @@ export function roomRoutes(deps) {
     openRoomsPerPlayer: 20,
     roomEventsPerMinute: 60,
     chatPerMinute: 10,
+    chatGapMs: 0,
     roomsPerHour: 30,
     presentMs: 30_000,
     idleMs: 30 * 86_400_000,
+    // A channel keeps its lines this long.
+    historyMs: 7 * 86_400_000,
+    mutesPerPlayer: 500,
     ...deps.limits,
   };
 
@@ -239,15 +373,30 @@ export function roomRoutes(deps) {
     return handler;
   }
 
+  /** A channel: seats, but no rules to play. */
+  function isChannel(handler) {
+    return Boolean(handler) && typeof handler.rules !== "string";
+  }
+
   function seatsOf(handler) {
+    const cap = isChannel(handler) ? MAX_CHANNEL_SEATS : MAX_SEATS;
     const min = Math.max(1, Number(handler.seats.min ?? 2));
-    const max = Math.min(MAX_SEATS, Math.max(min, Number(handler.seats.max ?? min)));
+    const max = Math.min(cap, Math.max(min, Number(handler.seats.max ?? min)));
     return { min, max };
+  }
+
+  function historyMsOf(handler) {
+    return handler?.history === undefined ? limits.historyMs : Math.max(0, Number(handler.history)) * 1000;
   }
 
   async function who(request) {
     const token = bearer(request);
-    return token ? await accounts.player(token) : null;
+    const player = token ? await accounts.player(token) : null;
+    if (!player) return null;
+    const handle = await handleOf(player.id);
+    const known = { ...player, handle };
+    await rooms.rememberPlayer(known);
+    return known;
   }
 
   /** A turn's inputs as the rules module takes them, from the whole log. */
@@ -298,6 +447,18 @@ export function roomRoutes(deps) {
   /** Idle and turn limits, applied when a room is read. */
   async function sweep(room, handler) {
     const t = now();
+    if (room.phase === "open") {
+      // A channel forgets lines past its history, and a channel nobody
+      // named closes once idle. A named channel stays, however quiet.
+      const history = historyMsOf(handler);
+      if (history > 0) await rooms.prune(room.id, t - history);
+      const idle = handler?.idle_limit !== undefined ? handler.idle_limit * 1000 : room.name ? 0 : limits.idleMs;
+      if (idle > 0 && t - room.updatedAt > idle) {
+        transition(room, "closed", t);
+        await rooms.save(room);
+      }
+      return;
+    }
     const idle = handler?.idle_limit ? handler.idle_limit * 1000 : limits.idleMs;
     if (room.phase === "waiting" && t - room.updatedAt > idle) {
       transition(room, "closed", t);
@@ -332,14 +493,20 @@ export function roomRoutes(deps) {
     room.members.push({
       id: player.id,
       name: player.name,
+      handle: player.handle ?? (await handleOf(player.id)),
       guest: Boolean(player.guest),
       seat: seatNo,
       state: "taken",
       host,
       lastSeen: now(),
       lastRead: 0,
+      lastChat: 0,
     });
     return seatNo;
+  }
+
+  function taken(room) {
+    return room.members.filter((m) => m.state === "taken").length;
   }
 
   async function begin(room, handler) {
@@ -356,33 +523,58 @@ export function roomRoutes(deps) {
     if (handler.progress) await settle(room, handler);
   }
 
+  /** Whether `a` and `b` have blocked each other, either way. */
+  function blockedPair(relationsA, memberB) {
+    return relationsA.blocked.has(memberB.handle) || relationsA.blockedBy.has(memberB.handle);
+  }
+
+  /** A new room of `kind` for `player`, hosted by them; a channel is open at once. */
+  async function makeRoom(kind, handler, player, { open = false, context = null, name = null, direct = false, members = [] } = {}) {
+    const seats = seatsOf(handler);
+    const t = now();
+    const room = await rooms.create({
+      kind,
+      phase: isChannel(handler) ? "open" : "waiting",
+      open: Boolean(open),
+      seats,
+      members: [],
+      context,
+      name,
+      direct,
+      createdAt: t,
+      updatedAt: t,
+    });
+    const seatNo = await seat(room, player, { host: true });
+    // In a channel, members come and go, so everyone's coming is logged.
+    if (room.phase === "open") {
+      await rooms.append(room.id, { type: "join", seat: seatNo, name: player.name, handle: player.handle, at: t, phase: room.phase });
+    }
+    for (const other of members) {
+      const seatNo = await seat(room, other);
+      await rooms.append(room.id, { type: "join", seat: seatNo, name: other.name, handle: other.handle, at: t, phase: room.phase });
+    }
+    await rooms.save(room);
+    return { room, seat: seatNo };
+  }
+
+  async function allowedToMake(player) {
+    if (!(await limiter.allow(`rooms:${player.id}`, limits.roomsPerHour, 3_600_000))) return error(429, "rate-limited");
+    const mine = (await rooms.listFor(player.id)).filter((r) => !FINAL_PHASES.includes(r.phase));
+    if (mine.length >= limits.openRoomsPerPlayer) return error(422, "too-many-rooms", "You have too many open games.");
+    return null;
+  }
+
   async function create(request, url) {
     const kind = url.searchParams.get("kind") ?? "";
     const handler = roomHandler(kind);
     if (!handler) return error(404, "unknown-kind");
     const player = await who(request);
     if (!player) return error(401, "signed-out");
-    if (!(await limiter.allow(`rooms:${player.id}`, limits.roomsPerHour, 3_600_000))) {
-      return error(429, "rate-limited", undefined, undefined);
-    }
-    const mine = (await rooms.listFor(player.id)).filter((r) => !FINAL_PHASES.includes(r.phase));
-    if (mine.length >= limits.openRoomsPerPlayer) return error(422, "too-many-rooms", "You have too many open games.");
+    const refused = await allowedToMake(player);
+    if (refused) return refused;
     const body = (await readJson(request, 16 * 1024)) ?? {};
-    const seats = seatsOf(handler);
-    const t = now();
-    const room = await rooms.create({
-      kind,
-      phase: "waiting",
-      open: Boolean(body.open),
-      seats,
-      members: [],
-      context: body.context ?? null,
-      createdAt: t,
-      updatedAt: t,
-    });
-    const seatNo = await seat(room, player, { host: true });
-    await rooms.save(room);
-    return json({ ok: true, room: publicRoom(room, player, t, limits.presentMs), seat: seatNo });
+    const { room, seat: seatNo } = await makeRoom(kind, handler, player, { open: body.open, context: body.context ?? null });
+    return json({ ok: true, room: publicRoom(room, player, now(), limits.presentMs), seat: seatNo });
   }
 
   async function join(request) {
@@ -407,15 +599,18 @@ export function roomRoutes(deps) {
     const already = room.members.find((m) => m.id === player.id);
     if (already) {
       already.lastSeen = t;
+      already.name = player.name;
       await rooms.save(room);
       return json({ ok: true, room: publicRoom(room, player, t, limits.presentMs), seat: already.seat });
     }
-    if (room.phase !== "waiting") return error(409, room.phase === "playing" ? "started" : "wrong-phase", undefined, { phase: room.phase });
-    if (room.members.filter((m) => m.state === "taken").length >= room.seats.max) return error(409, "full");
+    if (room.phase !== "waiting" && room.phase !== "open") {
+      return error(409, room.phase === "playing" ? "started" : "wrong-phase", undefined, { phase: room.phase });
+    }
+    if (taken(room) >= room.seats.max) return error(409, "full");
     const seatNo = await seat(room, player);
     room.updatedAt = t;
-    await rooms.append(room.id, { type: "join", seat: seatNo, name: player.name, at: t, phase: room.phase });
-    if (room.members.filter((m) => m.state === "taken").length >= room.seats.max) {
+    await rooms.append(room.id, { type: "join", seat: seatNo, name: player.name, handle: player.handle, at: t, phase: room.phase });
+    if (room.phase === "waiting" && taken(room) >= room.seats.max) {
       try {
         await begin(room, handler);
       } catch (e) {
@@ -436,14 +631,54 @@ export function roomRoutes(deps) {
     if (!handler) return error(404, "unknown-kind");
     const player = await who(request);
     if (!player) return error(401, "signed-out");
+    const name = normalizeChannelName(url.searchParams.get("name") ?? "");
+    if (name) {
+      // A channel by name: everyone who asks for it lands in the same room.
+      if (!isChannel(handler)) return error(422, "not-a-channel", "That kind is played, not joined by name.");
+      if (!(await limiter.allow(`join:${player.id}`, limits.roomEventsPerMinute, 60_000))) return error(429, "rate-limited");
+      const existing = await rooms.byName(kind, name);
+      if (existing) return joinRoom(existing, player);
+      const { room, seat: seatNo } = await makeRoom(kind, handler, player, { open: true, name });
+      return json({ ok: true, room: publicRoom(room, player, now(), limits.presentMs), seat: seatNo });
+    }
+    const relations = await rooms.relations(player.id);
     for (const room of await rooms.openRooms(kind)) {
       if (room.members.some((m) => m.id === player.id)) continue;
-      if (room.members.filter((m) => m.state === "taken").length >= room.seats.max) continue;
+      if (taken(room) >= room.seats.max) continue;
+      // Neither side of a block is paired with the other.
+      if (room.members.some((m) => blockedPair(relations, m))) continue;
       return joinRoom(room, player);
     }
-    const made = new URL(url);
-    made.searchParams.set("kind", kind);
-    return create(new Request(made, { method: "POST", headers: request.headers, body: JSON.stringify({ open: true }) }), made);
+    const refused = await allowedToMake(player);
+    if (refused) return refused;
+    const { room, seat: seatNo } = await makeRoom(kind, handler, player, { open: true });
+    return json({ ok: true, room: publicRoom(room, player, now(), limits.presentMs), seat: seatNo });
+  }
+
+  /** The two-member room of `kind` with another player, found or made. */
+  async function direct(request, url) {
+    const kind = url.searchParams.get("kind") ?? "";
+    const handler = roomHandler(kind);
+    if (!handler) return error(404, "unknown-kind");
+    if (!isChannel(handler) || seatsOf(handler).max !== 2) return error(422, "not-direct", "That kind is not for two.");
+    const player = await who(request);
+    if (!player) return error(401, "signed-out");
+    const body = (await readJson(request)) ?? {};
+    if (!isHandle(body.handle)) return error(400, "bad-request");
+    if (body.handle === player.handle) return error(422, "not-direct", "That is you.");
+    const them = await rooms.playerByHandle(body.handle);
+    if (!them) return error(404, "unknown-player", "No player by that handle.");
+    const relations = await rooms.relations(player.id);
+    if (blockedPair(relations, them)) return error(403, "blocked");
+    const existing = await rooms.directBetween(kind, player.id, them.id);
+    if (existing) {
+      await sweep(existing, handler);
+      if (existing.phase === "open") return joinRoom(existing, player);
+    }
+    const refused = await allowedToMake(player);
+    if (refused) return refused;
+    const { room, seat: seatNo } = await makeRoom(kind, handler, player, { direct: true, members: [them] });
+    return json({ ok: true, room: publicRoom(room, player, now(), limits.presentMs), seat: seatNo });
   }
 
   async function list(request) {
@@ -463,6 +698,12 @@ export function roomRoutes(deps) {
     return json({ ok: true, rooms: out });
   }
 
+  /** The handles whose chat `player` does not hear in `room`: muted, blocked, or blocking them. */
+  async function silenced(player) {
+    const relations = await rooms.relations(player.id);
+    return new Set([...relations.muted, ...relations.blocked, ...relations.blockedBy]);
+  }
+
   async function get(request, url, id) {
     const player = await who(request);
     if (!player) return error(401, "signed-out");
@@ -472,17 +713,41 @@ export function roomRoutes(deps) {
     if (!me) return error(403, "not-a-member");
     const handler = roomHandler(room.kind);
     await sweep(room, handler);
-    const after = Math.max(0, Number(url.searchParams.get("after") ?? "0") || 0);
-    const events = await rooms.eventsAfter(room.id, after, PAGE);
     const t = now();
     me.lastSeen = t;
+    const quiet = await silenced(player);
+    const audible = (e) => !(e.type === "chat" && e.handle && quiet.has(e.handle));
+    const lastParam = url.searchParams.get("last");
+    if (lastParam !== null) {
+      // History: the last lines, or the ones before a seq, oldest first.
+      const last = Math.min(MAX_HISTORY, Math.max(1, Number(lastParam) || 0));
+      const beforeParam = url.searchParams.get("before");
+      const before = beforeParam === null ? null : Math.max(0, Number(beforeParam) || 0);
+      const events = (await rooms.eventsBefore(room.id, before, last)).filter(audible);
+      if (before === null) me.lastRead = room.seq;
+      await rooms.save(room);
+      return json({
+        ok: true,
+        room: publicRoom(room, player, t, limits.presentMs),
+        events: events.map(publicEvent),
+        first_seq: events[0]?.seq ?? null,
+        // Where the reader now stands: the latest line, read or left out.
+        read_to: before === null ? room.seq : null,
+        more: events.length === last,
+      });
+    }
+    const after = Math.max(0, Number(url.searchParams.get("after") ?? "0") || 0);
+    const events = await rooms.eventsAfter(room.id, after, PAGE);
     if (events.length > 0) me.lastRead = Math.max(me.lastRead ?? 0, events.at(-1).seq);
     else me.lastRead = Math.max(me.lastRead ?? 0, Math.min(after, room.seq));
     await rooms.save(room);
     return json({
       ok: true,
       room: publicRoom(room, player, t, limits.presentMs),
-      events: events.map(publicEvent),
+      events: events.filter(audible).map(publicEvent),
+      // The last seq this page covered, lines left out included, so a
+      // client whose last line was one it does not hear is not behind.
+      read_to: events.length > 0 ? events.at(-1).seq : Math.min(after, room.seq),
       more: events.length === PAGE,
     });
   }
@@ -503,8 +768,7 @@ export function roomRoutes(deps) {
     const handler = roomHandler(room.kind);
     if (!handler) return error(404, "unknown-kind");
     if (room.phase !== "waiting") return error(409, "wrong-phase", undefined, { phase: room.phase });
-    const taken = room.members.filter((m) => m.state === "taken").length;
-    if (taken < room.seats.min) return error(422, "not-enough-players", `This game needs ${room.seats.min} players.`);
+    if (taken(room) < room.seats.min) return error(422, "not-enough-players", `This game needs ${room.seats.min} players.`);
     try {
       await begin(room, handler);
     } catch (e) {
@@ -516,6 +780,73 @@ export function roomRoutes(deps) {
     }
     await rooms.save(room);
     return json({ ok: true, room: publicRoom(room, player, now(), limits.presentMs) });
+  }
+
+  /** One player's leaving: a member out of a room that has not ended. */
+  async function leave(room, handler, me, player, t) {
+    if (FINAL_PHASES.includes(room.phase)) {
+      // Leaving a room that is over takes it off the player's list.
+      me.dismissed = true;
+      await rooms.save(room);
+      return json({ ok: true, seq: room.seq, room: publicRoom(room, player, t, limits.presentMs) });
+    }
+    if (room.phase === "waiting" || room.phase === "open") {
+      room.members = room.members.filter((m) => m.id !== player.id);
+      const seq = await rooms.append(room.id, { type: "leave", seat: me.seat, name: me.name, handle: me.handle, at: t, phase: room.phase });
+      room.updatedAt = t;
+      // A match that empties closes; so does a direct room either side
+      // leaves, and a channel nobody named. A named channel waits.
+      const closes = room.direct || (room.members.length === 0 && !room.name);
+      if (closes) transition(room, "closed", t);
+      else if (me.host && room.members.length > 0) room.members[0].host = true;
+      await rooms.save(room);
+      return json({ ok: true, seq, room: publicRoom(room, player, t, limits.presentMs) });
+    }
+    if (me.state === "left") return json({ ok: true, seq: room.seq, room: publicRoom(room, player, t, limits.presentMs) });
+    me.state = "left";
+    const seq = await rooms.append(room.id, { type: "left", seat: me.seat, player: player.id, at: t, reason: "left", phase: room.phase });
+    room.updatedAt = t;
+    await settle(room, handler);
+    await rooms.save(room);
+    return json({ ok: true, seq, room: publicRoom(room, player, t, limits.presentMs) });
+  }
+
+  /** A chat line: cleaned, paced, screened, then logged. */
+  async function chat(room, handler, me, player, body, t) {
+    if (FINAL_PHASES.includes(room.phase)) return error(409, "wrong-phase", undefined, { phase: room.phase });
+    const perMinute = handler.chat_limit?.per_minute ?? limits.chatPerMinute;
+    const gapMs = handler.chat_limit?.gap !== undefined ? handler.chat_limit.gap * 1000 : limits.chatGapMs;
+    if (gapMs > 0 && t - (me.lastChat ?? 0) < gapMs) return error(429, "too-fast", "Wait a moment before the next line.");
+    if (!(await limiter.allow(`chat:${player.id}:${room.id}`, perMinute, 60_000))) {
+      return error(429, "too-fast", "Wait a moment before the next line.");
+    }
+    const text = cleanText(body.text);
+    if (!text) return error(400, "bad-request");
+    const tag = body.tag === undefined || body.tag === null ? null : cleanText(body.tag, MAX_TAG_CHARS) || null;
+    if (typeof deps.screen === "function") {
+      const verdict = await deps.screen({ text, tag, player, room: publicRoom(room, player, t, limits.presentMs) });
+      if (verdict === false) return error(422, "screened", "That line was not sent.");
+      if (typeof verdict === "string") return error(422, "screened", verdict);
+      if (verdict && typeof verdict === "object" && typeof verdict.code === "string") {
+        return error(422, verdict.code, verdict.message);
+      }
+    }
+    me.lastChat = t;
+    const seq = await rooms.append(room.id, {
+      type: "chat",
+      seat: me.seat,
+      name: me.name,
+      handle: me.handle,
+      player: player.id,
+      text,
+      ...(tag ? { tag } : {}),
+      at: t,
+      phase: room.phase,
+    });
+    // A line is activity in a channel, where nothing else is.
+    if (room.phase === "open") room.updatedAt = t;
+    await rooms.save(room);
+    return json({ ok: true, seq });
   }
 
   async function post(request, id) {
@@ -535,7 +866,10 @@ export function roomRoutes(deps) {
     await sweep(room, handler);
     const t = now();
     me.lastSeen = t;
-    if (room.seq >= MAX_EVENTS && body.type !== "leave") return error(422, "too-long", "This game has gone on too long.");
+    me.name = player.name;
+    if (room.phase !== "open" && room.seq >= MAX_EVENTS && body.type !== "leave") {
+      return error(422, "too-long", "This game has gone on too long.");
+    }
     try {
       switch (body.type) {
         case "turn": {
@@ -556,46 +890,10 @@ export function roomRoutes(deps) {
           await rooms.save(room);
           return json({ ok: true, seq, room: publicRoom(room, player, t, limits.presentMs) });
         }
-        case "chat": {
-          if (FINAL_PHASES.includes(room.phase)) return error(409, "wrong-phase", undefined, { phase: room.phase });
-          if (!(await limiter.allow(`chat:${player.id}:${room.id}`, limits.chatPerMinute, 60_000))) {
-            return error(429, "rate-limited");
-          }
-          const text = cleanText(body.text);
-          if (!text) return error(400, "bad-request");
-          if (typeof deps.screen === "function") {
-            const verdict = await deps.screen({ text, player, room: publicRoom(room, player, t, limits.presentMs) });
-            if (verdict === false) return error(422, "not-allowed", "That line was not sent.");
-            if (typeof verdict === "string") return error(422, "not-allowed", verdict);
-          }
-          const seq = await rooms.append(room.id, { type: "chat", seat: me.seat, name: me.name, player: player.id, text, at: t, phase: room.phase });
-          await rooms.save(room);
-          return json({ ok: true, seq });
-        }
-        case "leave": {
-          if (FINAL_PHASES.includes(room.phase)) {
-            // Leaving a room that is over takes it off the player's list.
-            me.dismissed = true;
-            await rooms.save(room);
-            return json({ ok: true, seq: room.seq, room: publicRoom(room, player, t, limits.presentMs) });
-          }
-          if (room.phase === "waiting") {
-            room.members = room.members.filter((m) => m.id !== player.id);
-            const seq = await rooms.append(room.id, { type: "leave", seat: me.seat, at: t, phase: room.phase });
-            room.updatedAt = t;
-            if (room.members.length === 0) transition(room, "closed", t);
-            else if (me.host) room.members[0].host = true;
-            await rooms.save(room);
-            return json({ ok: true, seq, room: publicRoom(room, player, t, limits.presentMs) });
-          }
-          if (me.state === "left") return json({ ok: true, seq: room.seq, room: publicRoom(room, player, t, limits.presentMs) });
-          me.state = "left";
-          const seq = await rooms.append(room.id, { type: "left", seat: me.seat, player: player.id, at: t, reason: "left", phase: room.phase });
-          room.updatedAt = t;
-          await settle(room, handler);
-          await rooms.save(room);
-          return json({ ok: true, seq, room: publicRoom(room, player, t, limits.presentMs) });
-        }
+        case "chat":
+          return chat(room, handler, me, player, body, t);
+        case "leave":
+          return leave(room, handler, me, player, t);
         case "finish": {
           if (room.phase !== "playing") return error(409, "wrong-phase", undefined, { phase: room.phase });
           await settle(room, handler, { finish: true });
@@ -614,6 +912,79 @@ export function roomRoutes(deps) {
     }
   }
 
+  /** A member's recent lines, handed to the host's `report` hook. */
+  async function report(request, id) {
+    const player = await who(request);
+    if (!player) return error(401, "signed-out");
+    const room = await rooms.get(id);
+    if (!room) return error(404, "not-found");
+    const me = room.members.find((m) => m.id === player.id);
+    if (!me) return error(403, "not-a-member");
+    if (!(await limiter.allow(`report:${player.id}`, limits.roomEventsPerMinute, 60_000))) return error(429, "rate-limited");
+    const body = (await readJson(request)) ?? {};
+    if (!isHandle(body.handle)) return error(400, "bad-request");
+    const about = room.members.find((m) => m.handle === body.handle) ?? (await rooms.playerByHandle(body.handle));
+    if (!about) return error(404, "unknown-player", "No player by that handle.");
+    const lines = [];
+    let before = null;
+    while (lines.length < REPORT_LINES) {
+      const page = await rooms.eventsBefore(room.id, before, PAGE);
+      if (page.length === 0) break;
+      for (let i = page.length - 1; i >= 0 && lines.length < REPORT_LINES; i -= 1) {
+        const e = page[i];
+        if (e.type === "chat" && e.handle === body.handle) lines.unshift(publicEvent(e));
+      }
+      before = page[0].seq;
+      if (page.length < PAGE) break;
+    }
+    const note = cleanText(body.note, MAX_CHAT_CHARS) || null;
+    if (typeof deps.report === "function") {
+      try {
+        await deps.report({
+          reporter: { id: player.id, name: player.name, handle: player.handle },
+          about: { id: about.id, name: about.name, handle: about.handle },
+          room: publicRoom(room, player, now(), limits.presentMs),
+          lines,
+          note,
+        });
+      } catch (e) {
+        log({ error: String(e?.stack ?? e), note: "a report was made but its handler failed" });
+      }
+    } else {
+      log({ note: "a player was reported, and the service has no report hook", room: room.id, about: about.handle, lines, reporter: player.handle });
+    }
+    return json({ ok: true, lines: lines.length });
+  }
+
+  async function mutes(request, method) {
+    const player = await who(request);
+    if (!player) return error(401, "signed-out");
+    if (method === "GET") {
+      const relations = await rooms.relations(player.id);
+      const named = async (handle, mode) => {
+        const them = await rooms.playerByHandle(handle);
+        return { handle, mode, name: them?.name ?? null };
+      };
+      const out = [];
+      for (const h of relations.muted) out.push(await named(h, "mute"));
+      for (const h of relations.blocked) out.push(await named(h, "block"));
+      return json({ ok: true, mutes: out });
+    }
+    if (!(await limiter.allow(`mutes:${player.id}`, limits.roomEventsPerMinute, 60_000))) return error(429, "rate-limited");
+    const body = (await readJson(request)) ?? {};
+    if (!isHandle(body.handle) || !MUTE_MODES.includes(body.mode)) return error(400, "bad-request");
+    if (body.handle === player.handle) return error(422, "not-allowed", "That is you.");
+    const them = await rooms.playerByHandle(body.handle);
+    if (body.mode !== "none") {
+      const relations = await rooms.relations(player.id);
+      if (relations.muted.size + relations.blocked.size >= limits.mutesPerPlayer && !relations.muted.has(body.handle) && !relations.blocked.has(body.handle)) {
+        return error(422, "too-many", "You have muted too many players.");
+      }
+    }
+    await rooms.setMute(player, body.handle, body.mode, them);
+    return json({ ok: true, handle: body.handle, mode: body.mode, name: them?.name ?? null });
+  }
+
   /** Answers a rooms request, or null when `parts` is not a rooms route. */
   return async function route(request, method, parts, url) {
     if (parts[0] !== "rooms") return null;
@@ -621,10 +992,13 @@ export function roomRoutes(deps) {
     if (method === "GET" && parts.length === 1) return list(request);
     if (method === "POST" && parts.length === 2 && parts[1] === "join") return join(request);
     if (method === "POST" && parts.length === 2 && parts[1] === "find") return find(request, url);
+    if (method === "POST" && parts.length === 2 && parts[1] === "direct") return direct(request, url);
+    if ((method === "GET" || method === "POST") && parts.length === 2 && parts[1] === "mutes") return mutes(request, method);
     if (parts.length >= 2 && /^[0-9a-f]{24}$/.test(parts[1])) {
       if (method === "GET" && parts.length === 2) return get(request, url, parts[1]);
       if (method === "POST" && parts.length === 3 && parts[2] === "start") return start(request, parts[1]);
       if (method === "POST" && parts.length === 3 && parts[2] === "events") return post(request, parts[1]);
+      if (method === "POST" && parts.length === 3 && parts[2] === "report") return report(request, parts[1]);
     }
     return error(404, "not-found");
   };

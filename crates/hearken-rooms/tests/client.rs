@@ -621,3 +621,118 @@ trait Pipe: Sized {
     }
 }
 impl<T> Pipe for T {}
+
+#[test]
+fn a_channel_starts_from_its_recent_lines_and_hidden_lines_do_not_leave_it_behind() {
+    let (mut rooms, script) = client();
+    let now = Instant::now();
+    let members = &[(0, "Ada"), (1, "Bo")];
+    let channel = |seq: u64| {
+        let mut v = room(
+            "open",
+            seq,
+            members,
+            json!({ "name": "general", "kind": "lobby" }),
+        );
+        v["members"][1]["handle"] = json!("0123456789abcdef");
+        v
+    };
+    script.push_for("name=General", ok_room(channel(40)));
+    let ticket = rooms.channel("lobby", " General ").unwrap();
+    settle(&mut rooms, now);
+    assert_eq!(rooms.result(ticket), Some(Ok(Answer::Room(room_id()))));
+    assert!(rooms.room(&room_id()).unwrap().info.is_channel());
+
+    // Watching reads the last lines, not the log from its first line, and
+    // the one the player does not hear (seq 40, muted) leaves a marker.
+    script.push_for("?last=20", reply(200, json!({
+        "ok": true,
+        "room": channel(40),
+        "events": [
+            { "seq": 38, "type": "chat", "at": 1038, "seat": 1, "name": "Bo", "handle": "0123456789abcdef", "text": "evening", "tag": "Lake Road" },
+            { "seq": 39, "type": "join", "at": 1039, "seat": 0, "name": "Ada" },
+        ],
+        "first_seq": 38,
+        "read_to": 40,
+        "more": false,
+    })));
+    rooms.watch(&room_id(), true);
+    let notices = settle(&mut rooms, now);
+    assert!(notices.contains(&Notice::Events(room_id(), 38)));
+    assert_eq!(rooms.focus(), Some(&room_id()));
+    let room = rooms.room(&room_id()).unwrap();
+    assert_eq!(room.read_seq(), 40);
+    assert!(!room.behind());
+    let lines: Vec<String> = room.chat_events().filter_map(|e| e.chat_line()).collect();
+    assert_eq!(lines, vec!["Bo, Lake Road: evening".to_string()]);
+    // The next poll carries on from there.
+    script.push_for("?after=40", ok_events(channel(41), vec![
+        json!({ "seq": 41, "type": "chat", "at": 1041, "seat": 1, "name": "Bo", "handle": "0123456789abcdef", "text": "back" }),
+    ], false));
+    settle(&mut rooms, now + POLL_ACTIVE);
+    assert_eq!(rooms.room(&room_id()).unwrap().chat().count(), 2);
+    let paths = script.paths();
+    assert!(paths.iter().any(|p| p.ends_with("?last=20")), "{paths:?}");
+    assert!(paths.iter().any(|p| p.ends_with("?after=40")), "{paths:?}");
+    assert!(!paths.iter().any(|p| p.ends_with("?after=0")), "{paths:?}");
+
+    // Muting answers Done and reads the watched room again at once.
+    script.push_for(
+        "rooms/mutes",
+        reply(
+            200,
+            json!({ "ok": true, "handle": "0123456789abcdef", "mode": "mute", "name": "Bo" }),
+        ),
+    );
+    script.push_for("?after=41", ok_events(channel(41), vec![], false));
+    let ticket = rooms
+        .set_mute("0123456789abcdef", hearken_rooms::MuteMode::Mute)
+        .unwrap();
+    settle(&mut rooms, now + POLL_ACTIVE);
+    assert_eq!(rooms.result(ticket), Some(Ok(Answer::Done)));
+    script.push_for("rooms/mutes", reply(200, json!({ "ok": true, "mutes": [{ "handle": "0123456789abcdef", "mode": "mute", "name": "Bo" }] })));
+    let ticket = rooms.mutes().unwrap();
+    settle(&mut rooms, now + POLL_ACTIVE);
+    match rooms.result(ticket) {
+        Some(Ok(Answer::Mutes(list))) => {
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0].mode, hearken_rooms::MuteMode::Mute);
+            assert_eq!(list[0].name.as_deref(), Some("Bo"));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // A tagged line, a report, and a direct room refused by a block.
+    script.push_for("/events", reply(200, json!({ "ok": true, "seq": 42 })));
+    rooms
+        .say_tagged(&room_id(), "hello", " Lake  Road ")
+        .unwrap();
+    script.push_for("/report", reply(200, json!({ "ok": true, "lines": 2 })));
+    let report = rooms
+        .report(&room_id(), "0123456789abcdef", "spam")
+        .unwrap();
+    script.push_for(
+        "rooms/direct?kind=dm",
+        reply(403, json!({ "error": "blocked" })),
+    );
+    let dm = rooms.direct("dm", "0123456789abcdef").unwrap();
+    settle(&mut rooms, now + POLL_ACTIVE);
+    assert_eq!(rooms.result(report), Some(Ok(Answer::Done)));
+    assert_eq!(rooms.result(dm), Some(Err(RoomsError::Blocked)));
+    let sent = script
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r.1.ends_with("/events"))
+        .unwrap()
+        .2
+        .clone();
+    assert_eq!(
+        sent,
+        json!({ "type": "chat", "text": "hello", "tag": "Lake Road" })
+    );
+    assert_eq!(rooms.direct("dm", "nope"), Err(RoomsError::UnknownPlayer));
+    rooms.watch(&room_id(), false);
+    assert_eq!(rooms.focus(), None);
+}
