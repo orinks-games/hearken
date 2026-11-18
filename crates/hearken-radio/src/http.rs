@@ -130,6 +130,7 @@ fn call(url: &str, opts: &StreamOptions, gzip: bool) -> Result<Response, Fault> 
 /// certificate a station's server leaves out, which many station servers
 /// do. None (ureq's own check, against the system's roots) where the
 /// platform's verifier cannot start. Built once.
+#[cfg(not(target_os = "android"))]
 fn platform_tls() -> Option<Arc<rustls::ClientConfig>> {
     static CONFIG: OnceLock<Option<Arc<rustls::ClientConfig>>> = OnceLock::new();
     CONFIG
@@ -147,6 +148,29 @@ fn platform_tls() -> Option<Arc<rustls::ClientConfig>> {
                 .ok()?
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_no_client_auth();
+            Some(Arc::new(config))
+        })
+        .clone()
+}
+
+/// TLS against the bundled WebPKI roots on Android. The platform verifier
+/// there calls into Java through a context the app must hand it first, and
+/// without one it panics on a station's first connection; nor are the
+/// phone's own roots files ureq can read. Built once.
+#[cfg(target_os = "android")]
+fn platform_tls() -> Option<Arc<rustls::ClientConfig>> {
+    static CONFIG: OnceLock<Option<Arc<rustls::ClientConfig>>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let roots = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            let config = rustls::ClientConfig::builder_with_provider(provider)
+                .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+                .ok()?
+                .with_root_certificates(roots)
                 .with_no_client_auth();
             Some(Arc::new(config))
         })

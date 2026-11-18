@@ -23,7 +23,6 @@ log.workspace = true
 m3u8-rs.workspace = true
 mpeg2ts.workspace = true
 rustls.workspace = true
-rustls-platform-verifier.workspace = true
 # AAC also registers Symphonia's ADTS reader, the format most AAC stations send;
 # isomp4 reads fMP4 (CMAF) HLS segments.
 symphonia = { workspace = true, features = ["aac", "isomp4"] }
@@ -31,6 +30,14 @@ symphonia-adapter-fdk-aac = { workspace = true, optional = true }
 symphonia-adapter-libopus.workspace = true
 ureq.workspace = true
 url.workspace = true
+
+# A station's certificate is checked the operating system's way, except on
+# Android, where the bundled WebPKI roots check it (see http.rs).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rustls-platform-verifier.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-roots = "0.26"
 
 # The system's own AAC decoder, which decodes HE-AAC (see src/system_aac).
 [target.'cfg(windows)'.dependencies]

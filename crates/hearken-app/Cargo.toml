@@ -80,6 +80,12 @@ sdl2 = { workspace = true, features = ["bundled", "static-link"] }
 [target.'cfg(target_os = "ios")'.dependencies]
 sdl2 = { workspace = true, features = ["bundled", "static-link"] }
 
+# Android builds SDL2 from source as its own libSDL2.so, not static: SDL's
+# Java activity reaches SDL through JNI symbols that a static SDL inside the
+# game's cdylib would hide.
+[target.'cfg(target_os = "android")'.dependencies]
+sdl2 = { workspace = true, features = ["bundled"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 # Release archives for the update tests.
