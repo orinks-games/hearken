@@ -30,6 +30,9 @@ pub struct Options {
     pub channel: String,
     /// A Markdown file of release notes for the update manifest.
     pub notes: Option<PathBuf>,
+    /// Build as portable (`Some(true)`) or installed (`Some(false)`) for this
+    /// release only, whatever the game's `portable` setting says.
+    pub portable: Option<bool>,
 }
 
 impl Default for Options {
@@ -37,7 +40,42 @@ impl Default for Options {
         Options {
             channel: hearken_update::DEFAULT_CHANNEL.to_string(),
             notes: None,
+            portable: None,
         }
+    }
+}
+
+/// Which kind of copy a release is, and the part of its name that tells it
+/// apart from the game's usual kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Kind {
+    /// Whether the copy carries `portable.txt`.
+    portable: bool,
+    /// `portable` or `installed` when this release is not the kind the game's
+    /// `Cargo.toml` asks for, so both kinds can sit in `dist/` and on one
+    /// GitHub release. The game's own kind has none.
+    suffix: Option<&'static str>,
+}
+
+/// The kind a release is: the game's setting, unless `requested` overrides
+/// it. A Mac app ignores `portable`, so on a Mac the kinds are one build and
+/// never differ in name.
+fn release_kind(game_portable: bool, requested: Option<bool>, mac_app: bool) -> Kind {
+    let portable = requested.unwrap_or(game_portable);
+    let suffix = match (mac_app || portable == game_portable, portable) {
+        (true, _) => None,
+        (false, true) => Some("portable"),
+        (false, false) => Some("installed"),
+    };
+    Kind { portable, suffix }
+}
+
+/// The release's name without its extension: `my-game-1.4.0-windows-x64`,
+/// with `-portable` or `-installed` after it for the other kind.
+fn release_stem(package: &str, version: &str, platform: &str, kind: Kind) -> String {
+    match kind.suffix {
+        Some(suffix) => format!("{package}-{version}-{platform}-{suffix}"),
+        None => format!("{package}-{version}-{platform}"),
     }
 }
 
@@ -95,7 +133,12 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
     // The platform part of the name, the one `hearken play --download`
     // looks for and the update manifest names.
     let platform = hearken_update::platform::current();
-    let stem = format!("{}-{}-{platform}", project.package, project.version);
+    let kind = release_kind(
+        project.portable,
+        options.portable,
+        cfg!(target_os = "macos"),
+    );
+    let stem = release_stem(&project.package, &project.version, &platform, kind);
     let dist = project.dir.join("dist");
     // An earlier release's module is not this one's.
     let stale = format!("{}-{}-rules-", project.package, project.version);
@@ -156,7 +199,7 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
     if cfg!(windows) {
         windows_runtime(&project.release_dir(), &stage)?;
     }
-    if project.portable {
+    if kind.portable {
         if layout.app.is_some() {
             // An app is replaced whole on update, and macOS may run it from
             // a read-only copy, so its saves go in Application Support.
@@ -183,7 +226,16 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
             make_archive(&dist, &stem)?;
         }
     }
-    if let Some(key) = &update {
+    if let (Some(_), Some(suffix)) = (&update, kind.suffix) {
+        // A manifest is named for its channel and platform alone, so this
+        // one would replace the game's usual build's, and an update would
+        // then turn players' copies from one kind into the other.
+        println!(
+            "No update manifest is written for this {suffix} build, because it would replace the \
+             one for the game's usual build. Publish the archive as an extra download. Players \
+             who update get the game's usual build."
+        );
+    } else if let Some(key) = &update {
         let manifest = write_manifest(
             &archive,
             &ManifestFor {
@@ -596,9 +648,60 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        directml_notices, engine_reads_packs, key_env, read_notes, require_sdl2, rfc3339,
-        rules_file_name, vc_arch, write_manifest, ManifestFor, UpdateIdentity,
+        directml_notices, engine_reads_packs, key_env, read_notes, release_kind, release_stem,
+        require_sdl2, rfc3339, rules_file_name, vc_arch, write_manifest, Kind, ManifestFor,
+        UpdateIdentity,
     };
+
+    #[test]
+    fn a_release_is_the_games_kind_unless_asked_otherwise() {
+        let kind = |game, asked, mac| release_kind(game, asked, mac);
+        let plain = |portable| Kind {
+            portable,
+            suffix: None,
+        };
+        assert_eq!(kind(true, None, false), plain(true));
+        assert_eq!(kind(false, None, false), plain(false));
+        // Asking for what the game already is changes nothing, name included.
+        assert_eq!(kind(true, Some(true), false), plain(true));
+        assert_eq!(kind(false, Some(false), false), plain(false));
+        assert_eq!(
+            kind(false, Some(true), false),
+            Kind {
+                portable: true,
+                suffix: Some("portable")
+            }
+        );
+        assert_eq!(
+            kind(true, Some(false), false),
+            Kind {
+                portable: false,
+                suffix: Some("installed")
+            }
+        );
+        // A Mac app is the same build either way, so the name stays.
+        assert_eq!(kind(false, Some(true), true).suffix, None);
+        assert_eq!(kind(true, Some(false), true).suffix, None);
+    }
+
+    #[test]
+    fn the_other_kind_gets_its_own_archive_name() {
+        let usual = release_kind(false, None, false);
+        let other = release_kind(false, Some(true), false);
+        assert_eq!(
+            release_stem("my-game", "1.4.0", "windows-x64", usual),
+            "my-game-1.4.0-windows-x64"
+        );
+        assert_eq!(
+            release_stem("my-game", "1.4.0", "windows-x64", other),
+            "my-game-1.4.0-windows-x64-portable"
+        );
+        let installed = release_kind(true, Some(false), false);
+        assert_eq!(
+            release_stem("my-game", "1.4.0", "linux-x64", installed),
+            "my-game-1.4.0-linux-x64-installed"
+        );
+    }
 
     #[test]
     fn a_windows_release_without_sdl2_is_refused() {

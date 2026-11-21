@@ -149,6 +149,13 @@ writes its own manifest. `hearken release` writes, in `dist/`:
 - its signed manifest, `update-stable-windows-x64.json`, which signs the
   index's size and SHA-256 too.
 
+A release built with `hearken release --portable` or `--no-portable`, the
+other kind from the game's `portable` setting, gets no manifest: its name
+would match the usual build's and replace it. An update never removes
+`portable.txt` and adds it only when the new archive has it, so a copy
+updated from a usual-kind manifest keeps its own kind, except that a game
+whose usual kind is portable turns an installed copy into a portable one.
+
 `--channel=beta` publishes on another channel, and `--notes=NOTES.md` puts
 release notes (Markdown) in the manifest.
 
