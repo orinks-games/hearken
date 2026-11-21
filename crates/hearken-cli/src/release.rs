@@ -235,6 +235,13 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
              one for the game's usual build. Publish the archive as an extra download. Players \
              who update get the game's usual build."
         );
+        if !kind.portable {
+            println!(
+                "Take care: the game's usual build is portable, so an update turns this installed \
+                 copy into a portable one. Its saves are then kept beside the game, and the saves \
+                 made before stay behind in the user's folder."
+            );
+        }
     } else if let Some(key) = &update {
         let manifest = write_manifest(
             &archive,

@@ -459,7 +459,10 @@ events go through the main voice.
   takes it when both are there. The other kind gets no update manifest, since
   its name would match the usual build's and replace it: publish it as an
   extra download. Players who update get the game's usual kind, and a copy
-  that is portable stays portable. On a Mac the flag changes nothing, because
+  that is portable stays portable. An installed copy of a game whose usual
+  kind is portable becomes portable on its first update, and the saves made
+  before stay behind in the user's folder, so say so where you offer that
+  download or leave `update` off for such a game. On a Mac the flag changes nothing, because
   the app always keeps its saves in Application Support.
 - On a Mac, the zip holds an app (`My Game.app`), so players open the
   game from Finder with no Terminal window. The program goes in
