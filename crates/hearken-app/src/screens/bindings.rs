@@ -235,6 +235,10 @@ impl<G: Game> Menu for BindingsScreen<G> {
         items
     }
 
+    fn takes_text(&self) -> bool {
+        self.capturing.is_some()
+    }
+
     fn handle_input(&mut self, ctx: &mut Ctx<G>, event: &InputEvent) {
         let Some(action) = self.capturing else {
             return menu_input(self, ctx, event);

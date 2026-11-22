@@ -20,7 +20,8 @@ export default { fetch: (request) => service.fetch(request) };
 - `src/rules.js`: loading and calling a rules module.
 - `src/service.js`: the HTTP protocol, as one `fetch` function.
 - `src/rooms.js`: play between players: rooms with seats, server-ordered
-  turns replayed through `hearken_play`, chat, and the in-memory store.
+  turns replayed through `hearken_play`, chat with channels, direct rooms,
+  history, mutes, blocks and reports, and the in-memory store.
 - `src/memory.js`: accounts, run claims and rate limits in memory, and what
   a real store must guarantee.
 - `src/node.js`: `serve()` for Node's HTTP server, `rulesFromDir()`, and

@@ -217,7 +217,8 @@ impl State<HelloGame> for PebblesMatch {
 
     fn help(&self, _ctx: &Ctx<HelloGame>) -> String {
         "Whoever takes the last pebble loses. On your move, 1, 2 or 3 takes that many. \
-         Space repeats where the match stands. Escape goes back to the room; your seat is kept."
+         Space repeats where the match stands. T says a line to the other player and \
+         Shift T reads the chat back. Escape goes back to the room; your seat is kept."
             .to_string()
     }
 }
