@@ -164,7 +164,7 @@ impl Song {
             if part.chance < 1.0 && !pr.chance(part.chance) {
                 continue;
             }
-            if let Some(chosen) = choose(part, i, bank, &mut pr) {
+            if let Some(chosen) = choose(part, i, bank, &parts, &mut pr) {
                 parts.push(chosen);
             }
         }
@@ -554,9 +554,12 @@ fn twice(p: &[Chord]) -> Vec<Chord> {
     v
 }
 
-fn choose(part: &Part, index: usize, bank: &Bank, r: &mut Rng) -> Option<Chosen> {
+/// Picks a part's instrument, pattern and range. An instrument another
+/// part already plays is passed over while the part has others, so each
+/// part brings a sound of its own.
+fn choose(part: &Part, index: usize, bank: &Bank, taken: &[Chosen], r: &mut Rng) -> Option<Chosen> {
     let drums = matches!(part.play, Play::Drums { .. } | Play::Rush);
-    let usable: Vec<&String> = part
+    let mut usable: Vec<&String> = part
         .instruments
         .iter()
         .filter(|n| {
@@ -567,6 +570,16 @@ fn choose(part: &Part, index: usize, bank: &Bank, r: &mut Rng) -> Option<Chosen>
             }
         })
         .collect();
+    if !drums {
+        let fresh: Vec<&String> = usable
+            .iter()
+            .copied()
+            .filter(|n| !taken.iter().any(|c| &c.instrument == *n))
+            .collect();
+        if !fresh.is_empty() {
+            usable = fresh;
+        }
+    }
     let name = (*r.pick(&usable)?).clone();
     let (low, high) = if drums {
         (0, 127)
@@ -936,6 +949,21 @@ mod tests {
             differ >= 28,
             "only {differ} of 32 songs differ in key, tempo or scale"
         );
+    }
+
+    #[test]
+    fn a_part_passes_over_an_instrument_another_part_plays() {
+        let style = Style::new("shared", (96.0, 138.0), &[Scale::Minor])
+            .part(Part::new(Role::Base, Play::Pad, &["keys", "lead"]))
+            .part(Part::new(Role::Danger, Play::Drone, &["keys", "lead"]))
+            .part(Part::new(Role::Lift, Play::Counter, &["keys"]));
+        for seed in 0..40 {
+            let s = Song::compose(&style, &bank(), seed);
+            let names: Vec<&str> = s.parts.iter().map(|c| c.instrument.as_str()).collect();
+            assert_ne!(names[0], names[1], "seed {seed}");
+            // With nothing else to play, a part still plays what it lists.
+            assert_eq!(names[2], "keys");
+        }
     }
 
     #[test]
