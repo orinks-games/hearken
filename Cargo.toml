@@ -26,6 +26,7 @@ hearken-genny = { path = "crates/hearken-genny" }
 hearken = { path = "crates/hearken" }
 hearken-app = { path = "crates/hearken-app", default-features = false }
 hearken-synth = { path = "crates/hearken-synth" }
+hearken-band = { path = "crates/hearken-band" }
 hearken-pack = { path = "crates/hearken-pack" }
 hearken-bake = { path = "crates/hearken-bake" }
 hearken-seal = { path = "crates/hearken-seal" }
