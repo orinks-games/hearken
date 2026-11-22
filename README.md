@@ -461,9 +461,10 @@ events go through the main voice.
   extra download beside the usual build. An update keeps every copy the kind
   it is, whichever kind of archive it installs: it adds `portable.txt` to a
   portable copy that lacks it and leaves it out of an installed one, so the
-  saves stay where the copy reads them. With `update = true`, the flag needs
-  a Hearken that does this, and `hearken release` says to run
-  `cargo update -p hearken` when the game's is older. On a Mac the flag
+  saves stay where the copy reads them. With `update = true`, every release,
+  with the flag or without it, needs a Hearken that does this, and
+  `hearken release` says to run `cargo update -p hearken` when the game's is
+  older. On a Mac the flag
   changes nothing, because the app always keeps its saves in Application
   Support.
 - On a Mac, the zip holds an app (`My Game.app`), so players open the

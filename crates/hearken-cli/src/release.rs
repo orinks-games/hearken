@@ -116,9 +116,7 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
         options.portable,
         cfg!(target_os = "macos"),
     );
-    if let (Some(_), Some(suffix)) = (&update, kind.suffix) {
-        // The other kind updates from the usual build's manifest, so its
-        // copies must keep their own kind when they apply that archive.
+    if let Some(suffix) = kind_check_for(update.is_some(), kind) {
         updater_keeps_kind(&project.dir, suffix)?;
     }
     let identity = match &update {
@@ -299,10 +297,21 @@ fn keeps_kind(meta: &serde_json::Value) -> bool {
         && updaters.all(|p| p["metadata"]["hearken-update"]["keeps-kind"] == true)
 }
 
-/// Refuses a build of the other kind, `suffix`, when the game's Hearken is
-/// too old to keep a copy's kind on update: such a copy would update from
-/// the usual build's archive and could turn into the usual kind.
-fn updater_keeps_kind(dir: &Path, suffix: &str) -> Result<(), String> {
+/// Whether a release must have an updater that keeps a copy's kind, and if
+/// so the kind's suffix to name in the refusal. Every copy applies the next
+/// update with the updater this release ships, and copies of both kinds
+/// update from the usual manifest. So every update-enabled release, the
+/// usual kind included, must keep each copy's kind: one older updater in any
+/// later release would turn the other kind into the usual one and leave its
+/// saves behind.
+fn kind_check_for(update: bool, kind: Kind) -> Option<Option<&'static str>> {
+    update.then_some(kind.suffix)
+}
+
+/// Refuses an update-enabled release when the game's Hearken is too old to
+/// keep a copy's kind on update. `suffix` is `portable` or `installed` for a
+/// build of the other kind, and `None` for the game's usual kind.
+fn updater_keeps_kind(dir: &Path, suffix: Option<&str>) -> Result<(), String> {
     let out = Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--locked"])
         .current_dir(dir)
@@ -316,20 +325,32 @@ fn updater_keeps_kind(dir: &Path, suffix: &str) -> Result<(), String> {
     }
     let meta: serde_json::Value = serde_json::from_slice(&out.stdout)
         .map_err(|e| format!("Could not read cargo metadata: {e}"))?;
-    let article = if suffix.starts_with(['a', 'e', 'i', 'o', 'u']) {
-        "an"
-    } else {
-        "a"
-    };
-    if keeps_kind(&meta) {
-        Ok(())
-    } else {
-        Err(format!(
-            "This game's Hearken is too old to keep a copy portable or installed when it \
-             updates, which {article} {suffix} build needs. Update it with `cargo update -p hearken`, \
-             or build without --portable and --no-portable."
-        ))
+    kind_check(keeps_kind(&meta), suffix)
+}
+
+/// What `hearken release` says when the game's updater does (`keeps`) or
+/// does not keep a copy's kind, for a build of kind `suffix`.
+fn kind_check(keeps: bool, suffix: Option<&str>) -> Result<(), String> {
+    if keeps {
+        return Ok(());
     }
+    let build = match suffix {
+        Some(suffix) => {
+            let article = if suffix.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                "an"
+            } else {
+                "a"
+            };
+            format!("{article} {suffix} build")
+        }
+        None => "a release with update = true".to_string(),
+    };
+    Err(format!(
+        "This game's Hearken is too old to keep a copy portable or installed when it \
+         updates, which {build} needs: with an older updater, a player's copy of the \
+         other kind could change kind on its next update and leave its saves behind. \
+         Update it with `cargo update -p hearken`."
+    ))
 }
 
 /// The update identity a release is built with. Empty, every variable is
@@ -707,9 +728,9 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        directml_notices, engine_reads_packs, keeps_kind, key_env, other_kind_note, read_notes,
-        release_kind, release_stem, require_sdl2, rfc3339, rules_file_name, vc_arch,
-        write_manifest, Kind, ManifestFor, UpdateIdentity,
+        directml_notices, engine_reads_packs, keeps_kind, key_env, kind_check, kind_check_for,
+        other_kind_note, read_notes, release_kind, release_stem, require_sdl2, rfc3339,
+        rules_file_name, vc_arch, write_manifest, Kind, ManifestFor, UpdateIdentity,
     };
 
     #[test]
@@ -770,6 +791,50 @@ mod tests {
         ])));
         assert!(!keeps_kind(&meta(vec![game])));
         assert!(!keeps_kind(&serde_json::json!({})));
+    }
+
+    /// Every update-enabled release is checked, the usual kind too: a later
+    /// usual build with an older updater would turn copies of the other kind
+    /// into the usual one on the update after it.
+    #[test]
+    fn every_update_enabled_release_needs_an_updater_that_keeps_kinds() {
+        for suffix in [None, Some("portable"), Some("installed")] {
+            assert!(kind_check(true, suffix).is_ok());
+            let err = kind_check(false, suffix).unwrap_err();
+            assert!(err.contains("cargo update -p hearken"), "{err}");
+            assert!(err.contains("saves"), "{err}");
+            // Building without a flag is no way out any more.
+            assert!(!err.contains("--portable"), "{err}");
+            assert!(!err.contains('\u{2014}'), "{err}");
+        }
+        assert!(kind_check(false, None)
+            .unwrap_err()
+            .contains("a release with update = true needs"));
+        assert!(kind_check(false, Some("installed"))
+            .unwrap_err()
+            .contains("an installed build needs"));
+        assert!(kind_check(false, Some("portable"))
+            .unwrap_err()
+            .contains("a portable build needs"));
+    }
+
+    /// The check runs for every release with an update key, whatever its
+    /// kind, and for none without one.
+    #[test]
+    fn the_kind_check_is_not_limited_to_the_other_kind() {
+        for (game, asked) in [
+            (true, None),
+            (false, None),
+            (true, Some(false)),
+            (false, Some(true)),
+        ] {
+            let kind = release_kind(game, asked, false);
+            assert_eq!(kind_check_for(true, kind), Some(kind.suffix));
+            assert_eq!(kind_check_for(false, kind), None);
+        }
+        // A Mac app has one kind, and is checked too.
+        let mac = release_kind(true, None, true);
+        assert_eq!(kind_check_for(true, mac), Some(None));
     }
 
     /// This workspace's own updater says it keeps kinds, as a game's

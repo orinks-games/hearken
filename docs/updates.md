@@ -156,9 +156,12 @@ usual build. One archive serves both kinds because they differ only in
 `portable.txt` (and the names of the archive and its top folder): an update
 keeps each copy the kind it is, whichever kind of archive it installs (see
 [Portable and installed copies](#portable-and-installed-copies)). With
-`update = true`, `hearken release` builds the other kind only for a game
-whose Hearken does this, and says to run `cargo update -p hearken` when it
-is older.
+`update = true`, `hearken release` builds a release of either kind only for
+a game whose Hearken does this, and says to run `cargo update -p hearken`
+when it is older. The usual build is checked too: every copy applies its
+next update with the updater the last one shipped, so one later release
+with an older updater would turn copies of the other kind into the usual
+kind, and leave their saves behind, on the update after it.
 
 `--channel=beta` publishes on another channel, and `--notes=NOTES.md` puts
 release notes (Markdown) in the manifest.
@@ -451,8 +454,18 @@ Manifests and their names are unchanged: every copy asks for
   beside its program but `saves`, on its next update; a failed move of
   `saves` then keeps `My Game.app.old`, which that version removes on the
   update after. From the first update a newer Hearken installs, the rules
-  above hold. `hearken release` never builds the other kind for a
-  game with such a Hearken.
+  above hold, for as long as every later release keeps a newer Hearken.
+  `hearken release` refuses any release with `update = true`, of either
+  kind, for a game with such a Hearken.
+- **A release built some other way can still ship an older updater.** The
+  check above is in `hearken release`. A developer who builds a release
+  with an older Hearken command line tool, or archives and signs one by
+  hand, can still ship an updater that does not keep a copy's kind, for
+  example after pinning an old Hearken on a hotfix branch. Copies that
+  install that release change kind as described above on the update after
+  it. Only the developer, who holds the signing key, can do this, and
+  nothing on a player's machine can tell an older updater from a newer one
+  before it runs, so it is accepted.
 - **A portable Mac app keeps files a release dropped.** Everything beside
   the program of an app made portable by hand that the new app lacks is
   treated as the player's and moved into it, so a file the game shipped
