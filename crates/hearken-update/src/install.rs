@@ -368,14 +368,27 @@ pub const PORTABLE_MARKER: &str = "portable.txt";
 ///
 /// A marker the install keeps is copied in when the update has none (or has
 /// something else under its name, such as a link), so an app swapped whole,
-/// or an update installed by hand, stays portable. A marker an installed
+/// or an update installed by hand, stays portable. When the install's
+/// marker is itself a link, the update gets the same link in place of any
+/// marker of its own, so copying the update in never writes through the
+/// player's link to a file outside the game. A marker an installed
 /// copy lacks is removed from the update, whatever it is.
 pub(crate) fn keep_kind(new: &Path, old: &Path) -> io::Result<()> {
     let marker = new.join(PORTABLE_MARKER);
     let shipped = fs::symlink_metadata(&marker).ok();
     // As the engine reads it: a file, or a link to one.
     let mine = old.join(PORTABLE_MARKER);
-    if mine.is_file() {
+    let mine_is_link = fs::symlink_metadata(&mine).is_ok_and(|m| m.file_type().is_symlink());
+    if mine.is_file() && mine_is_link && cfg!(unix) {
+        // The player's marker is a link: the update gets the same link,
+        // never a file, so nothing is written through it to wherever it
+        // leads when the update is copied in.
+        if shipped.is_some() {
+            remove_any(&marker)?;
+        }
+        copy_tree(&mine, &marker)?;
+        log::info!("this copy is portable, so the update is made portable too");
+    } else if mine.is_file() {
         if shipped.as_ref().is_some_and(fs::Metadata::is_file) {
             return Ok(());
         }
@@ -740,6 +753,44 @@ mod tests {
             fs::read(staged.path().join(PORTABLE_MARKER)).unwrap(),
             b"shipped"
         );
+    }
+
+    /// A portable copy whose marker is a link to a file of the player's
+    /// elsewhere: the update gets the same link, so the real POSIX script
+    /// never writes the shipped marker through it, and the copy stays
+    /// portable.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_marker_is_never_written_through() {
+        let (dir, game, install, archive) = kinds_case(false, Some(b"shipped note"));
+        let elsewhere = dir.path().join("elsewhere.txt");
+        fs::write(&elsewhere, b"the player's own file").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, game.join(PORTABLE_MARKER)).unwrap();
+        let staging = dir.path().join("staging");
+        let staged = stage(&archive, &staging, &install, Limits::default(), None).unwrap();
+        let marker = staged.path().join(PORTABLE_MARKER);
+        assert!(fs::symlink_metadata(&marker)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_link(&marker).unwrap(), elsewhere);
+        let script =
+            crate::apply::write_apply_script(&staged, &install, &staging, 999_999_999, Os::Linux)
+                .unwrap();
+        let status = std::process::Command::new("/bin/sh")
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        // The script starts the game again in the background; it is a
+        // stand-in that does nothing.
+        assert_eq!(fs::read(game.join("my-game")).unwrap(), b"new");
+        assert_eq!(fs::read(&elsewhere).unwrap(), b"the player's own file");
+        assert!(fs::symlink_metadata(game.join(PORTABLE_MARKER))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(game.join(PORTABLE_MARKER).is_file());
     }
 
     #[test]

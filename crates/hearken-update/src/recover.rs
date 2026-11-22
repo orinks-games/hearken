@@ -41,7 +41,20 @@ pub enum Recovery {
     /// An update was left part-way, and its backup is gone, so the folder
     /// is as the update left it.
     NoBackup,
+    /// A Mac app's update could not carry the player's own files (the
+    /// saves of an app made portable by hand) into the new app, so it was
+    /// not installed: the app and those files are as they were.
+    NotInstalled,
+    /// An earlier swap left the old Mac app at this path, still holding
+    /// files of the player's that the app in use lacks (see
+    /// [`old_app_left`]). Nothing removes it, and updates wait until the
+    /// player has moved what they need out of it and deleted it.
+    OldAppLeft(PathBuf),
 }
+
+/// The line the Mac swap writes to its log when it put the old app back
+/// because the player's files could not be moved into the new one.
+pub const NOT_INSTALLED_LINE: &str = "the update was not installed";
 
 /// Puts a folder install back as it was before an update that did not
 /// finish being copied in: the apply script failed, or was stopped before
@@ -57,16 +70,27 @@ pub enum Recovery {
 /// else is in. So a program that differs from its backup means the update
 /// was copied in whole and only the journal was left: that update is kept.
 pub fn recover_interrupted(install: &Install) -> io::Result<Recovery> {
+    if let Install::Bundle { app, .. } = install {
+        let lines = take_log_file(&bundle_log(app));
+        let not_installed = lines.iter().any(|line| line.contains(NOT_INSTALLED_LINE));
+        pass_on(lines);
+        if let Some(old) = old_app_left(install) {
+            log::warn!(
+                "{} still holds the player's files from an earlier update",
+                old.display()
+            );
+            return Ok(Recovery::OldAppLeft(old));
+        }
+        return Ok(if not_installed {
+            Recovery::NotInstalled
+        } else {
+            Recovery::Nothing
+        });
+    }
     let Install::Folder { dir, exe } = install else {
         return Ok(Recovery::Nothing);
     };
-    for line in take_apply_log(dir) {
-        if line.contains("ERROR") || line.contains("failed") {
-            log::warn!("update script: {line}");
-        } else {
-            log::info!("update script: {line}");
-        }
-    }
+    pass_on(take_apply_log(dir));
     remove_leftovers(dir);
     let journal = dir.join(JOURNAL);
     let meta = match fs::symlink_metadata(&journal) {
@@ -137,10 +161,70 @@ pub fn recover_interrupted(install: &Install) -> io::Result<Recovery> {
     Ok(Recovery::Restored)
 }
 
+/// Copies the apply script's log lines into this program's log.
+fn pass_on(lines: Vec<String>) {
+    for line in lines {
+        if line.contains("ERROR") || line.contains("failed") || line.contains("not installed") {
+            log::warn!("update script: {line}");
+        } else {
+            log::info!("update script: {line}");
+        }
+    }
+}
+
+/// Where the Mac swap writes its log: beside the app, never inside it, so
+/// a signed app is not changed by it. `My Game.app.hearken-update.log`.
+pub fn bundle_log(app: &Path) -> PathBuf {
+    let mut name = app.file_name().unwrap_or_default().to_os_string();
+    name.push(APPLY_LOG);
+    app.with_file_name(name)
+}
+
+/// The old app an earlier swap of `install` (a Mac app) left beside it
+/// (`My Game.app.old`), when it still holds files of the player's: a
+/// `saves` folder beside its program, or, when the app in use is portable,
+/// anything beside its program that the app in use lacks. The swap never
+/// removes such an app, so those files are never lost; the same rule is in
+/// its script.
+pub fn old_app_left(install: &Install) -> Option<PathBuf> {
+    let Install::Bundle { app, exe } = install else {
+        return None;
+    };
+    let mut name = app.file_name()?.to_os_string();
+    name.push(".old");
+    let old_app = app.with_file_name(name);
+    let programs = exe.parent().unwrap_or(Path::new(""));
+    let old = old_app.join(programs);
+    let now = app.join(programs);
+    if !fs::symlink_metadata(&old).is_ok_and(|m| m.is_dir()) {
+        return None;
+    }
+    let exists = |p: &Path| fs::symlink_metadata(p).is_ok();
+    if exists(&old.join(SAVES)) {
+        return Some(old_app);
+    }
+    if !now.join(crate::install::PORTABLE_MARKER).is_file() {
+        return None;
+    }
+    let entries = fs::read_dir(&old).ok()?;
+    for entry in entries.flatten() {
+        if !exists(&now.join(entry.file_name())) {
+            return Some(old_app);
+        }
+    }
+    None
+}
+
 /// The lines of the apply script's log, which is removed. Only its end is
 /// read when it is long.
 pub fn take_apply_log(dir: &Path) -> Vec<String> {
-    let path = dir.join(APPLY_LOG);
+    take_log_file(&dir.join(APPLY_LOG))
+}
+
+/// The lines of the log at `path`, which is removed. Only its end is read
+/// when it is long.
+fn take_log_file(path: &Path) -> Vec<String> {
+    let path = path.to_path_buf();
     let Ok(meta) = fs::symlink_metadata(&path) else {
         return Vec::new();
     };

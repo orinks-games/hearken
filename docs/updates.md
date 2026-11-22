@@ -382,8 +382,12 @@ player back to a version with a known flaw.
      in beside the old one (`My Game.app.update-new`), so a copy that fails
      or is stopped leaves the old app as it was. Then the old app is moved
      aside (`My Game.app.old`), the new one renamed into its place, the
-     saves of an app made portable by hand moved into it, and the old one
-     removed; if the rename fails, the old app is moved back. An
+     player's own files in an app made portable by hand moved into it (see
+     [Portable and installed copies](#portable-and-installed-copies)), and
+     the old one removed; if the rename fails, the old app is moved back.
+     What goes wrong is written to `My Game.app.hearken-update.log` beside
+     the app, never inside it, and the next start copies that into the
+     game's log and deletes it. An
      app running from App Translocation (opened straight from a quarantined
      download) is never swapped: the player is told where the new one is
      saved instead.
@@ -409,10 +413,26 @@ The answer comes from the install alone, never from the manifest, the
 archive or anything else downloaded, so a host or anyone between it and the
 player cannot move a player's saves by changing the kind of archive. A
 `saves` folder in an archive is never copied over a folder install's. A Mac
-app is never portable as `hearken release` makes it; one made portable by
-hand keeps `saves` beside its program inside the app, and the swap moves
-that folder into the new app before the old one is removed, or keeps the
-old app (`My Game.app.old`) if it cannot.
+app is never portable as `hearken release` makes it. One made portable by
+hand keeps `saves` beside its program inside the app (`Contents/MacOS`),
+along with anything else the game or the player put there, such as
+exported music or the file that vouches for sealed saves. The swap moves
+`saves`, and every other file there that the new app does not have, into
+the new app before the old one is removed. If any of them cannot be moved,
+the ones already moved go back, the old app is put back in its place
+exactly as it was, and the new one is removed; the next start says "The
+last update could not be installed, so this version was kept, and your
+saves are where they were." The next update tries again.
+
+An old app (`My Game.app.old`) that still holds such files, because the
+swap was stopped part-way or the old app could not be put back, is never
+removed. An update finds it, changes nothing and opens the game again, and
+every start tells the player where it is, until they have moved what they
+need out of it and deleted it.
+
+A `portable.txt` that is a link (on Linux or a Mac) is put into the update
+as the same link, so copying the update in never writes through it to a
+file outside the game.
 
 Manifests and their names are unchanged: every copy asks for
 `update-<channel>-<platform>.json`, which is always the game's usual kind.
@@ -426,8 +446,26 @@ Manifests and their names are unchanged: every copy asks for
   an installed copy of a game whose usual kind is portable (one whose
   player deleted `portable.txt`) turns portable on that update, and its
   earlier saves stay in the user's folder. Every update it installs after
-  that keeps its kind. `hearken release` never builds the other kind for a
+  that keeps its kind. In the same way, a Mac app made portable by hand
+  that runs such a Hearken removes the old app, and with it everything
+  beside its program but `saves`, on its next update; a failed move of
+  `saves` then keeps `My Game.app.old`, which that version removes on the
+  update after. From the first update a newer Hearken installs, the rules
+  above hold. `hearken release` never builds the other kind for a
   game with such a Hearken.
+- **A portable Mac app keeps files a release dropped.** Everything beside
+  the program of an app made portable by hand that the new app lacks is
+  treated as the player's and moved into it, so a file the game shipped
+  in an earlier version and no longer ships stays there, as it does in a
+  folder install. Such an app no longer matches its signature anyway,
+  since the player added files to it. An installed app carries nothing
+  over but a stray `saves` folder.
+- **A linked `portable.txt` on Windows is copied over as a file.** Making
+  a link there takes the player's own choice (and, on most systems,
+  administrator rights or developer mode). The update's `portable.txt` is
+  copied over it, which may write the shipped note into the file it leads
+  to. The copy stays portable and its saves stay where they are. This is
+  read, not tested, on Windows.
 - **An AppImage is the kind its developer built.** It is swapped whole and
   runs from a read-only mount, so nothing can be added to it or taken out.
   `hearken release` makes none.

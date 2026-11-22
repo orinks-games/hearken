@@ -163,6 +163,17 @@ pub fn recover_interrupted() -> Option<String> {
              should, download it again."
                 .to_string(),
         ),
+        Ok(hearken_update::Recovery::NotInstalled) => Some(
+            "The last update could not be installed, so this version was kept, and your saves \
+             are where they were."
+                .to_string(),
+        ),
+        Ok(hearken_update::Recovery::OldAppLeft(old)) => Some(format!(
+            "An earlier update left the old copy of this game at {}, and some of your files, \
+             such as your saves, are still in it. The game does not update until that copy is \
+             gone. Move anything you want to keep out of it, then delete it.",
+            old.display()
+        )),
         Err(e) => {
             log::warn!("could not undo an unfinished update: {e}");
             Some(

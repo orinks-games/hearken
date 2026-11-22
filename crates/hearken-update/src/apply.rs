@@ -18,8 +18,11 @@
 //! - an app bundle is copied in beside the old one first, then the old one
 //!   is moved aside (`.old`) and the new one renamed into its place: two
 //!   renames, the only moment without an app. An app made portable by
-//!   hand keeps `saves` beside its program, inside the app: that folder is
-//!   moved into the new app, and the old app is kept if it cannot be;
+//!   hand keeps `saves`, and any other file of the player's, beside its
+//!   program, inside the app: those are moved into the new app, and if any
+//!   cannot be, they are moved back and the old app is put back. An old
+//!   app still holding the player's files is never removed (see
+//!   [`crate::recover::old_app_left`]);
 //! - an AppImage is copied in beside the old one and renamed over it, which
 //!   is one step that either happens or does not.
 //!
@@ -185,11 +188,57 @@ cd "{dst}" && "./{exe}" >/dev/null 2>&1 &
 
 const MACOS_BUNDLE: &str = r#"#!/bin/sh
 # Swaps the whole app. Saves live in Application Support, except in an app
-# made portable by hand, which keeps them in saves beside its program: they
-# are moved into the new app, and if that fails the old app is kept.
-# The new app is copied in beside the old one first, so a copy that fails
-# or is stopped part-way leaves the old app as it was. Then two renames
-# swap them.
+# made portable by hand, which keeps them beside its program, inside the
+# app, with anything else of the player's there (exported music, say).
+# Those are moved into the new app; if any cannot be, they are moved back
+# and the old app is put back as it was. An old app that still holds the
+# player's files is never removed: the update waits until the player has
+# dealt with it. The new app is copied in beside the old one first, so a
+# copy that fails or is stopped part-way leaves the old app as it was.
+# Then two renames swap them. What goes wrong is written to a log beside
+# the app, which the game reads when it next starts.
+log="{dst}{log}"
+note() { echo "$(date) $*" >>"$log" 2>/dev/null; }
+old="{dst}.old/{programs}"
+new="{dst}/{programs}"
+carried="{staging}/carried"
+there() { [ -e "$1" ] || [ -L "$1" ]; }
+# Whether the old app holds a file of the player's that the app at {dst}
+# lacks: saves, or, in a portable app, anything beside its program.
+holds_mine() {
+  [ -d "$old" ] || return 1
+  there "$old/saves" && return 0
+  [ -f "$new/{marker}" ] || return 1
+  for entry in "$old"/* "$old"/.[!.]* "$old"/..?*; do
+    there "$entry" || continue
+    there "$new/${entry##*/}" || return 0
+  done
+  return 1
+}
+# Moves the player's files from the old app into the new one. Each name is
+# written down before it moves, so uncarry can move it back.
+carry() {
+  : >"$carried" || return 1
+  if there "$old/saves"; then rm -rf "$new/saves" || return 1; fi
+  for entry in "$old"/* "$old"/.[!.]* "$old"/..?*; do
+    there "$entry" || continue
+    name="${entry##*/}"
+    [ "$name" = saves ] || [ -f "$new/{marker}" ] || continue
+    there "$new/$name" && continue
+    case "$name" in *"
+"*) note a file name has a line break in it; return 1;; esac
+    printf '%s\n' "$name" >>"$carried" || return 1
+    mv "$entry" "$new/$name" 2>>"$log" || { note moving "$name" into the new app failed; return 1; }
+  done
+}
+uncarry() {
+  [ -f "$carried" ] || return 1
+  while IFS= read -r name; do
+    if there "$new/$name" && ! there "$old/$name"; then
+      mv "$new/$name" "$old/$name" 2>>"$log" || return 1
+    fi
+  done <"$carried"
+}
 tries=0
 while kill -0 {pid} 2>/dev/null; do
   tries=$((tries + 1))
@@ -197,20 +246,34 @@ while kill -0 {pid} 2>/dev/null; do
   sleep 1
 done
 if [ -e "{dst}" ]; then
+  if holds_mine; then
+    note "{dst}.old" still holds files of the player from an earlier update, so {not_installed}
+    rm -rf "{staging}"
+    open "{dst}"
+    exit 1
+  fi
   rm -rf "{dst}.update-new" "{dst}.old"
   if mv "{src}" "{dst}.update-new" 2>/dev/null || ditto "{src}" "{dst}.update-new"; then
     if mv "{dst}" "{dst}.old"; then
       if mv "{dst}.update-new" "{dst}"; then
-        saves="{dst}.old/{programs}/saves"
-        if [ ! -d "$saves" ] || { rm -rf "{dst}/{programs}/saves" && mv "$saves" "{dst}/{programs}/saves"; }; then
+        if carry; then
           rm -rf "{dst}.old"
+        elif uncarry && mv "{dst}" "{dst}.update-new" 2>>"$log"; then
+          if mv "{dst}.old" "{dst}" 2>>"$log"; then
+            note files of the player could not be moved into the new app, so {not_installed}
+          else
+            mv "{dst}.update-new" "{dst}"
+            note the old app could not be put back, so it is kept at "{dst}.old"
+          fi
+        else
+          note the old app could not be put back, so it is kept at "{dst}.old"
         fi
       else
         mv "{dst}.old" "{dst}"
       fi
     fi
   fi
-  rm -rf "{dst}.update-new"
+  [ -e "{dst}" ] && rm -rf "{dst}.update-new"
 fi
 rm -rf "{staging}"
 open "{dst}"
@@ -332,6 +395,11 @@ pub fn script_text(
             ("programs", programs),
             ("journal", JOURNAL.to_string()),
             ("log", APPLY_LOG.to_string()),
+            ("marker", crate::install::PORTABLE_MARKER.to_string()),
+            (
+                "not_installed",
+                crate::recover::NOT_INSTALLED_LINE.to_string(),
+            ),
         ],
     ))
 }
@@ -709,15 +777,119 @@ mod tests {
         assert!(beside < aside && aside < swap);
         assert!(text.contains("mv \"/Applications/My Game.app.old\" \"/Applications/My Game.app\""));
         assert!(text.contains("open \"/Applications/My Game.app\""));
-        // A portable app's saves move into the new app before the old one
-        // goes, and the old one stays if they cannot.
-        let saves = text
+        // A portable app's own files move into the new app before the old
+        // one goes; if they cannot, the old app is put back.
+        let carry = text
+            .find("if carry; then\n          rm -rf \"/Applications/My Game.app.old\"")
+            .unwrap();
+        assert!(swap < carry);
+        assert!(text.contains("old=\"/Applications/My Game.app.old/Contents/MacOS\""));
+        assert!(text.contains("[ -f \"$new/portable.txt\" ]"));
+        assert!(text.contains(&format!("so {}", crate::recover::NOT_INSTALLED_LINE)));
+        assert!(text.contains("log=\"/Applications/My Game.app.hearken-update.log\""));
+        // An old app still holding the player's files is never removed.
+        let guard = text.find("if holds_mine; then").unwrap();
+        let clear = text
             .find(
-                "mv \"$saves\" \"/Applications/My Game.app/Contents/MacOS/saves\"; }; then\n          rm -rf \"/Applications/My Game.app.old\"",
+                "rm -rf \"/Applications/My Game.app.update-new\" \"/Applications/My Game.app.old\"",
             )
             .unwrap();
-        assert!(swap < saves);
-        assert!(text.contains("saves=\"/Applications/My Game.app.old/Contents/MacOS/saves\""));
+        assert!(guard < clear);
+    }
+
+    /// A Mac app made portable by hand, in a temporary folder, and an
+    /// update for it staged as the update screen stages one.
+    #[cfg(unix)]
+    struct MacCase {
+        dir: tempfile::TempDir,
+        programs: PathBuf,
+        staging: PathBuf,
+        new: PathBuf,
+        install: Install,
+    }
+
+    #[cfg(unix)]
+    impl MacCase {
+        fn new() -> MacCase {
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path().join("Apps/My Game.app");
+            let programs = app.join("Contents/MacOS");
+            fs::create_dir_all(programs.join("saves")).unwrap();
+            fs::write(programs.join("saves/progress.json"), b"mine").unwrap();
+            fs::write(programs.join("my-game"), b"old").unwrap();
+            fs::write(programs.join(crate::install::PORTABLE_MARKER), b"by hand").unwrap();
+            let staging = crate::install::make_staging_dir_in(dir.path(), "my-game").unwrap();
+            let new = staging.join("unpacked/g/My Game.app");
+            fs::create_dir_all(new.join("Contents/MacOS/saves")).unwrap();
+            fs::write(new.join("Contents/MacOS/my-game"), b"new").unwrap();
+            fs::write(new.join("Contents/MacOS/saves/progress.json"), b"theirs").unwrap();
+            fs::write(
+                new.join("Contents/MacOS")
+                    .join(crate::install::PORTABLE_MARKER),
+                b"by hand",
+            )
+            .unwrap();
+            let install = Install::Bundle {
+                app: app.clone(),
+                exe: PathBuf::from("Contents/MacOS/my-game"),
+            };
+            MacCase {
+                dir,
+                programs,
+                staging,
+                new,
+                install,
+            }
+        }
+
+        fn old_app(&self) -> PathBuf {
+            self.dir.path().join("Apps/My Game.app.old")
+        }
+
+        /// Runs the real script with a stand-in `open`, and a `mv` that
+        /// fails to move anything named `fail_mv`, when given. Returns
+        /// whether it succeeded.
+        fn run(&self, fail_mv: Option<&str>) -> bool {
+            use std::os::unix::fs::PermissionsExt;
+            let script = write_apply_script(
+                &Staged::Bundle(self.new.clone()),
+                &self.install,
+                &self.staging,
+                999_999_999,
+                Os::MacOs,
+            )
+            .unwrap();
+            let shim = self.dir.path().join("shim");
+            fs::create_dir_all(&shim).unwrap();
+            fs::write(shim.join("open"), "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(shim.join("open"), fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = fs::remove_file(shim.join("mv"));
+            if let Some(name) = fail_mv {
+                let real = ["/bin/mv", "/usr/bin/mv"]
+                    .into_iter()
+                    .find(|p| Path::new(p).exists())
+                    .unwrap();
+                fs::write(
+                    shim.join("mv"),
+                    format!(
+                        "#!/bin/sh\ncase \"$1\" in */{name}) exit 1;; esac\nexec {real} \"$@\"\n"
+                    ),
+                )
+                .unwrap();
+                fs::set_permissions(shim.join("mv"), fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let path = format!(
+                "{}:{}",
+                shim.display(),
+                std::env::var("PATH").unwrap_or_default()
+            );
+            Command::new("/bin/sh")
+                .arg(&script)
+                .env("PATH", path)
+                .status()
+                .unwrap()
+                .success()
+        }
     }
 
     /// The real Mac script, run by a POSIX shell against a real app made
@@ -726,61 +898,185 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_mac_script_carries_a_portable_apps_saves() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("Apps/My Game.app");
-        let programs = app.join("Contents/MacOS");
-        fs::create_dir_all(programs.join("saves")).unwrap();
-        fs::write(programs.join("saves/progress.json"), b"mine").unwrap();
-        fs::write(programs.join("my-game"), b"old").unwrap();
-        fs::write(programs.join(crate::install::PORTABLE_MARKER), b"by hand").unwrap();
-        let staging = crate::install::make_staging_dir_in(dir.path(), "my-game").unwrap();
-        let new = staging.join("unpacked/g/My Game.app");
-        fs::create_dir_all(new.join("Contents/MacOS/saves")).unwrap();
-        fs::write(new.join("Contents/MacOS/my-game"), b"new").unwrap();
-        fs::write(new.join("Contents/MacOS/saves/progress.json"), b"theirs").unwrap();
-        fs::write(
-            new.join("Contents/MacOS")
-                .join(crate::install::PORTABLE_MARKER),
-            b"by hand",
-        )
-        .unwrap();
-        let install = Install::Bundle {
-            app: app.clone(),
-            exe: PathBuf::from("Contents/MacOS/my-game"),
-        };
-        let script = write_apply_script(
-            &Staged::Bundle(new),
-            &install,
-            &staging,
-            999_999_999,
-            Os::MacOs,
-        )
-        .unwrap();
-        let shim = dir.path().join("shim");
-        fs::create_dir(&shim).unwrap();
-        fs::write(shim.join("open"), "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(shim.join("open"), fs::Permissions::from_mode(0o755)).unwrap();
-        let path = format!(
-            "{}:{}",
-            shim.display(),
-            std::env::var("PATH").unwrap_or_default()
-        );
-        let status = Command::new("/bin/sh")
-            .arg(&script)
-            .env("PATH", path)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        let case = MacCase::new();
+        assert!(case.run(None));
+        let programs = &case.programs;
         assert_eq!(fs::read(programs.join("my-game")).unwrap(), b"new");
         assert_eq!(
             fs::read(programs.join("saves/progress.json")).unwrap(),
             b"mine"
         );
         assert!(programs.join(crate::install::PORTABLE_MARKER).is_file());
-        assert!(!dir.path().join("Apps/My Game.app.old").exists());
-        assert!(!dir.path().join("Apps/My Game.app.update-new").exists());
-        assert!(!staging.exists());
+        assert!(!case.old_app().exists());
+        assert!(!case.dir.path().join("Apps/My Game.app.update-new").exists());
+        assert!(!case.staging.exists());
+        assert_eq!(
+            recover_interrupted(&case.install).unwrap(),
+            Recovery::Nothing
+        );
+    }
+
+    /// Everything else of the player's beside a portable app's program
+    /// (music exported there, the seal witness, a hidden file) moves into
+    /// the new app too, and the update's own files win over none of them
+    /// but stay.
+    #[cfg(unix)]
+    #[test]
+    fn the_mac_script_carries_a_portable_apps_own_files() {
+        let case = MacCase::new();
+        let programs = &case.programs;
+        fs::create_dir_all(programs.join("Music")).unwrap();
+        fs::write(programs.join("Music/Lake.ogg"), b"song").unwrap();
+        fs::write(programs.join("MyGame.hearken-seal"), b"witness").unwrap();
+        fs::write(programs.join(".hidden"), b"dot").unwrap();
+        fs::write(case.new.join("Contents/MacOS/data.pack"), b"shipped").unwrap();
+        assert!(case.run(None));
+        assert_eq!(fs::read(programs.join("my-game")).unwrap(), b"new");
+        assert_eq!(fs::read(programs.join("Music/Lake.ogg")).unwrap(), b"song");
+        assert_eq!(
+            fs::read(programs.join("MyGame.hearken-seal")).unwrap(),
+            b"witness"
+        );
+        assert_eq!(fs::read(programs.join(".hidden")).unwrap(), b"dot");
+        assert_eq!(fs::read(programs.join("data.pack")).unwrap(), b"shipped");
+        assert_eq!(
+            fs::read(programs.join("saves/progress.json")).unwrap(),
+            b"mine"
+        );
+        assert!(!case.old_app().exists());
+    }
+
+    /// An installed app (no marker) carries only a stray saves folder, as
+    /// before: nothing else of the old app's is moved into the new one.
+    #[cfg(unix)]
+    #[test]
+    fn the_mac_script_carries_nothing_else_for_an_installed_app() {
+        let case = MacCase::new();
+        fs::remove_file(case.programs.join(crate::install::PORTABLE_MARKER)).unwrap();
+        fs::remove_file(
+            case.new
+                .join("Contents/MacOS")
+                .join(crate::install::PORTABLE_MARKER),
+        )
+        .unwrap();
+        fs::write(case.programs.join("dropped.dylib"), b"old lib").unwrap();
+        assert!(case.run(None));
+        assert_eq!(fs::read(case.programs.join("my-game")).unwrap(), b"new");
+        assert!(!case.programs.join("dropped.dylib").exists());
+        assert!(!case.old_app().exists());
+    }
+
+    /// The saves cannot be moved into the new app: the old app is put back
+    /// whole, with its saves and every other file of the player's, the new
+    /// one is gone, and the next start tells the player the update was not
+    /// installed. A later update then works as usual.
+    #[cfg(unix)]
+    #[test]
+    fn the_mac_script_puts_the_old_app_back_when_the_saves_cannot_move() {
+        let case = MacCase::new();
+        let programs = &case.programs;
+        fs::create_dir_all(programs.join("Music")).unwrap();
+        fs::write(programs.join("Music/Lake.ogg"), b"song").unwrap();
+        // "Music" sorts before "saves", so it has moved when saves fails.
+        // The script still opens the app, so it ends as a success.
+        case.run(Some("saves"));
+        assert_eq!(fs::read(programs.join("my-game")).unwrap(), b"old");
+        assert_eq!(
+            fs::read(programs.join("saves/progress.json")).unwrap(),
+            b"mine"
+        );
+        assert_eq!(fs::read(programs.join("Music/Lake.ogg")).unwrap(), b"song");
+        assert!(programs.join(crate::install::PORTABLE_MARKER).is_file());
+        assert!(!case.old_app().exists());
+        assert!(!case.dir.path().join("Apps/My Game.app.update-new").exists());
+        assert!(!case.staging.exists());
+        assert_eq!(
+            recover_interrupted(&case.install).unwrap(),
+            Recovery::NotInstalled
+        );
+        // Told once.
+        assert_eq!(
+            recover_interrupted(&case.install).unwrap(),
+            Recovery::Nothing
+        );
+
+        // The player plays on, then the next update goes in as usual.
+        fs::write(programs.join("saves/progress.json"), b"played since").unwrap();
+        let again = MacCase::new();
+        let staging = crate::install::make_staging_dir_in(case.dir.path(), "my-game").unwrap();
+        let new = staging.join("unpacked/g/My Game.app");
+        fs::create_dir_all(new.parent().unwrap()).unwrap();
+        crate::install::copy_tree(&again.new, &new).unwrap();
+        let next = MacCase {
+            staging,
+            new,
+            ..case
+        };
+        assert!(next.run(None));
+        assert_eq!(fs::read(next.programs.join("my-game")).unwrap(), b"new");
+        assert_eq!(
+            fs::read(next.programs.join("saves/progress.json")).unwrap(),
+            b"played since"
+        );
+        assert_eq!(
+            fs::read(next.programs.join("Music/Lake.ogg")).unwrap(),
+            b"song"
+        );
+    }
+
+    /// An old app an earlier swap left holding the player's saves is never
+    /// removed by a later update: the update is not installed, and each
+    /// start tells the player where that app is until it is gone.
+    #[cfg(unix)]
+    #[test]
+    fn the_mac_script_never_removes_an_old_app_holding_saves() {
+        let case = MacCase::new();
+        let old = case.old_app().join("Contents/MacOS");
+        fs::create_dir_all(old.join("saves")).unwrap();
+        fs::write(old.join("saves/progress.json"), b"first saves").unwrap();
+        fs::write(old.join("my-game"), b"older").unwrap();
+        assert_eq!(
+            recover_interrupted(&case.install).unwrap(),
+            Recovery::OldAppLeft(case.old_app())
+        );
+        assert!(!case.run(None));
+        assert_eq!(
+            fs::read(old.join("saves/progress.json")).unwrap(),
+            b"first saves"
+        );
+        assert_eq!(fs::read(case.programs.join("my-game")).unwrap(), b"old");
+        assert!(!case.staging.exists());
+        assert_eq!(
+            recover_interrupted(&case.install).unwrap(),
+            Recovery::OldAppLeft(case.old_app())
+        );
+        // A portable app's other files count too; files the app in use
+        // also has do not.
+        fs::remove_dir_all(old.join("saves")).unwrap();
+        assert_eq!(
+            recover_interrupted(&case.install).unwrap(),
+            Recovery::Nothing
+        );
+        fs::write(old.join("Lake.ogg"), b"song").unwrap();
+        assert_eq!(
+            recover_interrupted(&case.install).unwrap(),
+            Recovery::OldAppLeft(case.old_app())
+        );
+        // Once it holds nothing of the player's, an update clears it.
+        fs::remove_file(old.join("Lake.ogg")).unwrap();
+        let staging = crate::install::make_staging_dir_in(case.dir.path(), "my-game").unwrap();
+        let fresh = MacCase::new();
+        let new = staging.join("unpacked/g/My Game.app");
+        fs::create_dir_all(new.parent().unwrap()).unwrap();
+        crate::install::copy_tree(&fresh.new, &new).unwrap();
+        let next = MacCase {
+            staging,
+            new,
+            ..case
+        };
+        assert!(next.run(None));
+        assert_eq!(fs::read(next.programs.join("my-game")).unwrap(), b"new");
+        assert!(!next.old_app().exists());
     }
 
     /// Both kinds of folder install, updated by the real POSIX script from
