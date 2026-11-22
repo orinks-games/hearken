@@ -841,7 +841,8 @@ mod tests {
     /// `cargo metadata` shows it.
     #[test]
     fn this_updater_says_it_keeps_kinds() {
-        let manifest = include_str!("../../hearken-update/Cargo.toml");
+        // A Windows checkout may have CRLF line endings.
+        let manifest = include_str!("../../hearken-update/Cargo.toml").replace("\r\n", "\n");
         assert!(manifest.contains("\n[package.metadata.hearken-update]\nkeeps-kind = true\n"));
     }
 
