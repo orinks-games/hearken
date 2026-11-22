@@ -8,6 +8,10 @@
 //! - a macOS app bundle: the whole bundle is swapped;
 //! - an AppImage: the one file is swapped. The folder it runs from is a
 //!   read-only mount, never touched.
+//!
+//! A folder or app update is first made the kind of copy the install is,
+//! portable or installed ([`PORTABLE_MARKER`]), so an update never moves a
+//! player's saves.
 
 use std::fs;
 use std::io;
@@ -349,8 +353,55 @@ pub fn stage(
 /// The folder under a staging folder that an update is unpacked into.
 pub(crate) const UNPACKED: &str = "unpacked";
 
+/// The file that makes a copy portable, beside its program: the engine then
+/// keeps the game's settings, saves and log in a `saves` folder there
+/// instead of the player's user folder. The same name as
+/// `hearken_app::paths::PORTABLE_MARKER`.
+pub const PORTABLE_MARKER: &str = "portable.txt";
+
+/// Makes the update whose program is in `new` the same kind as the install
+/// whose program is in `old`: portable when the install has the marker
+/// there, installed when it has none, whatever the archive holds. So an
+/// update never moves a player's saves to another folder, and one archive
+/// serves both kinds of copy. The answer comes from the player's own
+/// install, never from anything downloaded.
+///
+/// A marker the install keeps is copied in when the update has none (or has
+/// something else under its name, such as a link), so an app swapped whole,
+/// or an update installed by hand, stays portable. A marker an installed
+/// copy lacks is removed from the update, whatever it is.
+pub(crate) fn keep_kind(new: &Path, old: &Path) -> io::Result<()> {
+    let marker = new.join(PORTABLE_MARKER);
+    let shipped = fs::symlink_metadata(&marker).ok();
+    // As the engine reads it: a file, or a link to one.
+    let mine = old.join(PORTABLE_MARKER);
+    if mine.is_file() {
+        if shipped.as_ref().is_some_and(fs::Metadata::is_file) {
+            return Ok(());
+        }
+        if shipped.is_some() {
+            remove_any(&marker)?;
+        }
+        fs::copy(&mine, &marker)?;
+        log::info!("this copy is portable, so the update is made portable too");
+    } else if shipped.is_some() {
+        remove_any(&marker)?;
+        log::info!("this copy is installed, so the update's {PORTABLE_MARKER} is left out");
+    }
+    Ok(())
+}
+
+/// The folder an install's program is in, inside `base` (the install, or
+/// the update that replaces it).
+fn program_dir(base: &Path, exe: &Path) -> PathBuf {
+    base.join(exe)
+        .parent()
+        .map_or_else(|| base.to_path_buf(), Path::to_path_buf)
+}
+
 /// What replaces `install`, from the update unpacked in `staging`. The
-/// update must hold the running program under the same name.
+/// update must hold the running program under the same name. It is made
+/// the same kind as the install, portable or installed (see [`keep_kind`]).
 pub(crate) fn staged_from(staging: &Path, install: &Install) -> io::Result<Staged> {
     let unpacked = staging.join(UNPACKED);
     let root = extract::unpacked_root(&unpacked)?;
@@ -363,12 +414,14 @@ pub(crate) fn staged_from(staging: &Path, install: &Install) -> io::Result<Stage
                     exe.display()
                 )));
             }
+            keep_kind(&program_dir(&bundle, exe), &program_dir(app, exe))?;
             Ok(Staged::Bundle(bundle))
         }
-        Install::Folder { exe, .. } => {
+        Install::Folder { dir, exe } => {
             if !root.join(exe).is_file() {
                 return Err(missing(format!("the update has no {exe}")));
             }
+            keep_kind(&root, dir)?;
             Ok(Staged::Folder(root))
         }
         // A folder update for an AppImage: kept for a manual install.
@@ -627,6 +680,147 @@ mod tests {
             file: game.join("x.AppImage"),
         };
         assert!(!can_auto_apply(&staged, &image));
+    }
+
+    /// A folder install of each kind, with its program, and an archive of
+    /// an update that holds `marker` (or none) beside the program.
+    fn kinds_case(
+        portable: bool,
+        marker: Option<&[u8]>,
+    ) -> (tempfile::TempDir, PathBuf, Install, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("my-game"), b"old").unwrap();
+        if portable {
+            fs::write(game.join(PORTABLE_MARKER), b"the player's own note").unwrap();
+        }
+        let archive = dir.path().join("my-game-1.1.0-linux-x64.zip");
+        let mut entries: Vec<(&str, &[u8])> = vec![("my-game-1.1.0-linux-x64/my-game", b"new")];
+        if let Some(marker) = marker {
+            entries.push(("my-game-1.1.0-linux-x64/portable.txt", marker));
+        }
+        zip_file(&archive, &entries);
+        let install = Install::Folder {
+            dir: game.clone(),
+            exe: "my-game".into(),
+        };
+        (dir, game, install, archive)
+    }
+
+    #[test]
+    fn an_installed_copy_never_gets_the_portable_marker() {
+        let (dir, _game, install, archive) = kinds_case(false, Some(b"portable"));
+        let staging = dir.path().join("staging");
+        let staged = stage(&archive, &staging, &install, Limits::default(), None).unwrap();
+        assert!(staged.path().join("my-game").is_file());
+        assert!(fs::symlink_metadata(staged.path().join(PORTABLE_MARKER)).is_err());
+        // Without one in the archive, there is nothing to take out.
+        let (dir, _game, install, archive) = kinds_case(false, None);
+        let staging = dir.path().join("staging");
+        let staged = stage(&archive, &staging, &install, Limits::default(), None).unwrap();
+        assert!(fs::symlink_metadata(staged.path().join(PORTABLE_MARKER)).is_err());
+    }
+
+    #[test]
+    fn a_portable_copy_stays_portable() {
+        // The archive is the installed kind: the install's own marker goes in.
+        let (dir, _game, install, archive) = kinds_case(true, None);
+        let staging = dir.path().join("staging");
+        let staged = stage(&archive, &staging, &install, Limits::default(), None).unwrap();
+        assert_eq!(
+            fs::read(staged.path().join(PORTABLE_MARKER)).unwrap(),
+            b"the player's own note"
+        );
+        // The archive is portable too: its marker is kept as it is.
+        let (dir, _game, install, archive) = kinds_case(true, Some(b"shipped"));
+        let staging = dir.path().join("staging");
+        let staged = stage(&archive, &staging, &install, Limits::default(), None).unwrap();
+        assert_eq!(
+            fs::read(staged.path().join(PORTABLE_MARKER)).unwrap(),
+            b"shipped"
+        );
+    }
+
+    #[test]
+    fn something_else_under_the_markers_name_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(new.join(PORTABLE_MARKER)).unwrap();
+        // Installed: a folder of that name is taken out too.
+        keep_kind(&new, &old).unwrap();
+        assert!(fs::symlink_metadata(new.join(PORTABLE_MARKER)).is_err());
+        // Portable: a folder of that name gives way to the install's marker.
+        fs::create_dir_all(new.join(PORTABLE_MARKER)).unwrap();
+        fs::write(old.join(PORTABLE_MARKER), b"mine").unwrap();
+        keep_kind(&new, &old).unwrap();
+        assert_eq!(fs::read(new.join(PORTABLE_MARKER)).unwrap(), b"mine");
+        #[cfg(unix)]
+        {
+            // A link in the update is never followed, nor kept.
+            let elsewhere = dir.path().join("elsewhere.txt");
+            fs::write(&elsewhere, b"not the game's").unwrap();
+            fs::remove_file(new.join(PORTABLE_MARKER)).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, new.join(PORTABLE_MARKER)).unwrap();
+            keep_kind(&new, &old).unwrap();
+            let meta = fs::symlink_metadata(new.join(PORTABLE_MARKER)).unwrap();
+            assert!(meta.is_file());
+            assert_eq!(fs::read(new.join(PORTABLE_MARKER)).unwrap(), b"mine");
+            assert_eq!(fs::read(&elsewhere).unwrap(), b"not the game's");
+        }
+    }
+
+    #[test]
+    fn an_app_update_keeps_the_apps_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("my-game-1.1.0-macos-arm64.zip");
+        zip_file(
+            &archive,
+            &[(
+                "my-game-1.1.0-macos-arm64/My Game.app/Contents/MacOS/my-game",
+                b"bin",
+            )],
+        );
+        let app = dir.path().join("Applications/My Game.app");
+        let programs = app.join("Contents/MacOS");
+        fs::create_dir_all(&programs).unwrap();
+        fs::write(programs.join(PORTABLE_MARKER), b"by hand").unwrap();
+        let install = Install::Bundle {
+            app: app.clone(),
+            exe: PathBuf::from("Contents/MacOS/my-game"),
+        };
+        let staging = dir.path().join("staging");
+        let staged = stage(&archive, &staging, &install, Limits::default(), None).unwrap();
+        // The app is swapped whole, so the marker goes into the new one.
+        assert_eq!(
+            fs::read(staged.path().join("Contents/MacOS").join(PORTABLE_MARKER)).unwrap(),
+            b"by hand"
+        );
+        // And an app without one gets none from the update.
+        fs::remove_file(programs.join(PORTABLE_MARKER)).unwrap();
+        let archive = dir.path().join("my-game-1.2.0-macos-arm64.zip");
+        zip_file(
+            &archive,
+            &[
+                (
+                    "my-game-1.2.0-macos-arm64/My Game.app/Contents/MacOS/my-game",
+                    b"bin",
+                ),
+                (
+                    "my-game-1.2.0-macos-arm64/My Game.app/Contents/MacOS/portable.txt",
+                    b"shipped",
+                ),
+            ],
+        );
+        let staging = dir.path().join("staging2");
+        let staged = stage(&archive, &staging, &install, Limits::default(), None).unwrap();
+        assert!(!staged
+            .path()
+            .join("Contents/MacOS")
+            .join(PORTABLE_MARKER)
+            .exists());
     }
 
     #[test]

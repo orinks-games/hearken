@@ -456,14 +456,16 @@ events go through the main voice.
   `-installed` (`my-game-1.4.0-windows-x64-portable.zip`), so the two never
   overwrite each other in `dist/` and both can go to the same GitHub release.
   The game's own kind keeps the plain name, and `hearken play --download`
-  takes it when both are there. The other kind gets no update manifest, since
-  its name would match the usual build's and replace it: publish it as an
-  extra download. Players who update get the game's usual kind, and a copy
-  that is portable stays portable. An installed copy of a game whose usual
-  kind is portable becomes portable on its first update, and the saves made
-  before stay behind in the user's folder, so say so where you offer that
-  download or leave `update` off for such a game. On a Mac the flag changes nothing, because
-  the app always keeps its saves in Application Support.
+  takes it when both are there. The other kind gets no update manifest:
+  its copies update from the usual build's manifest, so publish it as an
+  extra download beside the usual build. An update keeps every copy the kind
+  it is, whichever kind of archive it installs: it adds `portable.txt` to a
+  portable copy that lacks it and leaves it out of an installed one, so the
+  saves stay where the copy reads them. With `update = true`, the flag needs
+  a Hearken that does this, and `hearken release` says to run
+  `cargo update -p hearken` when the game's is older. On a Mac the flag
+  changes nothing, because the app always keeps its saves in Application
+  Support.
 - On a Mac, the zip holds an app (`My Game.app`), so players open the
   game from Finder with no Terminal window. The program goes in
   `Contents/MacOS`, the game's files and `sounds.pak` in

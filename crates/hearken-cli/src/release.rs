@@ -111,6 +111,16 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
     let seal = crate::seal_key::release_key(project)?.map(|k| k.to_hex());
     // The public half goes into the game; the secret signs the manifest.
     let update = crate::update_key::release_key(project)?;
+    let kind = release_kind(
+        project.portable,
+        options.portable,
+        cfg!(target_os = "macos"),
+    );
+    if let (Some(_), Some(suffix)) = (&update, kind.suffix) {
+        // The other kind updates from the usual build's manifest, so its
+        // copies must keep their own kind when they apply that archive.
+        updater_keeps_kind(&project.dir, suffix)?;
+    }
     let identity = match &update {
         Some(key) => UpdateIdentity {
             key: key.public().to_string(),
@@ -133,11 +143,6 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
     // The platform part of the name, the one `hearken play --download`
     // looks for and the update manifest names.
     let platform = hearken_update::platform::current();
-    let kind = release_kind(
-        project.portable,
-        options.portable,
-        cfg!(target_os = "macos"),
-    );
     let stem = release_stem(&project.package, &project.version, &platform, kind);
     let dist = project.dir.join("dist");
     // An earlier release's module is not this one's.
@@ -227,21 +232,10 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
         }
     }
     if let (Some(_), Some(suffix)) = (&update, kind.suffix) {
-        // A manifest is named for its channel and platform alone, so this
-        // one would replace the game's usual build's, and an update would
-        // then turn players' copies from one kind into the other.
-        println!(
-            "No update manifest is written for this {suffix} build, because it would replace the \
-             one for the game's usual build. Publish the archive as an extra download. Players \
-             who update get the game's usual build."
-        );
-        if !kind.portable {
-            println!(
-                "Take care: the game's usual build is portable, so an update turns this installed \
-                 copy into a portable one. Its saves are then kept beside the game, and the saves \
-                 made before stay behind in the user's folder."
-            );
-        }
+        // The manifest's name is the usual build's, which older copies ask
+        // for, so this build gets none: an update keeps each copy's kind
+        // whichever kind of archive it installs.
+        println!("{}", other_kind_note(suffix));
     } else if let Some(key) = &update {
         let manifest = write_manifest(
             &archive,
@@ -278,6 +272,64 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
         }
     }
     Ok(archive)
+}
+
+/// What `hearken release` says about the update manifest of a build of the
+/// other kind, `portable` or `installed`.
+fn other_kind_note(suffix: &str) -> String {
+    format!(
+        "No update manifest is written for this {suffix} build. Its copies update from the \
+         manifest of the game's usual build, and each update keeps a copy {suffix}, with its \
+         saves where they were. Publish this archive as an extra download, beside the usual \
+         build for this platform."
+    )
+}
+
+/// Whether every copy of `hearken-update` in a game's `cargo metadata`
+/// (with its dependencies) keeps a copy portable or installed when it
+/// updates: those that do say so in their package metadata.
+fn keeps_kind(meta: &serde_json::Value) -> bool {
+    let mut updaters = meta["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["name"] == "hearken-update")
+        .peekable();
+    updaters.peek().is_some()
+        && updaters.all(|p| p["metadata"]["hearken-update"]["keeps-kind"] == true)
+}
+
+/// Refuses a build of the other kind, `suffix`, when the game's Hearken is
+/// too old to keep a copy's kind on update: such a copy would update from
+/// the usual build's archive and could turn into the usual kind.
+fn updater_keeps_kind(dir: &Path, suffix: &str) -> Result<(), String> {
+    let out = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--locked"])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("Could not run cargo: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "Could not read the game's dependencies: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("Could not read cargo metadata: {e}"))?;
+    let article = if suffix.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
+    if keeps_kind(&meta) {
+        Ok(())
+    } else {
+        Err(format!(
+            "This game's Hearken is too old to keep a copy portable or installed when it \
+             updates, which {article} {suffix} build needs. Update it with `cargo update -p hearken`, \
+             or build without --portable and --no-portable."
+        ))
+    }
 }
 
 /// The update identity a release is built with. Empty, every variable is
@@ -655,9 +707,9 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        directml_notices, engine_reads_packs, key_env, read_notes, release_kind, release_stem,
-        require_sdl2, rfc3339, rules_file_name, vc_arch, write_manifest, Kind, ManifestFor,
-        UpdateIdentity,
+        directml_notices, engine_reads_packs, keeps_kind, key_env, other_kind_note, read_notes,
+        release_kind, release_stem, require_sdl2, rfc3339, rules_file_name, vc_arch,
+        write_manifest, Kind, ManifestFor, UpdateIdentity,
     };
 
     #[test]
@@ -689,6 +741,53 @@ mod tests {
         // A Mac app is the same build either way, so the name stays.
         assert_eq!(kind(false, Some(true), true).suffix, None);
         assert_eq!(kind(true, Some(false), true).suffix, None);
+    }
+
+    #[test]
+    fn the_other_kind_needs_an_updater_that_keeps_kinds() {
+        let updater = |keeps: serde_json::Value| serde_json::json!({ "name": "hearken-update", "metadata": keeps });
+        let game = serde_json::json!({ "name": "my-game", "metadata": null });
+        let keeps = serde_json::json!({ "hearken-update": { "keeps-kind": true } });
+        let meta = |packages: Vec<serde_json::Value>| serde_json::json!({ "packages": packages });
+        assert!(keeps_kind(&meta(vec![
+            game.clone(),
+            updater(keeps.clone())
+        ])));
+        // One that predates it says nothing, and says it in no other way.
+        assert!(!keeps_kind(&meta(vec![
+            game.clone(),
+            updater(serde_json::Value::Null)
+        ])));
+        assert!(!keeps_kind(&meta(vec![
+            game.clone(),
+            updater(serde_json::json!({ "hearken-update": { "keeps-kind": "yes" } }))
+        ])));
+        // Two copies in one game must both keep it, and a game with none
+        // cannot update at all.
+        assert!(!keeps_kind(&meta(vec![
+            updater(keeps.clone()),
+            updater(serde_json::Value::Null)
+        ])));
+        assert!(!keeps_kind(&meta(vec![game])));
+        assert!(!keeps_kind(&serde_json::json!({})));
+    }
+
+    /// This workspace's own updater says it keeps kinds, as a game's
+    /// `cargo metadata` shows it.
+    #[test]
+    fn this_updater_says_it_keeps_kinds() {
+        let manifest = include_str!("../../hearken-update/Cargo.toml");
+        assert!(manifest.contains("\n[package.metadata.hearken-update]\nkeeps-kind = true\n"));
+    }
+
+    #[test]
+    fn the_other_kinds_note_says_it_updates_from_the_usual_manifest() {
+        for suffix in ["portable", "installed"] {
+            let note = other_kind_note(suffix);
+            assert!(note.contains(&format!("keeps a copy {suffix}")), "{note}");
+            assert!(note.contains("usual build"), "{note}");
+            assert!(!note.contains("Take care") && !note.contains('\u{2014}'));
+        }
     }
 
     #[test]

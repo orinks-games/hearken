@@ -49,7 +49,9 @@ release    builds the zip players get, without the agent server, into dist/,
            --portable or --no-portable builds the other kind of copy for this
            release only: portable keeps saves beside the game, installed
            keeps them in the user's folder. The archive name then ends in
-           -portable or -installed and no update manifest is written.
+           -portable or -installed. It gets no update manifest of its own:
+           its copies update from the usual build's, and each update keeps
+           a copy portable or installed as it was.
 seal-key   shows where a game's seal key is kept and its ID; --print shows
            the key itself, for a CI secret.
 update-key shows where a game's update key is kept and its public half;

@@ -17,7 +17,9 @@
 //!   way;
 //! - an app bundle is copied in beside the old one first, then the old one
 //!   is moved aside (`.old`) and the new one renamed into its place: two
-//!   renames, the only moment without an app;
+//!   renames, the only moment without an app. An app made portable by
+//!   hand keeps `saves` beside its program, inside the app: that folder is
+//!   moved into the new app, and the old app is kept if it cannot be;
 //! - an AppImage is copied in beside the old one and renamed over it, which
 //!   is one step that either happens or does not.
 //!
@@ -182,7 +184,9 @@ cd "{dst}" && "./{exe}" >/dev/null 2>&1 &
 "#;
 
 const MACOS_BUNDLE: &str = r#"#!/bin/sh
-# Swaps the whole app. Saves live in Application Support, never inside it.
+# Swaps the whole app. Saves live in Application Support, except in an app
+# made portable by hand, which keeps them in saves beside its program: they
+# are moved into the new app, and if that fails the old app is kept.
 # The new app is copied in beside the old one first, so a copy that fails
 # or is stopped part-way leaves the old app as it was. Then two renames
 # swap them.
@@ -197,7 +201,10 @@ if [ -e "{dst}" ]; then
   if mv "{src}" "{dst}.update-new" 2>/dev/null || ditto "{src}" "{dst}.update-new"; then
     if mv "{dst}" "{dst}.old"; then
       if mv "{dst}.update-new" "{dst}"; then
-        rm -rf "{dst}.old"
+        saves="{dst}.old/{programs}/saves"
+        if [ ! -d "$saves" ] || { rm -rf "{dst}/{programs}/saves" && mv "$saves" "{dst}/{programs}/saves"; }; then
+          rm -rf "{dst}.old"
+        fi
       else
         mv "{dst}.old" "{dst}"
       fi
@@ -292,12 +299,16 @@ pub fn script_text(
 ) -> io::Result<String> {
     let windows = os == Os::Windows;
     let q = |p: &Path| quote_for_script(&p.display().to_string(), windows);
+    // The program's folder inside an app: where a portable app keeps its
+    // saves.
+    let mut programs = String::new();
     let (template, exe) = match (staged, install) {
         (Staged::Folder(_), Install::Folder { exe, .. }) if windows => {
             (WINDOWS_FOLDER, exe.clone())
         }
         (Staged::Folder(_), Install::Folder { exe, .. }) => (POSIX_FOLDER, exe.clone()),
-        (Staged::Bundle(_), Install::Bundle { .. }) if os == Os::MacOs => {
+        (Staged::Bundle(_), Install::Bundle { exe, .. }) if os == Os::MacOs => {
+            programs = q(exe.parent().unwrap_or(Path::new("")));
             (MACOS_BUNDLE, String::new())
         }
         (Staged::AppImage(_), Install::AppImage { .. }) if !windows => (APPIMAGE, String::new()),
@@ -318,6 +329,7 @@ pub fn script_text(
             ("staging", q(staging)),
             ("backup", q(&backup)),
             ("exe", quote_for_script(&exe, windows)),
+            ("programs", programs),
             ("journal", JOURNAL.to_string()),
             ("log", APPLY_LOG.to_string()),
         ],
@@ -697,6 +709,127 @@ mod tests {
         assert!(beside < aside && aside < swap);
         assert!(text.contains("mv \"/Applications/My Game.app.old\" \"/Applications/My Game.app\""));
         assert!(text.contains("open \"/Applications/My Game.app\""));
+        // A portable app's saves move into the new app before the old one
+        // goes, and the old one stays if they cannot.
+        let saves = text
+            .find(
+                "mv \"$saves\" \"/Applications/My Game.app/Contents/MacOS/saves\"; }; then\n          rm -rf \"/Applications/My Game.app.old\"",
+            )
+            .unwrap();
+        assert!(swap < saves);
+        assert!(text.contains("saves=\"/Applications/My Game.app.old/Contents/MacOS/saves\""));
+    }
+
+    /// The real Mac script, run by a POSIX shell against a real app made
+    /// portable by hand: the new app is in place, with the saves and the
+    /// marker, and the old one is gone. `open` is a stand-in.
+    #[cfg(unix)]
+    #[test]
+    fn the_mac_script_carries_a_portable_apps_saves() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Apps/My Game.app");
+        let programs = app.join("Contents/MacOS");
+        fs::create_dir_all(programs.join("saves")).unwrap();
+        fs::write(programs.join("saves/progress.json"), b"mine").unwrap();
+        fs::write(programs.join("my-game"), b"old").unwrap();
+        fs::write(programs.join(crate::install::PORTABLE_MARKER), b"by hand").unwrap();
+        let staging = crate::install::make_staging_dir_in(dir.path(), "my-game").unwrap();
+        let new = staging.join("unpacked/g/My Game.app");
+        fs::create_dir_all(new.join("Contents/MacOS/saves")).unwrap();
+        fs::write(new.join("Contents/MacOS/my-game"), b"new").unwrap();
+        fs::write(new.join("Contents/MacOS/saves/progress.json"), b"theirs").unwrap();
+        fs::write(
+            new.join("Contents/MacOS")
+                .join(crate::install::PORTABLE_MARKER),
+            b"by hand",
+        )
+        .unwrap();
+        let install = Install::Bundle {
+            app: app.clone(),
+            exe: PathBuf::from("Contents/MacOS/my-game"),
+        };
+        let script = write_apply_script(
+            &Staged::Bundle(new),
+            &install,
+            &staging,
+            999_999_999,
+            Os::MacOs,
+        )
+        .unwrap();
+        let shim = dir.path().join("shim");
+        fs::create_dir(&shim).unwrap();
+        fs::write(shim.join("open"), "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(shim.join("open"), fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            shim.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let status = Command::new("/bin/sh")
+            .arg(&script)
+            .env("PATH", path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(fs::read(programs.join("my-game")).unwrap(), b"new");
+        assert_eq!(
+            fs::read(programs.join("saves/progress.json")).unwrap(),
+            b"mine"
+        );
+        assert!(programs.join(crate::install::PORTABLE_MARKER).is_file());
+        assert!(!dir.path().join("Apps/My Game.app.old").exists());
+        assert!(!dir.path().join("Apps/My Game.app.update-new").exists());
+        assert!(!staging.exists());
+    }
+
+    /// Both kinds of folder install, updated by the real POSIX script from
+    /// one archive that is portable: each keeps its kind, and its saves
+    /// stay where it reads them.
+    #[cfg(unix)]
+    #[test]
+    fn one_archive_updates_each_kind_to_its_own_kind() {
+        use crate::extract::tests::zip_file;
+        use crate::install::PORTABLE_MARKER;
+        for portable in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let game = dir.path().join("game");
+            fs::create_dir_all(game.join("saves")).unwrap();
+            fs::write(game.join("saves/progress.json"), b"mine").unwrap();
+            fs::write(game.join("my-game"), b"#!/bin/sh\n").unwrap();
+            if portable {
+                fs::write(game.join(PORTABLE_MARKER), b"mine").unwrap();
+            }
+            let archive = dir.path().join("my-game-1.1.0-linux-x64.zip");
+            zip_file(
+                &archive,
+                &[
+                    ("my-game-1.1.0-linux-x64/my-game", b"#!/bin/sh\n# new\n"),
+                    ("my-game-1.1.0-linux-x64/portable.txt", b"shipped"),
+                ],
+            );
+            let install = Install::Folder {
+                dir: game.clone(),
+                exe: "my-game".into(),
+            };
+            let staging = crate::install::make_staging_dir_in(dir.path(), "my-game").unwrap();
+            let staged =
+                crate::install::stage(&archive, &staging, &install, crate::Limits::default(), None)
+                    .unwrap();
+            let script =
+                write_apply_script(&staged, &install, &staging, 999_999_999, Os::Linux).unwrap();
+            assert!(Command::new("/bin/sh")
+                .arg(&script)
+                .status()
+                .unwrap()
+                .success());
+            assert_eq!(
+                fs::read(game.join("my-game")).unwrap(),
+                b"#!/bin/sh\n# new\n"
+            );
+            assert_eq!(game.join(PORTABLE_MARKER).exists(), portable, "{portable}");
+            assert_eq!(fs::read(game.join("saves/progress.json")).unwrap(), b"mine");
+        }
     }
 
     #[test]
