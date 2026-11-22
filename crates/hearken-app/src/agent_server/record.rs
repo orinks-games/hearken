@@ -5,7 +5,7 @@
 //! key: the agent's and any a person pressed in the window.
 
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{LineWriter, Write};
 use std::path::{Path, PathBuf};
 
 use crate::bindings::Chord;
@@ -16,7 +16,9 @@ use crate::input::InputEvent;
 use hearken_audio::{Audio, Heard};
 
 pub(super) struct Recording {
-    log: BufWriter<File>,
+    /// Written out line by line, so the file keeps up with the session
+    /// and a crash loses nothing already logged.
+    log: LineWriter<File>,
     log_path: PathBuf,
     /// `None` when the backend could not record sound.
     wav: Option<PathBuf>,
@@ -65,7 +67,7 @@ impl Recording {
         let log_path = base.with_extension("log");
         let file = File::create(&log_path)
             .map_err(|e| format!("could not create {}: {e}", log_path.display()))?;
-        let mut log = BufWriter::new(file);
+        let mut log = LineWriter::new(file);
         let wav_path = base.with_extension("wav");
         let (wav, note) = match ctx.audio.start_capture(&wav_path) {
             Ok(()) => (Some(wav_path), String::new()),

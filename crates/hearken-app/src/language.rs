@@ -89,18 +89,89 @@ pub fn uses_cjk_pacing(code: &str) -> bool {
     matches!(base, "zh" | "ja")
 }
 
+/// What the voice in use can do with a language.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceFit {
+    /// A screen reader or system voice: it speaks whatever language the
+    /// player set it up for.
+    Speaks,
+    /// The built-in voice, which speaks English only.
+    EnglishOnly,
+}
+
+/// Said once, in English, when a language other than English is chosen
+/// while the built-in voice is speaking.
+pub const ENGLISH_ONLY_VOICE: &str =
+    "The built-in voice speaks English only. For another language, use a screen reader.";
+
+/// The language to load: `wanted` (a code, or `auto` already resolved to
+/// `resolved`), except that Automatic stays English while only the
+/// built-in voice can speak.
+pub fn spoken_code(setting: &str, resolved: &'static str, fit: VoiceFit) -> &'static str {
+    let automatic = setting == AUTO || setting.is_empty();
+    if automatic && fit == VoiceFit::EnglishOnly {
+        ENGLISH
+    } else {
+        resolved
+    }
+}
+
 impl<G: Game> Ctx<G> {
+    /// What the voice speaking now can do with a language.
+    pub fn voice_fit(&self) -> VoiceFit {
+        let builtin = self.settings.speech.self_voicing
+            || self.speech.backend_name() == hearken_speech::BUILTIN_BACKEND;
+        if builtin {
+            VoiceFit::EnglishOnly
+        } else {
+            VoiceFit::Speaks
+        }
+    }
+
     /// Load the catalog the language setting asks for. Called at launch and
     /// when the player changes Language in Settings. Raises the event
     /// pacer's wide-character weight for Chinese and Japanese, and restores
-    /// the game's ordinary weight otherwise.
+    /// the game's ordinary weight otherwise. Automatic stays English while
+    /// the built-in voice is speaking; a language the player chose is
+    /// loaded anyway, and they hear [`ENGLISH_ONLY_VOICE`] once.
     pub fn apply_language(&mut self) {
         let setting = self.settings.language.clone();
-        let code = resolve_setting::<G>(&setting, &self.paths.data_dir);
-        self.translator = load_for_game::<G>(&setting, &self.paths.data_dir);
+        let resolved = resolve_setting::<G>(&setting, &self.paths.data_dir);
+        let fit = self.voice_fit();
+        self.language_fit = Some(fit);
+        let forced = std::env::var(format!("{}{LANG_ENV_SUFFIX}", G::ENV_PREFIX))
+            .is_ok_and(|value| !value.is_empty());
+        let code = if forced {
+            resolved
+        } else {
+            spoken_code(&setting, resolved, fit)
+        };
+        self.translator = if code == resolved {
+            load_for_game::<G>(&setting, &self.paths.data_dir)
+        } else {
+            load_for_game::<G>(code, &self.paths.data_dir)
+        };
         self.delivery
             .apply_language_pacing(self.translator.language());
-        log::info!("Language setting {setting:?} resolves to {code}");
+        log::info!("Language setting {setting:?} resolves to {code} ({fit:?})");
+        let english = self.translator.language() == ENGLISH;
+        if !english && fit == VoiceFit::EnglishOnly && !self.told_english_only {
+            self.told_english_only = true;
+            // In English: the built-in voice cannot say it otherwise.
+            self.speech.say(ENGLISH_ONLY_VOICE, false);
+            self.delivery.project_main(ENGLISH_ONLY_VOICE, false);
+            self.record(ENGLISH_ONLY_VOICE.to_string());
+        }
+    }
+
+    /// Load the language again when the voice changed under it: speech
+    /// switches backends on its own thread, so the voice in use is known a
+    /// few frames after the setting changes, and at launch only once speech
+    /// has started (Automatic stays English for the built-in voice).
+    pub(crate) fn follow_voice_language(&mut self) {
+        if self.language_fit.is_some_and(|was| was != self.voice_fit()) {
+            self.apply_language();
+        }
     }
 
     /// `text` in the player's language.
@@ -198,6 +269,32 @@ mod tests {
             .config()
             .wide_char_weight;
         assert!((restored - base).abs() < 1e-9);
+    }
+
+    #[test]
+    fn automatic_stays_english_for_the_built_in_voice_only() {
+        assert_eq!(spoken_code(AUTO, "es", VoiceFit::EnglishOnly), ENGLISH);
+        assert_eq!(spoken_code(AUTO, "es", VoiceFit::Speaks), "es");
+        assert_eq!(spoken_code("es", "es", VoiceFit::EnglishOnly), "es");
+    }
+
+    #[test]
+    fn a_chosen_language_with_the_built_in_voice_is_explained_once() {
+        let mut h = Headless::<Demo>::new((), Title);
+        h.app.ctx.settings.speech.self_voicing = true;
+        h.app.ctx.set_language("zh_CN");
+        h.app.ctx.set_language("zh_CN");
+        assert_eq!(h.app.ctx.translator.language(), "zh_CN");
+        let told = h
+            .app
+            .ctx
+            .transcript
+            .iter()
+            .filter(|line| line.as_str() == ENGLISH_ONLY_VOICE)
+            .count();
+        assert_eq!(told, 1);
+        h.app.ctx.set_language(AUTO);
+        assert_eq!(h.app.ctx.translator.language(), ENGLISH);
     }
 
     #[test]

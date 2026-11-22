@@ -64,7 +64,7 @@ impl Choice {
         match self {
             Choice::Guest => "Play as a guest".into(),
             Choice::NewName => "New guest name".into(),
-            Choice::Account => format!("Connect a {site} account"),
+            Choice::Account => format!("Connect {} {site} account", crate::online::article(site)),
             Choice::Disconnect => "Stop playing online on this computer".into(),
         }
     }

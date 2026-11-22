@@ -107,6 +107,7 @@ export function memoryAccounts({
   const tokens = new Map(); // token hash -> player
   const activations = new Map(); // device code hash -> row
   const byCode = new Map(); // user code -> device code hash
+  const byName = new Map(); // approved name -> player
   let nextId = 1;
 
   async function issue(player) {
@@ -183,8 +184,16 @@ export function memoryAccounts({
       const hash = byCode.get(code);
       const row = hash && activations.get(hash);
       if (!row || row.player || now() > row.expires) return false;
-      row.player = { id: `p${nextId++}`, name: String(name).slice(0, 32) || "Player" };
+      // The name is who signed in: the same name is the same account, so
+      // two computers can share one in a test.
+      const shown = String(name).slice(0, 32) || "Player";
+      if (!byName.has(shown)) byName.set(shown, { id: `p${nextId++}`, name: shown });
+      row.player = byName.get(shown);
       return true;
+    },
+    /** Another token for a player, as a second computer gets, for tests. */
+    async tokenForPlayer(player) {
+      return issue(player);
     },
     /** A token for a new player, for tests. */
     async tokenFor(name) {

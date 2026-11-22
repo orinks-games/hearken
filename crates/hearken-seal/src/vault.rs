@@ -220,6 +220,38 @@ impl Vault {
         Ok(())
     }
 
+    /// `plain` as [`Vault::write`] would put it on disk under `name`, without
+    /// touching the disk: sealed when sealing, as it is otherwise. For a copy
+    /// of a file kept somewhere else, such as the player's account.
+    pub fn seal_bytes(&self, name: &str, plain: &[u8]) -> io::Result<Vec<u8>> {
+        name::check(name)?;
+        match &self.key {
+            Some(key) => format::seal(&key.file_key(), name, plain),
+            None => Ok(plain.to_vec()),
+        }
+    }
+
+    /// Opens `bytes` as if they were the file `name` in this folder, without
+    /// touching the disk: the other half of [`Vault::seal_bytes`]. A sealing
+    /// build trusts only a file sealed under `name` with its key; a plain
+    /// copy is `Tampered(Unsealed)`, since no witness can vouch for one that
+    /// came from elsewhere. A build that does not seal answers `Locked` for
+    /// a sealed copy and `Plain` for a plain one.
+    pub fn open_bytes(&self, name: &str, bytes: &[u8]) -> Opened {
+        if let Err(e) = name::check(name) {
+            return Opened::Failed(e);
+        }
+        match &self.key {
+            None if format::is_sealed(bytes) => Opened::Locked,
+            None => Opened::Plain(bytes.to_vec()),
+            Some(_) if !format::is_sealed(bytes) => Opened::Tampered(Tamper::Unsealed),
+            Some(key) => match format::open(&key.file_key(), name, bytes) {
+                Some(plain) => Opened::Sealed(plain),
+                None => Opened::Tampered(Tamper::Forged),
+            },
+        }
+    }
+
     /// Deletes `name` on purpose (a reset the player chose). A build that
     /// does not seal will not delete a sealed file.
     pub fn remove(&mut self, name: &str) -> io::Result<()> {

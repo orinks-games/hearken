@@ -1,5 +1,8 @@
-//! Text to phonemes: genny's built-in dictionary, number words, letter
-//! names and its letter-to-sound fallback (English).
+//! Text to phonemes, as genny's English front end does it: the built-in
+//! dictionary, then the CMU Pronouncing Dictionary (with the `cmudict`
+//! feature), then the same with a regular suffix stripped, then
+//! letter-to-sound rules; number words and letter names; weak forms of
+//! function words and the American flap across a phrase.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -10,8 +13,14 @@ use crate::phonemes::{id, ph};
 pub type Phone = (usize, u8);
 
 #[derive(Clone, Debug)]
-pub enum Word {
-    Spoken { ph: Vec<Phone>, letter: bool },
+pub struct Word {
+    pub ph: Vec<Phone>,
+    /// A spelled letter, which gets its own short pause and final lengthening.
+    pub letter: bool,
+    /// A function word in its weak form: unstressed and shorter.
+    pub func: bool,
+    /// The full form a function word takes when it ends a phrase.
+    strong: Option<Vec<Phone>>,
 }
 
 #[derive(Clone, Debug)]
@@ -23,20 +32,24 @@ pub struct Phrase {
 
 static DICT_SRC: &str = include_str!("dict_en.txt");
 
-fn dict() -> &'static HashMap<&'static str, &'static str> {
-    static DICT: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    DICT.get_or_init(|| {
-        let mut map = HashMap::new();
-        for line in DICT_SRC.lines() {
-            for entry in line.split('|') {
-                let entry = entry.trim();
-                if let Some((word, phones)) = entry.split_once(' ') {
-                    map.insert(word, phones.trim());
-                }
+/// "word PH ON ES|word PH ON ES" lines into a map.
+fn parse_dict(src: &'static str) -> HashMap<&'static str, &'static str> {
+    let mut map = HashMap::new();
+    for line in src.lines() {
+        for entry in line.split('|') {
+            let entry = entry.trim();
+            if let Some((word, phones)) = entry.split_once(' ') {
+                map.insert(word, phones.trim());
             }
         }
-        map
-    })
+    }
+    map
+}
+
+/// genny's own dictionary: numbers and the words games say most.
+fn dict() -> &'static HashMap<&'static str, &'static str> {
+    static DICT: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    DICT.get_or_init(|| parse_dict(DICT_SRC))
 }
 
 fn letter_en(c: char) -> Option<&'static str> {
@@ -384,58 +397,249 @@ pub fn lts(word: &str) -> Vec<Phone> {
         .collect()
 }
 
+/// The phones of a word in the built-in dictionary or, with the `cmudict`
+/// feature, the CMU Pronouncing Dictionary.
+fn known(word: &str) -> Option<Vec<Phone>> {
+    if let Some(p) = dict().get(word) {
+        return Some(parse_ph(p));
+    }
+    crate::cmudict::lookup(word).map(parse_ph)
+}
+
+const VOICELESS: [&str; 8] = ["P", "T", "K", "F", "TH", "S", "SH", "CH"];
+const SIBILANT: [&str; 6] = ["S", "Z", "SH", "ZH", "CH", "JH"];
+
+fn phone(name: &str) -> Phone {
+    (id(name).expect("an English phoneme"), 0)
+}
+
+fn last_name(phones: &[Phone]) -> &'static str {
+    phones.last().map_or("", |&(p, _)| ph(p).name)
+}
+
+/// The built-in dictionary, then CMUdict, then the same with a regular
+/// suffix stripped (-'s, -ing, -ed, -s, -ly, -er, -ness, -less).
+fn lookup_en(low: &str) -> Option<Vec<Phone>> {
+    if let Some(p) = known(low) {
+        return Some(p);
+    }
+    let chars: Vec<char> = low.chars().collect();
+    let n = chars.len();
+    // The first stem of at least two letters that either dictionary knows.
+    let base = |cands: &[String]| -> Option<Vec<Phone>> {
+        cands
+            .iter()
+            .filter(|b| b.chars().count() >= 2)
+            .find_map(|b| known(b))
+            .filter(|p| !p.is_empty())
+    };
+    let cut = |k: usize| -> String { chars[..n.saturating_sub(k)].iter().collect() };
+    let plural = |mut b: Vec<Phone>| -> Vec<Phone> {
+        let last = last_name(&b);
+        if SIBILANT.contains(&last) {
+            b.extend([phone("IH"), phone("Z")]);
+        } else if VOICELESS.contains(&last) {
+            b.push(phone("S"));
+        } else {
+            b.push(phone("Z"));
+        }
+        b
+    };
+    if low.ends_with("'s") {
+        if let Some(b) = base(&[cut(2)]) {
+            return Some(plural(b));
+        }
+    }
+    if low.ends_with("ing") {
+        // running -> run
+        let doubled = if n > 5 && chars[n - 4] == chars[n - 5] {
+            cut(4)
+        } else {
+            String::new()
+        };
+        if let Some(mut b) = base(&[cut(3), cut(3) + "e", doubled]) {
+            b.extend([phone("IH"), phone("NG")]);
+            return Some(b);
+        }
+    }
+    if low.ends_with("ed") {
+        // stopped -> stop
+        let doubled = if n > 4 && chars[n - 3] == chars[n - 4] {
+            cut(3)
+        } else {
+            String::new()
+        };
+        if let Some(mut b) = base(&[cut(2), cut(1), doubled]) {
+            let last = last_name(&b);
+            if matches!(last, "T" | "D") {
+                b.extend([phone("IH"), phone("D")]);
+            } else if VOICELESS.contains(&last) {
+                b.push(phone("T"));
+            } else {
+                b.push(phone("D"));
+            }
+            return Some(b);
+        }
+    }
+    if low.ends_with('s') {
+        let es = if low.ends_with("es") {
+            base(&[cut(2)])
+        } else {
+            None
+        };
+        if let Some(b) = es.or_else(|| base(&[cut(1)])) {
+            return Some(plural(b));
+        }
+    }
+    let suffixes: [(&str, &[&str]); 4] = [
+        ("ly", &["L", "IY"]),
+        ("er", &["ER"]),
+        ("ness", &["N", "AH", "S"]),
+        ("less", &["L", "AH", "S"]),
+    ];
+    for (suf, add) in suffixes {
+        if low.ends_with(suf) {
+            let stem = cut(suf.len());
+            if let Some(mut b) = base(&[stem.clone(), stem + "e"]) {
+                b.extend(add.iter().map(|&a| phone(a)));
+                return Some(b);
+            }
+        }
+    }
+    None
+}
+
+static FUNC_SRC: &str = "\
+a AH0|an AH0 N|the DH AH0|and AH0 N D|of AH0 V|to T AH0|for F ER0|from F R AH0 M|at AH0 T|in IH0 N|on AA0 N
+by B AY0|with W IH0 DH|as AH0 Z|or ER0|nor N ER0|but B AH0 T|than DH AH0 N|that DH AH0 T|if IH0 F|into IH0 N T UW0
+onto AA0 N T UW0|upon AH0 P AA0 N|is IH0 Z|are ER0|was W AH0 Z|were W ER0|be B IY0|been B IH0 N|am AH0 M
+can K AH0 N|could K UH0 D|would W UH0 D|should SH UH0 D|will W IH0 L|shall SH AH0 L|must M AH0 S T
+do D UW0|does D AH0 Z|has HH AH0 Z|had HH AH0 D|it IH0 T|its IH0 T S|he HH IY0|she SH IY0|we W IY0|you Y UW0
+they DH EY0|me M IY0|him IH0 M|her HH ER0|them DH AH0 M|us AH0 S|my M AY0|your Y ER0|his HH IH0 Z|our AW0 ER0
+their DH EH0 R|there DH ER0|some S AH0 M|so S OW0|just JH AH0 S T";
+
+/// Function words in running speech, with their weak (reduced) vowel. One
+/// said on its own, or stranded at the end of a phrase ("what is it for?"),
+/// keeps its full dictionary form.
+fn func_words() -> &'static HashMap<&'static str, &'static str> {
+    static FUNC: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    FUNC.get_or_init(|| parse_dict(FUNC_SRC))
+}
+
 fn spoken(ph: Vec<Phone>, letter: bool) -> Word {
-    Word::Spoken { ph, letter }
+    Word {
+        ph,
+        letter,
+        func: false,
+        strong: None,
+    }
+}
+
+fn function_word(weak: Vec<Phone>, strong: Vec<Phone>) -> Word {
+    Word {
+        ph: weak,
+        letter: false,
+        func: true,
+        strong: Some(strong),
+    }
+}
+
+/// Python's `str.isupper`: some cased letter and no lowercase one.
+fn is_upper(tok: &str) -> bool {
+    tok.chars().any(char::is_uppercase) && !tok.chars().any(char::is_lowercase)
 }
 
 fn word_en(tok: &str, single: bool) -> Vec<Word> {
     let low = tok.to_lowercase();
     let chars: Vec<char> = low.chars().collect();
-    let d = dict();
     if chars.len() == 1 && chars[0].is_alphabetic() {
         if low == "a" && tok == "a" && !single {
-            return vec![spoken(vec![(id("AH").unwrap_or(0), 0)], false)];
+            return vec![function_word(vec![phone("AH")], vec![(phone("EY").0, 1)])];
         }
         if let Some(l) = letter_en(chars[0]) {
             return vec![spoken(parse_ph(l), true)];
         }
     }
-    if let Some(p) = d.get(low.as_str()) {
-        return vec![spoken(parse_ph(p), false)];
-    }
-    if let Some(base) = low.strip_suffix("'s") {
-        if let Some(p) = d.get(base) {
-            let mut phones = parse_ph(p);
-            phones.push((id("Z").unwrap_or(0), 0));
-            return vec![spoken(phones, false)];
+    let upper = is_upper(tok);
+    if let Some(weak) = func_words().get(low.as_str()) {
+        if !single && !upper {
+            let strong = lookup_en(&low).unwrap_or_else(|| parse_ph(weak));
+            return vec![function_word(parse_ph(weak), strong)];
         }
     }
-    let upper = tok.chars().any(|c| c.is_alphabetic()) && !tok.chars().any(|c| c.is_lowercase());
-    if upper && (2..=5).contains(&tok.chars().count()) {
+    if upper && (2..=5).contains(&tok.chars().count()) && !dict().contains_key(low.as_str()) {
+        // An initialism is spelled out unless CMUdict says it reads as a word.
+        if let Some(c) = crate::cmudict::lookup(&low) {
+            if chars.len() >= 3 && chars.iter().any(|c| "aeiouy".contains(*c)) {
+                return vec![spoken(parse_ph(c), false)];
+            }
+        }
         return low
             .chars()
             .filter_map(letter_en)
             .map(|l| spoken(parse_ph(l), true))
             .collect();
     }
-    if let Some(base) = low.strip_suffix('s') {
-        if let Some(p) = d.get(base) {
-            let mut phones = parse_ph(p);
-            let last = phones.last().map(|&(p, _)| ph(p).name);
-            let suffix = if matches!(last, Some("P" | "T" | "K" | "F" | "TH")) {
-                "S"
-            } else {
-                "Z"
-            };
-            phones.push((id(suffix).unwrap_or(0), 0));
-            return vec![spoken(phones, false)];
-        }
-    }
-    let phones = lts(&low);
+    let phones = lookup_en(&low).unwrap_or_else(|| lts(&low));
     if phones.is_empty() {
         Vec::new()
     } else {
         vec![spoken(phones, false)]
+    }
+}
+
+/// The American flap: T or D between a vowel (or R) and an unstressed vowel
+/// inside a word (water, better, ready), but not before a syllabic n
+/// (button, sudden).
+fn flap_en(phones: &mut [Phone]) {
+    let dx = phone("DX");
+    let n = phones.len();
+    for j in 1..n.saturating_sub(1) {
+        let (p, (nx, nst)) = (ph(phones[j].0).name, phones[j + 1]);
+        if !matches!(p, "T" | "D") || !ph(nx).kind.vowelish() || nst != 0 {
+            continue;
+        }
+        let pv = ph(phones[j - 1].0);
+        if !(pv.kind.vowelish() || pv.name == "R") {
+            continue;
+        }
+        if matches!(ph(nx).name, "AH" | "IH") && j + 3 == n && ph(phones[j + 2].0).name == "N" {
+            continue;
+        }
+        phones[j] = dx;
+    }
+}
+
+/// Running-speech English: flaps, weak forms, "the" and "to" before a
+/// vowel, a stranded function word strong.
+fn connect_en(words: &mut [Word]) {
+    let real: Vec<usize> = (0..words.len())
+        .filter(|&i| !words[i].ph.is_empty())
+        .collect();
+    let (dh, ah, t) = (phone("DH"), phone("AH"), phone("T"));
+    for (k, &i) in real.iter().enumerate() {
+        if !words[i].letter {
+            flap_en(&mut words[i].ph);
+        }
+        if !words[i].func {
+            continue;
+        }
+        let Some(&next) = real.get(k + 1) else {
+            let w = &mut words[i];
+            if let Some(strong) = w.strong.take() {
+                w.ph = strong;
+            }
+            w.func = false;
+            continue;
+        };
+        if ph(words[next].ph[0].0).kind.vowelish() {
+            let w = &mut words[i];
+            if w.ph == [dh, ah] {
+                w.ph = vec![dh, phone("IY")];
+            } else if w.ph == [t, ah] {
+                w.ph = vec![t, phone("UW")];
+            }
+        }
     }
 }
 
@@ -520,6 +724,9 @@ pub fn text_to_phrases(text: &str) -> Vec<Phrase> {
             punct: '\0',
         });
     }
+    for phrase in &mut phrases {
+        connect_en(&mut phrase.words);
+    }
     phrases
 }
 
@@ -531,9 +738,8 @@ pub fn to_phonemes(text: &str) -> String {
             let words: Vec<String> = phrase
                 .words
                 .iter()
-                .map(|Word::Spoken { ph: phones, .. }| {
-                    phones
-                        .iter()
+                .map(|w| {
+                    w.ph.iter()
                         .map(|&(p, s)| {
                             let info = ph(p);
                             if info.kind.vowelish() {

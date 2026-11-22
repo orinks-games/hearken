@@ -40,6 +40,9 @@ impl<G: Game> App<G> {
     pub fn step(&mut self, events: Vec<InputEvent>, dt: f64) {
         // The clock the held-key pulses run on; see `held_keys`.
         self.ctx.held.begin_frame(dt);
+        // What the voices last said of themselves, before any screen asks
+        // whether speech is playing.
+        self.ctx.observe_voices();
         for event in events {
             if self.admit(&event) {
                 self.dispatch(&event);
@@ -59,6 +62,8 @@ impl<G: Game> App<G> {
                 top.on_event(&mut self.ctx, &event);
             }
         }
+        // The take's clock runs on the frames its owner is on top for.
+        self.ctx.audio.advance_take(dt);
         if let Some(top) = self.states.last_mut() {
             top.update(&mut self.ctx, dt);
         }
@@ -68,7 +73,11 @@ impl<G: Game> App<G> {
         #[cfg(feature = "update")]
         self.ctx
             .update_updates(self.states.last().is_some_and(|s| s.allows_update_prompt()));
+        #[cfg(feature = "report")]
+        self.ctx
+            .update_reports(self.states.last().is_some_and(|s| s.allows_update_prompt()));
         self.ctx.speech.poll(dt);
+        self.ctx.follow_voice_language();
         self.ctx.update_audio();
         self.ctx.update_soundtrack();
         self.ctx.update_duck();
@@ -219,6 +228,9 @@ impl<G: Game> App<G> {
             shell.render_scene(&self.visual_scene());
         }
         G::on_exit(&mut self.ctx);
+        // A clean exit, so the next start does not offer to report a crash.
+        #[cfg(feature = "report")]
+        self.ctx.reports.end_session();
         self.ctx.controller.shutdown();
         // Saved before the audio shutdown, which can wait up to
         // `SHUTDOWN_WAIT` for a hung driver: a force-close during that wait
@@ -270,6 +282,15 @@ impl<G: Game> App<G> {
         self.states.len()
     }
 
+    /// Holds, resumes or drops the take for the stack as it stands (see
+    /// [`Ctx::begin_take`]).
+    fn sync_take(&mut self) {
+        if self.ctx.take_owner.is_some() {
+            let names: Vec<&'static str> = self.states.iter().map(|s| s.name()).collect();
+            self.ctx.sync_take(&names);
+        }
+    }
+
     /// Keeps `ctx.top_screen()` in step with the stack, after a change.
     fn note_top(&mut self) {
         self.ctx.screen = self.top_name();
@@ -293,6 +314,13 @@ impl<G: Game> App<G> {
     /// `enter` logs or sets a phase on is filed under its own name.
     fn enter_top(&mut self, mut next: Box<dyn State<G>>) {
         self.ctx.screen = next.name();
+        // A take is held before the new screen arrives, so what it does on
+        // arrival (a pause menu pausing every sound) is not in the take.
+        if self.ctx.take_owner.is_some() {
+            let mut names: Vec<&'static str> = self.states.iter().map(|s| s.name()).collect();
+            names.push(next.name());
+            self.ctx.sync_take(&names);
+        }
         next.enter(&mut self.ctx);
         self.states.push(next);
     }
@@ -375,6 +403,11 @@ impl<G: Game> App<G> {
                         reveal = None;
                     }
                 }
+                // Held as soon as another screen is on top, so what that
+                // screen does on arrival (a pause menu pausing the sound)
+                // is not in the take; recording again before the owner
+                // resumes.
+                self.sync_take();
             }
             if let (Some(how), Some(top)) = (reveal, self.states.last_mut()) {
                 let name = top.name();
@@ -403,6 +436,7 @@ impl<G: Game> App<G> {
             log::error!("screen changes kept queueing themselves; dropping the rest");
             self.ctx.clear_pending();
         }
+        self.sync_take();
         if self.states.is_empty() {
             self.note_top();
             self.ctx.running = false;

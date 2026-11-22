@@ -59,7 +59,10 @@ fn live_pick_backend_prefers_the_highest_priority_usable_backend() {
     let narrator = hearken_speech::narrator_running();
     let expected = table
         .iter()
-        .filter(|(name, _, usable)| *usable && (name != "UIA" || narrator))
+        // Clipboard and No Speech are never chosen automatically.
+        .filter(|(name, _, usable)| {
+            *usable && (name != "UIA" || narrator) && name != "Clipboard" && name != "No Speech"
+        })
         .map(|(name, priority, _)| {
             let priority = if name == "UIA" {
                 hearken_speech::UIA_LAST_RESORT_PRIORITY

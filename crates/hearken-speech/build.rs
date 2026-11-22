@@ -42,17 +42,21 @@ fn prism_link_args() -> Vec<String> {
 /// it still starts.
 fn link_prism_system_libraries() {
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if os == "linux" || os == "macos" {
+    if os == "macos" {
         // Each backend registers itself from a static initializer in its own
         // object, and a static link keeps an object only when something
         // references it; without that Prism starts with an empty registry.
         // Since 0.1.4 prism.cpp references every backend it built (MSVC by
         // `/include:`), so the plain link keeps them too; the whole archive
-        // stays as a second guarantee on GCC and Clang (ld64 `-force_load`
-        // on macOS). `prism_registers_this_platforms_backends` in
-        // tests/speech_live.rs checks the result on each CI platform.
-        // `-bundle` defers this to the final link, where prism-sys's search
-        // path finds libprism.a.
+        // stays as a second guarantee on macOS (ld64 `-force_load`).
+        // Linux takes the plain link: since 0.1.6 the clipboard backend
+        // carries its own copy of the core Wayland interfaces, which a whole
+        // archive forces in beside SDL2's static copy, and the link fails on
+        // duplicate `wl_*_interface` symbols. Linked plainly, the object is
+        // left out when SDL2 already defines them.
+        // `prism_registers_this_platforms_backends` in tests/speech_live.rs
+        // checks the result on each CI platform. `-bundle` defers this to
+        // the final link, where prism-sys's search path finds libprism.a.
         println!("cargo:rustc-link-lib=static:+whole-archive,-bundle=prism");
     }
     match env::var("CARGO_CFG_TARGET_OS").as_deref() {

@@ -275,7 +275,10 @@ impl<G: Game> Menu for OnlinePlayScreen<G> {
             let label = if ctx.online.offers_guests() {
                 "Play online: connect an account or play as a guest".to_string()
             } else {
-                format!("Connect a {site} account to play online")
+                format!(
+                    "Connect {} {site} account to play online",
+                    crate::online::article(&site)
+                )
             };
             return vec![MenuItem::new(label, |_: &mut Self, ctx: &mut Ctx<G>| {
                 ctx.push(OnlineAccountScreen::new());
@@ -1545,7 +1548,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l.contains("Connect a example.test account to play online")),
+                .any(|l| l.contains("Connect an example.test account to play online")),
             "{lines:?}"
         );
     }

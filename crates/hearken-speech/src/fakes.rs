@@ -14,7 +14,11 @@ use super::backend::{BackendId, VoiceBackend, VoiceFeatures, VoiceRegistry};
 /// back the same cached instance on every `acquire`.
 #[derive(Debug, Default)]
 pub struct FakeVoiceState {
+    /// The name the voice is registered under.
     pub name: String,
+    /// What the voice calls itself when that differs from its registry
+    /// name, as the macOS VoiceOver stand-in does.
+    pub own_name: Option<String>,
     pub priority: i32,
     pub features: VoiceFeatures,
     pub voices: Vec<String>,
@@ -35,6 +39,8 @@ pub struct FakeVoiceState {
     pub fail_braille: bool,
     /// What `speaking_report` answers: `None` is a voice that cannot tell.
     pub speaking_report: Option<bool>,
+    /// How many times a [`FakeRegistry`] handed this voice out.
+    pub acquire_calls: u32,
 }
 
 /// A recording voice. Cloning the handle shares the state.
@@ -74,6 +80,23 @@ impl FakeVoice {
         let voice = Self::new(name, priority, features);
         voice.state.borrow_mut().voices = voices.iter().map(|v| v.to_string()).collect();
         voice
+    }
+
+    /// A voice registered as `name` that calls itself `own_name`.
+    pub fn renamed(name: &str, own_name: &str, priority: i32, features: VoiceFeatures) -> Self {
+        let voice = Self::new(name, priority, features);
+        voice.state.borrow_mut().own_name = Some(own_name.to_string());
+        voice
+    }
+
+    /// The name the voice is registered under.
+    pub fn registry_name(&self) -> String {
+        self.state.borrow().name.clone()
+    }
+
+    /// How many times a [`FakeRegistry`] handed this voice out.
+    pub fn acquire_calls(&self) -> u32 {
+        self.state.borrow().acquire_calls
     }
 
     /// Borrow the recorded state (spoken lines, parameters, stop count).
@@ -137,7 +160,8 @@ impl VoiceBackend for FakeVoice {
         self.state.borrow().speaking_report
     }
     fn name(&self) -> String {
-        self.state.borrow().name.clone()
+        let state = self.state.borrow();
+        state.own_name.clone().unwrap_or_else(|| state.name.clone())
     }
 
     fn features(&self) -> VoiceFeatures {
@@ -231,7 +255,9 @@ impl FakeRegistry {
 
     /// The registered voice named `name`, to inspect or mutate it.
     pub fn voice(&self, name: &str) -> Option<&FakeVoice> {
-        self.order.iter().find(|voice| voice.name() == name)
+        self.order
+            .iter()
+            .find(|voice| voice.registry_name() == name)
     }
 
     fn index_of(&self, id: BackendId) -> Option<usize> {
@@ -252,12 +278,13 @@ impl VoiceRegistry for FakeRegistry {
     fn id_by_name(&self, name: &str) -> Option<BackendId> {
         self.order
             .iter()
-            .position(|voice| voice.name() == name)
+            .position(|voice| voice.registry_name() == name)
             .map(|index| index as BackendId + 1)
     }
 
     fn name_of(&self, id: BackendId) -> Option<String> {
-        self.index_of(id).map(|index| self.order[index].name())
+        self.index_of(id)
+            .map(|index| self.order[index].registry_name())
     }
 
     fn priority_of(&self, id: BackendId) -> i32 {
@@ -268,7 +295,11 @@ impl VoiceRegistry for FakeRegistry {
 
     fn acquire(&self, id: BackendId) -> Result<Box<dyn VoiceBackend>, prismer::Error> {
         self.index_of(id)
-            .map(|index| self.order[index].boxed())
+            .map(|index| {
+                let voice = &self.order[index];
+                voice.state.borrow_mut().acquire_calls += 1;
+                voice.boxed()
+            })
             .ok_or(prismer::Error::BackendNotAvailable)
     }
 }

@@ -54,7 +54,7 @@
 //! mid-utterance, and the replacement outlives the abandoned context's
 //! eventual shutdown).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -172,6 +172,7 @@ struct Snapshot {
     event_supports_rate: bool,
     supports_braille: bool,
     event_backend_options: Vec<String>,
+    main_backend_options: Vec<String>,
     voice_names: Vec<String>,
 }
 
@@ -243,6 +244,7 @@ fn publish(
         event_supports_rate: query!(abandoned, inner.event_supports_rate()),
         supports_braille: query!(abandoned, inner.supports_braille()),
         event_backend_options: query!(abandoned, inner.event_backend_options()),
+        main_backend_options: query!(abandoned, inner.main_backend_options()),
         voice_names: query!(abandoned, inner.voice_names()),
     };
     *snapshot.lock().expect("speech snapshot lock") = fresh;
@@ -281,7 +283,7 @@ fn publish_status(
 }
 
 /// What a health probe publishes: the cheap status always, the
-/// enumerations (event-voice options, installed voices) only when the probe
+/// enumerations (voice options, installed voices) only when the probe
 /// switched a voice, because that is the only time they can differ.
 ///
 /// Enumerating acquires every Prism backend, and Prism's OneCore backend
@@ -330,6 +332,7 @@ struct Worker {
     shutting_down: Arc<std::sync::atomic::AtomicBool>,
     abandoned: Arc<AtomicBool>,
     ready: Arc<AtomicBool>,
+    applied: Arc<AtomicU64>,
 }
 
 /// `configure`'s arguments: rate, pitch, volume, voice.
@@ -375,6 +378,13 @@ pub struct ThreadedSpeech {
     dropped_lines: u64,
     voice_slot: Arc<Mutex<VoiceSlot>>,
     main_voice_slot: Arc<Mutex<VoiceSlot>>,
+    /// Voice changes (configure, the main and event voice selections)
+    /// queued on this worker, and how many it has run and published.
+    /// [`SpeechSink::settled`] is the two being equal. A change a full
+    /// queue refused is never counted, so it cannot hold the sink
+    /// unsettled.
+    changes_sent: u64,
+    applied: Arc<AtomicU64>,
 }
 
 impl ThreadedSpeech {
@@ -406,6 +416,7 @@ impl ThreadedSpeech {
             shutting_down,
             abandoned,
             ready,
+            applied,
         } = Self::start_worker(&factory, false);
         ThreadedSpeech {
             commands,
@@ -424,6 +435,8 @@ impl ThreadedSpeech {
             dropped_lines: 0,
             voice_slot: Arc::default(),
             main_voice_slot: Arc::default(),
+            changes_sent: 0,
+            applied,
         }
     }
 
@@ -435,6 +448,8 @@ impl ThreadedSpeech {
         let shutting_down = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let abandoned = Arc::new(AtomicBool::new(false));
         let ready = Arc::new(AtomicBool::new(false));
+        let applied = Arc::new(AtomicU64::new(0));
+        let worker_applied = Arc::clone(&applied);
         let worker_abandoned = Arc::clone(&abandoned);
         let worker_ready = Arc::clone(&ready);
         let worker_snapshot = Arc::clone(&snapshot);
@@ -582,14 +597,17 @@ impl ThreadedSpeech {
                             } => {
                                 call!(inner.configure(rate, pitch, volume, voice.as_deref()));
                                 call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
+                                worker_applied.fetch_add(1, Ordering::Release);
                             }
                             Command::SelectEventBackend(name) => {
                                 call!(inner.select_event_backend(name.as_deref()));
                                 call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
+                                worker_applied.fetch_add(1, Ordering::Release);
                             }
                             Command::SelectMainBackend(name) => {
                                 call!(inner.select_main_backend(name.as_deref()));
                                 call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
+                                worker_applied.fetch_add(1, Ordering::Release);
                             }
                             Command::SetBrailleOnly(on) => call!(inner.set_braille_only(on)),
                             Command::Preview {
@@ -654,6 +672,7 @@ impl ThreadedSpeech {
             shutting_down,
             abandoned,
             ready,
+            applied,
         }
     }
 
@@ -680,6 +699,7 @@ impl ThreadedSpeech {
             shutting_down,
             abandoned,
             ready,
+            applied,
         } = Self::start_worker(&self.factory, true);
         self.commands = commands;
         self.snapshot = snapshot;
@@ -687,19 +707,21 @@ impl ThreadedSpeech {
         self.shutting_down = shutting_down;
         self.abandoned = abandoned;
         self.ready = ready;
+        self.applied = applied;
+        self.changes_sent = 0;
         self.dropped_lines = 0;
         // The stuck worker will never answer what it was asked.
         self.voice_slot = Arc::default();
         self.main_voice_slot = Arc::default();
         // The player's settings, in the order the game applied them.
         if let Some(main) = self.replay.main_pref.clone() {
-            self.send_lossy(Command::SelectMainBackend(main));
+            self.send_voice_change(Command::SelectMainBackend(main));
         }
         if let Some(pref) = self.replay.event_pref.clone() {
-            self.send_lossy(Command::SelectEventBackend(pref));
+            self.send_voice_change(Command::SelectEventBackend(pref));
         }
         if let Some((rate, pitch, volume, voice)) = self.replay.configure.clone() {
-            self.send_lossy(Command::Configure {
+            self.send_voice_change(Command::Configure {
                 rate,
                 pitch,
                 volume,
@@ -732,24 +754,38 @@ impl ThreadedSpeech {
         self.snapshot.lock().expect("speech snapshot lock").clone()
     }
 
-    /// Queue a command without ever waiting. A full queue means the worker
-    /// is wedged inside the backend; a say line is then dropped (the
-    /// transcript and review log keep it), anything else is tried anyway.
-    fn send_lossy(&mut self, command: Command) {
-        if let Err(TrySendError::Full(command)) = self.commands.try_send(command) {
-            if matches!(command, Command::Say { .. } | Command::SayEvent { .. }) {
-                self.dropped_lines += 1;
-                if self.dropped_lines.is_power_of_two() {
-                    log::warn!(
-                        "speech queue full: {} line(s) dropped while the backend is stalled",
-                        self.dropped_lines
-                    );
+    /// [`Self::send_lossy`] for a voice change, counted toward
+    /// [`SpeechSink::settled`] when it was queued.
+    fn send_voice_change(&mut self, command: Command) {
+        if self.send_lossy(command) {
+            self.changes_sent += 1;
+        }
+    }
+
+    /// Queue a command without ever waiting; `true` when it was queued. A
+    /// full queue means the worker is wedged inside the backend; a say line
+    /// is then dropped (the transcript and review log keep it), anything
+    /// else is lost too.
+    fn send_lossy(&mut self, command: Command) -> bool {
+        match self.commands.try_send(command) {
+            Ok(()) => true,
+            Err(TrySendError::Full(command)) => {
+                if matches!(command, Command::Say { .. } | Command::SayEvent { .. }) {
+                    self.dropped_lines += 1;
+                    if self.dropped_lines.is_power_of_two() {
+                        log::warn!(
+                            "speech queue full: {} line(s) dropped while the backend is stalled",
+                            self.dropped_lines
+                        );
+                    }
                 }
+                // Non-say commands on a full queue are lost too, but the
+                // queue only fills when the backend has been gone for
+                // hundreds of lines; the periodic snapshot republish
+                // squares state back up when it returns.
+                false
             }
-            // Non-say commands on a full queue are lost too, but the queue
-            // only fills when the backend has been gone for hundreds of
-            // lines; the periodic snapshot republish squares state back up
-            // when it returns.
+            Err(TrySendError::Disconnected(_)) => false,
         }
     }
 
@@ -927,16 +963,24 @@ impl SpeechSink for ThreadedSpeech {
         self.snapshot().event_backend_options
     }
 
+    fn main_backend_options(&self) -> Vec<String> {
+        self.snapshot().main_backend_options
+    }
+
+    fn settled(&self) -> bool {
+        self.applied.load(Ordering::Acquire) >= self.changes_sent
+    }
+
     fn select_event_backend(&mut self, name: Option<&str>) {
         let name = name.map(str::to_string);
         self.replay.event_pref = Some(name.clone());
-        self.send_lossy(Command::SelectEventBackend(name));
+        self.send_voice_change(Command::SelectEventBackend(name));
     }
 
     fn select_main_backend(&mut self, name: Option<&str>) {
         let name = name.map(str::to_string);
         self.replay.main_pref = Some(name.clone());
-        self.send_lossy(Command::SelectMainBackend(name));
+        self.send_voice_change(Command::SelectMainBackend(name));
     }
 
     fn set_braille_only(&mut self, on: bool) {
@@ -961,7 +1005,7 @@ impl SpeechSink for ThreadedSpeech {
     ) {
         let voice = voice.map(str::to_string);
         self.replay.configure = Some((rate, pitch, volume, voice.clone()));
-        self.send_lossy(Command::Configure {
+        self.send_voice_change(Command::Configure {
             rate,
             pitch,
             volume,

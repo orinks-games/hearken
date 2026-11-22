@@ -797,3 +797,391 @@ fn bom_is_stripped_when_parsing_a_po_file() {
     let tr = Translator::new(catalog);
     assert_eq!(tr.translate("Hi."), "Hola.");
 }
+
+fn cards() -> Translator {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: es\n"
+
+msgid "spades"
+msgstr "picas"
+
+msgid "king"
+msgstr "rey"
+
+msgid "{rank} of {suit}"
+msgstr "{rank} de {suit}"
+
+msgid "Top card: {card}."
+msgstr "Carta de arriba: {card}."
+
+msgid "Bell {bell}, {name}"
+msgstr "Campana {bell}, {name}"
+
+msgid "the treble"
+msgstr "el tiple"
+
+msgid "Place {place}: {words}."
+msgstr "Posición {place}: {words}."
+
+msgid "Discoveries tonight: {found} of {spots}."
+msgstr "Descubrimientos esta noche: {found} de {spots}."
+"#;
+    Translator::new(Catalog::from_po("es", po).expect("test catalog parses"))
+}
+
+#[test]
+fn a_generic_template_takes_words_the_catalog_has_whole() {
+    let tr = cards();
+    assert_eq!(
+        tr.translate("Top card: king of spades."),
+        "Carta de arriba: rey de picas."
+    );
+    assert_eq!(
+        tr.translate("Top card: 6 of spades."),
+        "Carta de arriba: 6 de picas."
+    );
+    // A word the catalog does not have still keeps it out.
+    assert_eq!(
+        tr.translate("Top card: 6 of shovels."),
+        "Top card: 6 of shovels."
+    );
+}
+
+#[test]
+fn a_capitalised_template_fills_a_lowercased_piece() {
+    let tr = cards();
+    assert_eq!(
+        tr.translate("Place 1: bell 1, the treble."),
+        "Posición 1: campana 1, el tiple."
+    );
+}
+
+#[test]
+fn a_whole_line_beats_a_menu_position() {
+    let tr = cards();
+    assert_eq!(
+        tr.translate("Discoveries tonight: 0 of 8."),
+        "Descubrimientos esta noche: 0 de 8."
+    );
+}
+
+#[test]
+fn a_language_label_is_its_own_name() {
+    let tr = spanish();
+    assert_eq!(tr.translate("Russian (Русский)."), "Русский.");
+}
+
+#[test]
+fn a_word_kept_as_it_is_never_fills_a_generic_template() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: zh_CN\n"
+
+msgid "Enter"
+msgstr "Enter"
+
+msgid "start"
+msgstr "开始"
+
+msgid "{from} to {to}"
+msgstr "从{from}到{to}"
+"#;
+    let tr = Translator::new(Catalog::from_po("zh_CN", po).expect("test catalog parses"));
+    assert_eq!(tr.translate("Enter to start."), "Enter to start.");
+}
+
+#[test]
+fn numbers_alone_never_fill_a_generic_template() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: ru\n"
+
+msgid "{position} of {count}."
+msgstr "{position} из {count}."
+
+msgid "{rank_words} of {name}"
+msgstr "{rank_words} масти {name}"
+
+msgid "No, keep playing."
+msgstr "Нет, играть дальше."
+"#;
+    let tr = Translator::new(Catalog::from_po("ru", po).expect("test catalog parses"));
+    assert_eq!(
+        tr.translate("No, keep playing. 2 of 2."),
+        "Нет, играть дальше. 2 из 2."
+    );
+}
+
+#[test]
+fn a_template_that_keeps_no_english_beats_a_heavier_one() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: es\n"
+
+msgid "hearts"
+msgstr "corazones"
+
+msgid "{n} hearts"
+msgstr "{n} corazones"
+
+msgid "{rank_words} of {name}"
+msgstr "{rank_words} de {name}"
+"#;
+    let tr = Translator::new(Catalog::from_po("es", po).expect("test catalog parses"));
+    assert_eq!(tr.translate("8 of hearts"), "8 de corazones");
+    assert_eq!(tr.translate("12 hearts"), "12 corazones");
+}
+
+#[test]
+fn sentences_that_translate_beat_a_template_for_the_whole_line() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: es\n"
+
+msgid "{gathered} of {lanterns} lanterns gathered."
+msgstr "{gathered} de {lanterns} farolillos recogidos."
+
+msgid "{eggs} gathered."
+msgstr "Recoges {eggs}."
+
+msgid "{gathered} of {lanterns}.{joins} The song is whole."
+msgstr "{gathered} de {lanterns}.{joins} La canción está completa."
+
+msgid "The song is whole."
+msgstr "La canción está completa."
+
+msgid "none left to turn"
+msgstr "no queda ninguna por girar"
+
+msgid "{n} left to turn"
+msgstr "quedan {n} por girar"
+
+msgid "None"
+msgstr "Ninguno"
+"#;
+    let tr = Translator::new(Catalog::from_po("es", po).expect("test catalog parses"));
+    assert_eq!(
+        tr.translate("4 of 4 lanterns gathered. The song is whole."),
+        "4 de 4 farolillos recogidos. La canción está completa."
+    );
+    assert_eq!(
+        tr.translate("None left to turn."),
+        "No queda ninguna por girar."
+    );
+}
+
+#[test]
+fn a_run_of_sentences_the_catalog_has_whole_stays_together() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: es\n"
+
+msgid "Next: {scene}. {number} of {count}."
+msgstr "Siguiente: {scene}. {number} de {count}."
+
+msgid "Learn to play"
+msgstr "Aprende a jugar"
+
+msgid "Escape for the list."
+msgstr "Escape para la lista."
+
+msgid "From now on, the wishes are quiet. Listen to each box."
+msgstr "A partir de ahora, los deseos callan. Escucha cada caja."
+
+msgid "Space starts the belt."
+msgstr "Space pone en marcha la cinta."
+"#;
+    let tr = Translator::new(Catalog::from_po("es", po).expect("test catalog parses"));
+    assert_eq!(
+        tr.translate("Next: Learn to play. 1 of 3. Escape for the list."),
+        "Siguiente: Aprende a jugar. 1 de 3. Escape para la lista."
+    );
+    assert_eq!(
+        tr.translate(
+            "Space starts the belt. From now on, the wishes are quiet. Listen to each box."
+        ),
+        "Space pone en marcha la cinta. A partir de ahora, los deseos callan. Escucha cada caja."
+    );
+}
+
+#[test]
+fn a_number_never_takes_the_full_stop_and_cjk_clauses_use_their_commas() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: ja\n"
+
+msgid "Night {n}"
+msgstr "第{n}夜"
+
+msgid "The canoe slides out."
+msgstr "カヌーが滑り出します。"
+
+msgid "frogs"
+msgstr "カエル"
+
+msgid "crickets"
+msgstr "コオロギ"
+"#;
+    let tr = Translator::new(Catalog::from_po("ja", po).expect("test catalog parses"));
+    assert_eq!(
+        tr.translate("Night 1. The canoe slides out."),
+        "第1夜。カヌーが滑り出します。"
+    );
+    assert_eq!(tr.translate("Frogs, crickets"), "カエル、コオロギ");
+}
+
+#[test]
+fn a_hole_never_takes_a_number_and_the_clause_after_it() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: ja\n"
+
+msgid "Next night: night {next}"
+msgstr "次の夜：第{next}夜"
+
+msgid "Next night: night {next}, {name}"
+msgstr "次の夜：第{next}夜、{name}"
+
+msgid "every side"
+msgstr "どの方向からも"
+"#;
+    let tr = Translator::new(Catalog::from_po("ja", po).expect("test catalog parses"));
+    assert_eq!(
+        tr.translate("Next night: night 2, every side"),
+        "次の夜：第2夜、どの方向からも"
+    );
+}
+
+#[test]
+fn a_hole_followed_by_its_unit_holds_a_number() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: ja\n"
+
+msgid "Car door {when}."
+msgstr "車のドア、{when}。"
+
+msgid "in {s} seconds"
+msgstr "{s}秒後"
+
+msgid "{seconds} seconds."
+msgstr "{seconds}秒。"
+"#;
+    let tr = Translator::new(Catalog::from_po("ja", po).expect("test catalog parses"));
+    assert_eq!(
+        tr.translate("Car door in 13 seconds."),
+        "車のドア、13秒後。"
+    );
+}
+
+#[test]
+fn loose_holes_never_swallow_a_list_a_clause_or_a_stop() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: ja\n"
+
+msgid "{rest} seconds"
+msgstr "{rest}秒"
+
+msgid "Ramp {side}, {when}."
+msgstr "ジャンプ台、{side}、{when}。"
+
+msgid "in {s} seconds"
+msgstr "{s}秒後"
+
+msgid "to your right"
+msgstr "右"
+
+msgid "{got_away} got away"
+msgstr "逃げられた{got_away}"
+
+msgid "{n} perfect"
+msgstr "パーフェクト{n}"
+
+msgid "{n} missed"
+msgstr "ミス{n}"
+
+msgid "Snowballs: {words}."
+msgstr "雪玉：{words}。"
+
+msgid "{name} on the {bike}"
+msgstr "{bike}で{name}"
+
+msgid "road bike"
+msgstr "ロードバイク"
+
+msgid "Downtown"
+msgstr "Downtown"
+"#;
+    let tr = Translator::new(Catalog::from_po("ja", po).expect("test catalog parses"));
+    assert_eq!(
+        tr.translate("Ramp to your right, in 2 seconds."),
+        "ジャンプ台、右、2秒後。"
+    );
+    assert_eq!(
+        tr.translate("Snowballs: 0 perfect, 0 missed, 10 got away."),
+        "雪玉：パーフェクト0、ミス0、逃げられた10。"
+    );
+    assert_eq!(
+        tr.translate("Downtown on the road bike."),
+        "ロードバイクでDowntown。"
+    );
+}
+
+#[test]
+fn a_hole_that_took_a_clause_gives_way_to_a_fuller_template() {
+    let po = r#"
+msgid ""
+msgstr ""
+"Language: ru\n"
+
+msgid "road bike"
+msgstr "шоссейный велосипед"
+
+msgid "Against the clock"
+msgstr "Наперегонки со временем"
+
+msgid "Downtown"
+msgstr "Downtown"
+
+msgid "Against the clock, {name}"
+msgstr "Наперегонки со временем, {name}"
+
+msgid "{words}, on the {side}."
+msgstr "{words}, сторона: {side}."
+
+msgid "{clock_name}, {district}, on the {bike}."
+msgstr "{clock_name}, {district}, {bike}."
+
+msgid "{name} skipped."
+msgstr "{name}: пропущено."
+
+msgid "{scene}: skipped"
+msgstr "{scene}: пропущено"
+
+msgid "learn to play"
+msgstr "учимся играть"
+
+msgid "Tightrope, {what}"
+msgstr "Tightrope, {what}"
+"#;
+    let tr = Translator::new(Catalog::from_po("ru", po).expect("test catalog parses"));
+    assert_eq!(
+        tr.translate("Against the clock, Downtown, on the road bike."),
+        "Наперегонки со временем, Downtown, шоссейный велосипед."
+    );
+    assert!(!tr
+        .translate("Tightrope, learn to play: skipped.")
+        .contains("::"));
+}

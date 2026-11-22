@@ -350,6 +350,46 @@ leaderboard's top ten, a ghost to download, an event's total. The token is
 optional there. `ctx.online.read("<kind>/<path>")` sends it, with the token
 when an account is connected, and its answer is the whole JSON body.
 
+### Synced files
+
+A server given a `saves` option keeps a copy of a game's save with each
+account, so progress follows the player to another computer. The game seals
+the file before it leaves (`Vault::seal_bytes`), so the server never reads
+it, and opens what comes back with the same key (`Vault::open_bytes`). All
+three calls need an account's token; a guest gets `403
+{"error":"account-needed"}` unless the server allows guests.
+
+| Call | Answer |
+|------|--------|
+| `GET saves/<name>/head` | `200 {"ok":true,"account":"<id>","save":{"revision":7,"hash":"<sha256>","bytes":1234,"format":3,"at":<ms>} \| null}` |
+| `GET saves/<name>` | `200 {"ok":true,"revision":7,"hash":"...","format":3,"content":"<base64>"}`, or `404 {"error":"no-save"}` |
+| `POST saves/<name>` with `{"base":7,"format":3,"hash":"<sha256 of the bytes>","content":"<base64>","card":{...}}` | `200 {"ok":true,"revision":8}` |
+
+An upload names the revision it was made from (`base`, 0 for none). If the
+account has moved on, it is refused with `409 {"error":"stale","revision":9}`:
+the game downloads that revision, merges it into its own, and uploads again,
+so two computers never overwrite each other unseen. An upload whose bytes
+are the latest revision's answers that revision. Other refusals: `413
+too-large`, `422 bad-save` (the hash does not match), `422 not-sealed` (a
+plain file where the server wants sealed ones), `429 rate-limited`.
+
+`format` is the version of the file's layout; a game never merges or
+replaces a copy from a newer one. `card` is optional public facts about the
+save (bests, counts), shaped by the server's `card` check and handed to its
+`onSave`; the server does not keep it.
+
+On the game's side, `hearken::sync::FileSync` drives these calls as an
+explicit state machine (`SyncState`): it asks for the file's bytes when it
+needs them (`Need::Export`), hands over the account's copy to merge
+(`Need::Merge`) together with the base, the last copy this computer and the
+account agreed on (kept sealed in the vault as `sync-<name>-base`), so the
+game can merge three ways, and stops at `NeedsChoice` the first time an
+account meets a computer that already has progress of its own. A file with
+no progress never goes up to an empty account. When the server no longer
+knows the token, the sync stops with `SyncEvent::SignedOut` for the game to
+tell the player. `hearken::sync::testing::FakeSaves` answers the routes in
+memory for tests.
+
 ## Play between players
 
 A match between players is one run with a seat on each input, ordered by
@@ -665,6 +705,22 @@ Make `accept` safe to run twice for one run: if storing its reply fails
 couple of minutes like any claim with no reply, and the run could be sent
 again. Keeping a player's best result, or keying what it stores by
 `verified.run_id`, makes a second count harmless.
+
+Synced files are one more option:
+
+```js
+saves: {
+  store,                       // memorySaves(), or the host's database
+  files: { records: { sealed: true, maxBytes: 512 * 1024, card: (card) => checkCard(card) } },
+  guests: false,               // guests get 403 account-needed
+  onSave: async ({ player, name, revision, card }) => saveCard(player, card),
+},
+```
+
+A store has `head(player, name)`, `read(player, name)` and `write(player,
+name, { base, format, hash, content, bytes, at })`, which answers `{ revision }`
+or `{ stale: true, revision }`. The base check and the new revision must be
+one transaction. `saves` is a reserved route, so no kind may use the name.
 
 A handler can also have `start({ kind, player })`, which answers
 `POST start` with the seed and context to play (see "Choosing seeds").

@@ -357,6 +357,34 @@ impl TemplateSet {
         self.templates.is_empty()
     }
 
+    /// Every template `line` fills in that `accept` takes, the most
+    /// specific first, with its captures.
+    pub fn matches<'s, 'a>(
+        &'s self,
+        line: &'a str,
+        accept: impl Fn(&Template, &HashMap<&str, &'a str>) -> bool + 's,
+    ) -> impl Iterator<Item = (&'s Template, HashMap<&'s str, &'a str>)> + 's
+    where
+        'a: 's,
+    {
+        let mut candidates: Vec<usize> = Vec::new();
+        if let Some(finder) = self.finder.as_ref() {
+            for found in finder.find_overlapping_iter(line) {
+                candidates.extend(&self.by_anchor[found.pattern().as_usize()]);
+            }
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates.sort_by_key(|&i| std::cmp::Reverse(self.templates[i].weight));
+        candidates.into_iter().filter_map(move |i| {
+            let template = &self.templates[i];
+            template
+                .captures(line)
+                .filter(|caps| accept(template, caps))
+                .map(|caps| (template, caps))
+        })
+    }
+
     /// The most specific template `line` fills in, with its captures.
     /// `accept` can still turn a match down.
     pub fn best_match<'a>(

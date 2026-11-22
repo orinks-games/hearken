@@ -53,6 +53,8 @@ pub struct Settings<GS> {
     /// Updates, for a game that offers them.
     #[serde(default, skip_serializing_if = "UpdateSettings::is_default")]
     pub updates: UpdateSettings,
+    #[serde(default, skip_serializing_if = "ReportSettings::is_default")]
+    pub reports: ReportSettings,
     #[serde(default)]
     pub game: GS,
 }
@@ -70,6 +72,7 @@ impl<GS: Default> Default for Settings<GS> {
             online: OnlineSettings::default(),
             discord: DiscordSettings::default(),
             updates: UpdateSettings::default(),
+            reports: ReportSettings::default(),
             game: GS::default(),
         }
     }
@@ -90,6 +93,29 @@ impl Default for DiscordSettings {
 }
 
 impl DiscordSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Problem reports, for a game that takes them (`Game::reports`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct ReportSettings {
+    /// Whether a start after a crash offers to report it. Off once the
+    /// player chooses Don't ask again.
+    pub ask_after_crash: bool,
+}
+
+impl Default for ReportSettings {
+    fn default() -> Self {
+        ReportSettings {
+            ask_after_crash: true,
+        }
+    }
+}
+
+impl ReportSettings {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }

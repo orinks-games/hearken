@@ -1,6 +1,6 @@
 //! What every screen is handed.
 
-use hearken_audio::{Audio, Bus, Sound};
+use hearken_audio::{Audio, Bus, Sound, Take, TakeState};
 use hearken_l10n::Translator;
 use hearken_speech::SpeechSink;
 use std::sync::Arc;
@@ -64,6 +64,10 @@ pub struct Ctx<G: Game> {
     /// found, and the way to check and install.
     #[cfg(feature = "update")]
     pub updates: crate::updates::Updates,
+    /// Problem reports (see [`crate::reports`]): the relay they go to, the
+    /// logs they carry, and whether the last run crashed.
+    #[cfg(feature = "report")]
+    pub reports: crate::reports::Reports,
     /// The game's Discord status (see [`crate::discord`]). Dormant unless
     /// the game offers it and `run` started it.
     pub discord: crate::discord::Discord,
@@ -93,6 +97,8 @@ pub struct Ctx<G: Game> {
     /// The screen on top of the stack, by `State::name`, as the app last
     /// set it; `"none"` before the first screen.
     pub(crate) screen: &'static str,
+    /// The screen whose take is recording (`begin_take`), if any.
+    pub(crate) take_owner: Option<&'static str>,
     pub frame: u64,
     /// Seconds since the run started, the sum of every frame's `dt`.
     pub clock: f64,
@@ -111,6 +117,11 @@ pub struct Ctx<G: Game> {
     pub(crate) commentary: Option<Box<dyn crate::commentary::Commentary<G>>>,
     /// Set while `queued_speech` runs: `say` queues instead of interrupting.
     hold_interrupt: bool,
+    /// Whether this run has said `language::ENGLISH_ONLY_VOICE`.
+    pub(crate) told_english_only: bool,
+    /// What the voice could speak when the language was last loaded: when
+    /// the voice behind it changes, the language follows.
+    pub(crate) language_fit: Option<crate::language::VoiceFit>,
 }
 
 impl<G: Game> Ctx<G> {
@@ -157,6 +168,8 @@ impl<G: Game> Ctx<G> {
             chat: Default::default(),
             #[cfg(feature = "update")]
             updates: crate::updates::Updates::new(G::updates()),
+            #[cfg(feature = "report")]
+            reports: crate::reports::Reports::new(G::reports()),
             speech,
             translator: Arc::new(Translator::english()),
             discord: crate::discord::Discord::dormant(),
@@ -174,6 +187,7 @@ impl<G: Game> Ctx<G> {
             changes: Vec::new(),
             changed: 0,
             screen: "none",
+            take_owner: None,
             frame: 0,
             clock: 0.0,
             audio: Audio::silent(),
@@ -184,6 +198,8 @@ impl<G: Game> Ctx<G> {
             pending: Vec::new(),
             commentary: None,
             hold_interrupt: false,
+            told_english_only: false,
+            language_fit: None,
         };
         // So saved bus volumes are in effect from the very first frame, not
         // just once the real backend has finished opening.
@@ -317,6 +333,48 @@ impl<G: Game> Ctx<G> {
         }
     }
 
+    /// Offers to report a crash, once, on the first screen that allows an
+    /// offer. Once a frame.
+    #[cfg(feature = "report")]
+    pub(crate) fn update_reports(&mut self, safe_to_prompt: bool) {
+        if self.reports.is_offered() {
+            let details = G::report_details(self);
+            self.reports.note_details(details);
+        }
+        if !safe_to_prompt || self.has_pending() || !self.reports.offers_crash_report() {
+            return;
+        }
+        if !self.reports.take_crash_offer() {
+            return;
+        }
+        if !self.settings.reports.ask_after_crash {
+            return;
+        }
+        let name = self.reports.name().to_string();
+        self.push(
+            crate::screens::ConfirmScreen::with_options(
+                format!("{name} closed unexpectedly the last time it ran. Report the problem?"),
+                vec![
+                    crate::screens::ConfirmOption::new("Yes", |ctx: &mut Ctx<G>| {
+                        if ctx.reports.uses_web_form() {
+                            ctx.replace(crate::screens::ReportLinkScreen::<G>::after_crash());
+                        } else {
+                            ctx.replace(crate::screens::ReportScreen::<G>::after_crash());
+                        }
+                    })
+                    .help("Describe what you were doing and send it, with the game log."),
+                    crate::screens::ConfirmOption::close("Not now"),
+                    crate::screens::ConfirmOption::new("Don't ask again", |ctx: &mut Ctx<G>| {
+                        ctx.settings.reports.ask_after_crash = false;
+                        ctx.save_settings();
+                    })
+                    .help("Never offers to report a crash. Settings can turn it back on."),
+                ],
+            )
+            .cancel(1),
+        );
+    }
+
     /// Speak on the main channel now, cutting off what it was saying.
     pub fn say(&mut self, text: impl Into<String>) {
         self.speak(text.into(), true);
@@ -338,6 +396,7 @@ impl<G: Game> Ctx<G> {
         if !self.speech.say_adjustment_preview(setting, &text, true) {
             self.speech.say(&text, true);
         }
+        self.delivery.project_main(&text, true);
         self.record(text);
     }
 
@@ -359,7 +418,9 @@ impl<G: Game> Ctx<G> {
         if text.trim().is_empty() {
             return;
         }
-        self.speech.say(&text, interrupt && !self.hold_interrupt);
+        let interrupt = interrupt && !self.hold_interrupt;
+        self.speech.say(&text, interrupt);
+        self.delivery.project_main(&text, interrupt);
         self.record(text);
     }
 
@@ -401,6 +462,63 @@ impl<G: Game> Ctx<G> {
         self.note_change(format!("[screen] {line}"));
     }
 
+    /// Starts a take of every clip started on `buses` from now on (see
+    /// [`hearken_audio::take`]). The take belongs to the screen on top: it
+    /// is held while another screen covers that one (a pause menu,
+    /// Settings, the Soundtrack), so the held span is left out of it and a
+    /// covering screen's own music leaves no trace; and it is dropped if
+    /// that screen leaves the stack without ending it. Each change of its
+    /// state is kept in `changes` as `[take] recording -> held`.
+    pub fn begin_take(&mut self, buses: &[Bus]) {
+        let from = self.audio.take_state();
+        self.audio.begin_take(buses);
+        self.take_owner = Some(self.screen);
+        self.note_take(from, TakeState::Recording);
+    }
+
+    /// Ends the take and hands it back; `None` when none was recording.
+    pub fn end_take(&mut self) -> Option<Take> {
+        let from = self.audio.take_state();
+        let take = self.audio.end_take();
+        self.take_owner = None;
+        if take.is_some() {
+            self.note_take(from, TakeState::Ended);
+        }
+        take
+    }
+
+    /// Where the take recorder is: idle with no take.
+    pub fn take_state(&self) -> TakeState {
+        self.audio.take_state()
+    }
+
+    /// Holds the take while a screen other than its owner is on top, lets
+    /// it run when its owner is back, and drops it once its owner has left
+    /// the stack. The app calls it after every stack change, with the
+    /// stack's screen names bottom to top.
+    pub(crate) fn sync_take(&mut self, stack: &[&'static str]) {
+        let Some(owner) = self.take_owner else {
+            return;
+        };
+        let from = self.audio.take_state();
+        if !stack.contains(&owner) {
+            log::warn!(target: hearken_audio::take::TARGET, "{owner} left without ending its take; dropped");
+            self.audio.end_take();
+            self.take_owner = None;
+            self.note_take(from, TakeState::Idle);
+            return;
+        }
+        self.audio.hold_take(stack.last() != Some(&owner));
+        let to = self.audio.take_state();
+        if from != to {
+            self.note_take(from, to);
+        }
+    }
+
+    fn note_take(&mut self, from: TakeState, to: TakeState) {
+        self.note_change(format!("[take] {} -> {}", from.name(), to.name()));
+    }
+
     fn note_change(&mut self, line: String) {
         self.changes.push(line);
         self.changed += 1;
@@ -414,6 +532,8 @@ impl<G: Game> Ctx<G> {
     /// the pacer was projecting.
     pub fn stop_speech(&mut self) {
         self.speech.stop();
+        self.delivery.main.clear();
+        self.delivery.event_speaking_at = None;
         if let Some(pacer) = self.delivery.pacer.as_mut() {
             pacer.reset();
         }
@@ -443,6 +563,8 @@ impl<G: Game> Ctx<G> {
         self.apply_speech_settings();
         self.save_settings();
         self.say(line);
+        // Automatic follows the voice: English for the built-in one.
+        self.apply_language();
     }
 
     /// Turns Discord status on or off, as the player's setting. Saved with

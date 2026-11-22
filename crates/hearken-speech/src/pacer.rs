@@ -180,6 +180,27 @@ impl PacerConfig {
     };
 }
 
+impl PacerConfig {
+    /// The estimated speaking time of `text`: the pre-utterance pause plus
+    /// its length at `chars_per_s`, with wide characters weighted by
+    /// `wide_char_weight`.
+    pub fn duration_s(&self, text: &str) -> f64 {
+        self.base_utterance_s + self.spoken_length(text) / self.chars_per_s
+    }
+
+    /// A line's length in English characters' worth of speaking time: kana,
+    /// CJK ideographs and Hangul syllables count `wide_char_weight` each.
+    fn spoken_length(&self, text: &str) -> f64 {
+        let wide = self.wide_char_weight;
+        text.chars()
+            .map(|c| match c as u32 {
+                0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF => wide,
+                _ => 1.0,
+            })
+            .sum()
+    }
+}
+
 impl Default for PacerConfig {
     fn default() -> Self {
         PacerConfig::DEFAULT
@@ -362,23 +383,9 @@ impl EventSpeechPacer {
         (self.clock)()
     }
 
-    /// The estimated speaking time of `text`: the pre-utterance pause plus
-    /// its length at `chars_per_s`, with wide characters weighted by
-    /// `wide_char_weight`.
+    /// The estimated speaking time of `text` ([`PacerConfig::duration_s`]).
     pub fn duration_s(&self, text: &str) -> f64 {
-        self.config.base_utterance_s + self.spoken_length(text) / self.config.chars_per_s
-    }
-
-    /// A line's length in English characters' worth of speaking time: kana,
-    /// CJK ideographs and Hangul syllables count `wide_char_weight` each.
-    fn spoken_length(&self, text: &str) -> f64 {
-        let wide = self.config.wide_char_weight;
-        text.chars()
-            .map(|c| match c as u32 {
-                0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF => wide,
-                _ => 1.0,
-            })
-            .sum()
+        self.config.duration_s(text)
     }
 
     /// How long a line of each priority will wait behind a backlog before it

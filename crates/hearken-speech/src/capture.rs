@@ -64,6 +64,9 @@ pub struct CaptureProfile {
     pub supports_volume: bool,
     pub event_supports_rate: bool,
     pub event_backend_options: Vec<String>,
+    /// What `main_backend_options` answers. Choosing one of these with
+    /// `select_main_backend` makes `backend_name` answer with it.
+    pub main_backend_options: Vec<String>,
     pub voice_names: Vec<String>,
 }
 
@@ -79,6 +82,7 @@ impl CaptureProfile {
             supports_volume: false,
             event_supports_rate: false,
             event_backend_options: Vec::new(),
+            main_backend_options: Vec::new(),
             voice_names: Vec::new(),
         }
     }
@@ -94,6 +98,9 @@ impl CaptureProfile {
             supports_volume: true,
             event_supports_rate: true,
             event_backend_options: vec!["OneCore".to_string(), "SAPI".to_string()],
+            main_backend_options: ["NVDA", "OneCore", "SAPI", "Genny"]
+                .map(str::to_string)
+                .to_vec(),
             voice_names: vec!["David".to_string(), "Zira".to_string()],
         }
     }
@@ -115,6 +122,10 @@ pub struct CaptureSpeech {
     /// The event-voice preference last selected; `Some` binds the profile's
     /// event voice (when it has one), `None` sends events to the main voice.
     event_pref: Option<String>,
+    /// The main voice last chosen with `select_main_backend`.
+    main_pref: Option<String>,
+    /// Every `select_main_backend` call, in order.
+    main_selections: Vec<Option<String>>,
     stop_main_calls: u32,
     stop_event_calls: u32,
     stop_calls: u32,
@@ -124,7 +135,16 @@ pub struct CaptureSpeech {
     shutdown_calls: u32,
     /// What `event_voice_report` answers; `None` until a test scripts it.
     voice_speaking: Option<bool>,
+    /// How old each scripted report claims to be.
+    voice_report_age: std::time::Duration,
     voice_reports: u32,
+    /// Stand in for the speech worker: voice changes wait for
+    /// [`CaptureSpeech::step_worker`].
+    worker_lag: bool,
+    /// A voice change is waiting for `step_worker`.
+    unsettled: bool,
+    /// The profile the next voice change brings.
+    staged: Option<CaptureProfile>,
 }
 
 impl Default for CaptureSpeech {
@@ -155,6 +175,8 @@ impl CaptureSpeech {
             prefix: String::new(),
             profile,
             event_pref: None,
+            main_pref: None,
+            main_selections: Vec::new(),
             stop_main_calls: 0,
             stop_event_calls: 0,
             stop_calls: 0,
@@ -163,7 +185,46 @@ impl CaptureSpeech {
             refresh_requests: 0,
             shutdown_calls: 0,
             voice_speaking: None,
+            voice_report_age: std::time::Duration::ZERO,
             voice_reports: 0,
+            worker_lag: false,
+            unsettled: false,
+            staged: None,
+        }
+    }
+
+    /// Answer as `profile` from now on: a voice coming or going outside
+    /// the game.
+    pub fn set_profile(&mut self, profile: CaptureProfile) {
+        self.profile = profile;
+    }
+
+    /// The profile the capture answers with once the next voice change
+    /// (`configure`, either voice selection) has run.
+    pub fn stage_profile(&mut self, profile: CaptureProfile) {
+        self.staged = Some(profile);
+    }
+
+    /// Stand in for the threaded sink's worker: while on, a voice change
+    /// leaves the capture unsettled, still answering from before it, until
+    /// [`Self::step_worker`].
+    pub fn set_worker_lag(&mut self, on: bool) {
+        self.worker_lag = on;
+    }
+
+    /// Run the voice changes waiting under worker lag.
+    pub fn step_worker(&mut self) {
+        self.unsettled = false;
+        if let Some(profile) = self.staged.take() {
+            self.profile = profile;
+        }
+    }
+
+    fn voice_change(&mut self) {
+        if self.worker_lag {
+            self.unsettled = true;
+        } else {
+            self.step_worker();
         }
     }
 
@@ -171,6 +232,12 @@ impl CaptureSpeech {
     /// answer like a voice that can say whether it is talking.
     pub fn set_voice_speaking(&mut self, speaking: Option<bool>) {
         self.voice_speaking = speaking;
+    }
+
+    /// Make every scripted report this old, as a worker-backed sink's
+    /// reports are by the time the game reads them.
+    pub fn set_voice_report_age(&mut self, age: std::time::Duration) {
+        self.voice_report_age = age;
     }
 
     /// How many times the event voice was asked whether it is speaking.
@@ -197,6 +264,11 @@ impl CaptureSpeech {
 
     pub fn is_terse(&self) -> bool {
         self.terse
+    }
+
+    /// Every `select_main_backend` call, in order (`None` for automatic).
+    pub fn main_selections(&self) -> &[Option<String>] {
+        &self.main_selections
     }
 
     pub fn profile(&self) -> &CaptureProfile {
@@ -369,7 +441,7 @@ impl SpeechSink for CaptureSpeech {
         self.voice_reports += 1;
         self.voice_speaking.map(|speaking| super::VoiceReport {
             speaking,
-            age: std::time::Duration::ZERO,
+            age: self.voice_report_age,
         })
     }
     fn main_voice_report(&mut self) -> Option<super::VoiceReport> {
@@ -410,7 +482,12 @@ impl SpeechSink for CaptureSpeech {
     }
 
     fn backend_name(&self) -> String {
-        self.profile.backend_name.clone()
+        // A chosen voice answers when the profile can bind it; automatic,
+        // or a choice the profile lacks, answers with the profile's own.
+        match &self.main_pref {
+            Some(name) if self.profile.main_backend_options.contains(name) => name.clone(),
+            _ => self.profile.backend_name.clone(),
+        }
     }
 
     fn has_separate_event_voice(&self) -> bool {
@@ -450,6 +527,22 @@ impl SpeechSink for CaptureSpeech {
 
     fn select_event_backend(&mut self, name: Option<&str>) {
         self.event_pref = name.filter(|name| !name.is_empty()).map(str::to_string);
+        self.voice_change();
+    }
+
+    fn settled(&self) -> bool {
+        !self.unsettled
+    }
+
+    fn main_backend_options(&self) -> Vec<String> {
+        self.profile.main_backend_options.clone()
+    }
+
+    fn select_main_backend(&mut self, name: Option<&str>) {
+        let name = name.filter(|name| !name.is_empty()).map(str::to_string);
+        self.main_selections.push(name.clone());
+        self.main_pref = name;
+        self.voice_change();
     }
 
     fn set_braille_only(&mut self, _on: bool) {
@@ -474,6 +567,7 @@ impl SpeechSink for CaptureSpeech {
     ) {
         self.configure_calls
             .push((rate, pitch, volume, voice.map(str::to_string)));
+        self.voice_change();
     }
 
     fn say_adjustment_preview(&mut self, setting: &str, text: &str, interrupt: bool) -> bool {
@@ -615,6 +709,15 @@ impl SpeechSink for SharedCapture {
     }
     fn select_event_backend(&mut self, name: Option<&str>) {
         self.0.borrow_mut().select_event_backend(name)
+    }
+    fn main_backend_options(&self) -> Vec<String> {
+        self.0.borrow().main_backend_options()
+    }
+    fn settled(&self) -> bool {
+        self.0.borrow().settled()
+    }
+    fn select_main_backend(&mut self, name: Option<&str>) {
+        self.0.borrow_mut().select_main_backend(name)
     }
     fn voice_names(&self) -> Vec<String> {
         self.0.borrow().voice_names()

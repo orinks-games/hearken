@@ -1,5 +1,5 @@
-//! The phoneme inventory and the tables the synth reads, as in genny's
-//! `speech.py`.
+//! The phoneme inventory and the tables the synth reads, from `speech.py` in
+//! genny by Oriol Gómez (English phonemes only).
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -47,7 +47,8 @@ pub struct Phoneme {
     pub kind: Kind,
     /// F1-F3 at the start (vowels, liquids, glides).
     pub f: [f64; 3],
-    /// F1-F3 at the end; the same as `f` when the source gives none.
+    /// F1-F3 at the end: the glide target of a diphthong, the same as `f`
+    /// for a steady vowel.
     pub f2: [f64; 3],
     /// Inherent and minimum duration, ms.
     pub dur: (f64, f64),
@@ -122,88 +123,33 @@ const fn sonor(name: &'static str, kind: Kind, f: [f64; 3], dur: (f64, f64)) -> 
 use Kind::*;
 use Place as P;
 
-/// English vowels: men's means of Hillenbrand et al. 1995 at 20 % (`f`) and
-/// 50 % (`f2`) of the vowel; AX, IX, AXR, AY, OY and AW keep Peterson &
-/// Barney / Klatt values.
+/// English vowels: Peterson & Barney / Klatt male targets, as in genny.
+/// Only the diphthongs (and UW) glide to an end target.
 pub static PH: &[Phoneme] = &[
-    vowel(
-        "IY",
-        Vowel,
-        [346.0, 2312.0, 3010.0],
-        [340.0, 2338.0, 2994.0],
-        (155.0, 55.0),
-    ),
-    vowel(
-        "IH",
-        Vowel,
-        [434.0, 2032.0, 2683.0],
-        [459.0, 1941.0, 2641.0],
-        (135.0, 40.0),
-    ),
-    vowel(
-        "EH",
-        Vowel,
-        [584.0, 1817.0, 2603.0],
-        [592.0, 1774.0, 2602.0],
-        (150.0, 70.0),
-    ),
-    vowel(
-        "AE",
-        Vowel,
-        [592.0, 1923.0, 2597.0],
-        [613.0, 1863.0, 2566.0],
-        (230.0, 80.0),
-    ),
-    vowel(
-        "AA",
-        Vowel,
-        [754.0, 1304.0, 2528.0],
-        [757.0, 1326.0, 2523.0],
-        (240.0, 100.0),
-    ),
-    vowel(
-        "AO",
-        Vowel,
-        [654.0, 1020.0, 2516.0],
-        [670.0, 1046.0, 2509.0],
-        (240.0, 130.0),
-    ),
-    vowel(
-        "UH",
-        Vowel,
-        [468.0, 1122.0, 2440.0],
-        [483.0, 1208.0, 2438.0],
-        (160.0, 60.0),
-    ),
+    sonor("IY", Vowel, [270.0, 2290.0, 3010.0], (155.0, 55.0)),
+    sonor("IH", Vowel, [390.0, 1990.0, 2550.0], (135.0, 40.0)),
+    sonor("EH", Vowel, [530.0, 1840.0, 2480.0], (150.0, 70.0)),
+    sonor("AE", Vowel, [660.0, 1720.0, 2410.0], (230.0, 80.0)),
+    sonor("AA", Vowel, [730.0, 1090.0, 2440.0], (240.0, 100.0)),
+    sonor("AO", Vowel, [570.0, 840.0, 2410.0], (240.0, 130.0)),
+    sonor("UH", Vowel, [440.0, 1020.0, 2240.0], (160.0, 60.0)),
     vowel(
         "UW",
         Diphthong,
-        [385.0, 1015.0, 2346.0],
-        [375.0, 971.0, 2359.0],
+        [330.0, 1150.0, 2250.0],
+        [300.0, 900.0, 2200.0],
         (210.0, 70.0),
     ),
-    vowel(
-        "AH",
-        Vowel,
-        [622.0, 1181.0, 2548.0],
-        [618.0, 1243.0, 2549.0],
-        (140.0, 60.0),
-    ),
+    sonor("AH", Vowel, [640.0, 1190.0, 2390.0], (140.0, 60.0)),
     sonor("AX", Vowel, [500.0, 1400.0, 2400.0], (120.0, 55.0)),
     sonor("IX", Vowel, [420.0, 1800.0, 2500.0], (110.0, 40.0)),
-    vowel(
-        "ER",
-        Vowel,
-        [485.0, 1371.0, 1720.0],
-        [460.0, 1406.0, 1704.0],
-        (180.0, 80.0),
-    ),
+    sonor("ER", Vowel, [490.0, 1350.0, 1690.0], (180.0, 80.0)),
     sonor("AXR", Vowel, [490.0, 1350.0, 1690.0], (120.0, 60.0)),
     vowel(
         "EY",
         Diphthong,
-        [479.0, 2089.0, 2699.0],
-        [400.0, 2229.0, 2742.0],
+        [480.0, 1760.0, 2500.0],
+        [330.0, 2200.0, 2750.0],
         (190.0, 100.0),
     ),
     vowel(
@@ -230,8 +176,8 @@ pub static PH: &[Phoneme] = &[
     vowel(
         "OW",
         Diphthong,
-        [511.0, 936.0, 2455.0],
-        [435.0, 898.0, 2448.0],
+        [560.0, 1000.0, 2400.0],
+        [420.0, 850.0, 2300.0],
         (220.0, 80.0),
     ),
     cons("P", Stop, false, P::Lab, (90.0, 50.0)),

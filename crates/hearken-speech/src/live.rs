@@ -7,8 +7,9 @@ use std::time::Duration;
 use crate::SpeechEnv;
 
 use super::backend::{
-    narrator_running, pick_backend_gated, pick_event_backend, preserve_backend_default_pitch,
-    usable, PrismRegistry, VoiceBackend, VoiceFeatures, VoiceRegistry,
+    event_voice_choice, main_backend_options, narrator_running, never_automatic,
+    pick_backend_explained, pick_event_backend, preserve_backend_default_pitch, usable,
+    EventVoiceChoice, PreferenceMiss, PrismRegistry, VoiceBackend, VoiceFeatures, VoiceRegistry,
 };
 use super::{PreviewFeature, SpeechSink, VoiceReport, EVENT_BACKEND, REFRESH_INTERVAL_S};
 
@@ -56,7 +57,13 @@ pub struct Speech {
     /// The main voice Settings chose (`select_main_backend`), after the
     /// environment override.
     chosen_main: Option<String>,
+    /// The preferred main voice that was last passed over, and why, so a
+    /// probe warns when that changes rather than every 3 seconds.
+    main_miss: Option<(String, PreferenceMiss)>,
     event_pref: Option<String>,
+    /// The event voice last asked for that could not be bound, so its
+    /// unavailability is logged once rather than at every probe's retry.
+    event_unavailable: Option<String>,
     config: SpeechConfig,
     /// Settings > Speech, "Output: braille only". Kept on the object rather
     /// than the backend so it survives a backend swap the way `config` does.
@@ -153,7 +160,9 @@ impl Speech {
             ctx: None,
             override_name,
             chosen_main: None,
+            main_miss: None,
             event_pref: None,
+            event_unavailable: None,
             config: SpeechConfig::default(),
             braille_only: false,
             refresh_timer: 0.0,
@@ -170,12 +179,8 @@ impl Speech {
     /// a fake), running the same backend-selection logic as start-up.
     pub fn with_registry(ctx: Box<dyn VoiceRegistry>, override_name: Option<String>) -> Self {
         let mut speech = Self::disabled_with_override(override_name);
-        speech.backend = pick_backend_gated(
-            ctx.as_ref(),
-            speech.main_preference(),
-            speech.narrator_probe,
-        );
         speech.ctx = Some(ctx);
+        speech.backend = speech.pick_main();
         match &speech.backend {
             None => {
                 // Keep the context: the player may start their screen reader
@@ -207,7 +212,9 @@ impl Speech {
             ctx,
             override_name: None,
             chosen_main: None,
+            main_miss: None,
             event_pref: None,
+            event_unavailable: None,
             config: SpeechConfig::default(),
             braille_only: false,
             refresh_timer: 0.0,
@@ -243,6 +250,28 @@ impl Speech {
         self.override_name
             .as_deref()
             .or(self.chosen_main.as_deref())
+    }
+
+    /// Run the main voice selection, warning when the preferred voice is
+    /// passed over or bound again rather than on every probe.
+    fn pick_main(&mut self) -> Option<Box<dyn VoiceBackend>> {
+        let ctx = self.ctx.as_ref()?;
+        let preference = self.main_preference().map(str::to_string);
+        let (picked, miss) =
+            pick_backend_explained(ctx.as_ref(), preference.as_deref(), self.narrator_probe);
+        let preference = preference.filter(|name| !name.is_empty());
+        let now = preference.clone().zip(miss);
+        if now != self.main_miss {
+            match (&now, &self.main_miss, &preference) {
+                (Some((name, miss)), _, _) => log::warn!("{}", miss.describe(name)),
+                (None, Some((was, _)), Some(name)) if was == name => {
+                    log::info!("Requested speech backend {name} is usable again; using it");
+                }
+                _ => {}
+            }
+            self.main_miss = now;
+        }
+        picked
     }
 
     /// The remembered speech parameters.
@@ -441,7 +470,8 @@ impl SpeechSink for Speech {
         // Usable backends that can serve as a separate event voice: the
         // controllable software voices (SAPI, OneCore, ...) other than the
         // main voice -- screen readers are excluded because they cannot be
-        // driven independently. In registry order.
+        // driven independently. Clipboard and No Speech take rate and voice
+        // calls but say nothing, so they are left out. In registry order.
         let (Some(ctx), Some(main)) = (&self.ctx, &self.backend) else {
             return Vec::new();
         };
@@ -454,8 +484,14 @@ impl SpeechSink for Speech {
             let Ok(backend) = ctx.acquire(backend_id) else {
                 continue;
             };
-            let name = backend.name();
-            if name == main_name || !usable(backend.as_ref()) {
+            // Registry names, like the main voice options: the name a
+            // saved choice is looked up by.
+            let name = ctx.name_of(backend_id).unwrap_or_else(|| backend.name());
+            if name == main_name
+                || backend.name() == main_name
+                || never_automatic(&name)
+                || !usable(backend.as_ref())
+            {
                 continue;
             }
             let features = backend.features();
@@ -464,6 +500,13 @@ impl SpeechSink for Speech {
             }
         }
         options
+    }
+
+    fn main_backend_options(&self) -> Vec<String> {
+        match &self.ctx {
+            Some(ctx) => main_backend_options(ctx.as_ref(), self.narrator_probe),
+            None => Vec::new(),
+        }
     }
 
     fn select_main_backend(&mut self, name: Option<&str>) {
@@ -488,18 +531,30 @@ impl SpeechSink for Speech {
         if self.ctx.is_none() || self.backend.is_none() {
             return;
         }
-        let Some(mut name) = name.map(str::to_string) else {
+        let main_name = self.backend_name();
+        // Enumerating acquires every backend, so skip it when the answer
+        // cannot need it: no preference, or the main voice's own name.
+        let options = match name {
+            Some(name) if name != main_name => self.event_backend_options(),
+            _ => Vec::new(),
+        };
+        let EventVoiceChoice::Separate(name) = event_voice_choice(name, &main_name, &options)
+        else {
             self.event_backend = None;
+            self.event_unavailable = None;
             return;
         };
-        let options = self.event_backend_options();
-        if !options.contains(&name) && !options.is_empty() {
-            name = options[0].clone();
-        }
         let (Some(ctx), Some(main)) = (&self.ctx, &self.backend) else {
             return;
         };
         self.event_backend = pick_event_backend(ctx.as_ref(), Some(main.as_ref()), &name);
+        if self.event_backend.is_some() {
+            self.event_unavailable = None;
+        } else if self.event_unavailable.as_deref() != Some(name.as_str()) {
+            // Once per voice, not once per probe or settings change.
+            log::info!("Event speech backend {name} not available; events use the main voice");
+            self.event_unavailable = Some(name);
+        }
     }
 
     fn voice_names(&self) -> Vec<String> {
@@ -633,12 +688,11 @@ impl SpeechSink for Speech {
         // the choice changes, the event voice is re-selected and the player's
         // speech settings are re-applied to the new voice. Returns true when
         // the main voice changed.
-        let Some(ctx) = &self.ctx else {
+        if self.ctx.is_none() {
             return false;
-        };
+        }
         let old_name = self.backend.as_ref().map(|backend| backend.name());
-        let picked = pick_backend_gated(ctx.as_ref(), self.main_preference(), self.narrator_probe);
-        let Some(backend) = picked else {
+        let Some(backend) = self.pick_main() else {
             let Some(old_name) = old_name else {
                 return false;
             };
@@ -651,7 +705,13 @@ impl SpeechSink for Speech {
         if old_name.as_deref() == Some(new_name.as_str()) {
             // Same main voice as before; just make sure the event voice is
             // alive too (it can die independently, e.g. a SAPI hiccup).
-            if self.event_pref.is_some() && self.event_backend.is_none() {
+            // A preference naming the main voice shares it on purpose, so
+            // there is nothing to re-select on every probe. An event voice
+            // that could not be bound is retried each probe: a built-in
+            // voice whose device is still opening, or a SAPI hiccup, comes
+            // back within one probe.
+            let shares_main = self.event_pref.as_deref() == Some(new_name.as_str());
+            if self.event_pref.is_some() && self.event_backend.is_none() && !shares_main {
                 let pref = self.event_pref.clone();
                 self.select_event_backend(pref.as_deref());
                 if self.event_backend.is_some() && !self.config.is_empty() {

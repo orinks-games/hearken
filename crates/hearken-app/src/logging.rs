@@ -16,7 +16,7 @@ use crate::paths::Paths;
 static PANIC_HOOK: Once = Once::new();
 
 /// `<env_prefix>_LOG_FILE`, else the data folder's `session.log`.
-fn log_path(paths: &Paths, env_prefix: &str) -> PathBuf {
+pub(crate) fn log_path(paths: &Paths, env_prefix: &str) -> PathBuf {
     std::env::var_os(format!("{env_prefix}_LOG_FILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| paths.log_file())

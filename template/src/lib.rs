@@ -25,6 +25,15 @@ impl hearken::Game for HelloGame {
     type Settings = ();
     type Action = HelloAction;
     type Category = hearken::NoCategory;
+
+    /// The relay that emails problem reports, from `HELLO_HEARKEN_REPORTS_URL`
+    /// (an https address, or http on this machine). A game of your own would
+    /// name its relay here outright.
+    #[cfg(feature = "report")]
+    fn reports() -> Option<hearken::ReportConfig> {
+        let endpoint = std::env::var("HELLO_HEARKEN_REPORTS_URL").ok()?;
+        hearken::ReportConfig::new(Self::TITLE, env!("CARGO_PKG_VERSION"), endpoint)
+    }
 }
 
 /// The controls the player can move to other keys and buttons.

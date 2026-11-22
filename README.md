@@ -57,6 +57,7 @@ A game depends on one crate, `hearken`, which brings in the rest:
 | `hearken-replay` | Verified online runs: a run recorded as its seed and inputs, and the game's rules built for WebAssembly so a server can replay it and trust only the result it computes (`hearken::replay`, `ctx.online` with the `online` feature). The server side is `server/`; see `docs/online.md`. |
 | `hearken-bake` | Build scripts only: puts a release's keys into the program as scattered shares. |
 | `hearken-update` | A released game updating itself from GitHub releases, any HTTPS host, or a source of its own, with every update signed (`ctx.updates`, with the `update` feature). See `docs/updates.md`. |
+| `hearken-report` | Problem reports from the player, emailed to the developer through a relay the game names, with the session log attached, and an offer to report a crash at the next start (`ctx.reports`, with the `report` feature). See `docs/reports.md`. |
 | `hearken-discord` | Discord Rich Presence: the "Playing ..." status friends see, from the game's own Discord application. Off the game loop, throttled, and silent when Discord is not running (`ctx.discord`, with the `discord` feature). |
 | `hearken-radio` | Internet radio, played as a sound: HTTP and ICY stations, playlists and live HLS, with now-playing titles. Optional. |
 
@@ -87,6 +88,11 @@ Some of what that gives a game:
   A game names its own event categories and what each one does at each
   verbosity level, so a quiet mode can turn chatter into earcons. Speech
   can also go to the braille display alone.
+- **Countdowns that wait for speech.** `ctx.speech_busy()` says whether
+  either voice is still speaking, by the voice's own report or an estimate
+  from the line's length, and `SpeechHold` stops a game clock until the
+  line is heard, so a slow speech rate does not cost the player time. See
+  [`docs/waiting-for-speech.md`](docs/waiting-for-speech.md).
 - **3D sound.** Sounds play at a position around a listener with a heading,
   on buses (UI, effects, ambience, music, voice) the player sets volumes
   for. A game can add buses, muffle sounds behind walls through
@@ -414,6 +420,17 @@ on one machine never share them. For a prefix of `MY_GAME`:
 | `MY_GAME_STREAM_TRANSCRIPT` | Print each spoken line to standard output. |
 | `MY_GAME_AUDIO_BACKEND` | `silent` turns sound off. |
 
+A game can also let players choose the main voice in its own settings.
+`SpeechSink::main_backend_options()` lists every voice that can speak right
+now, in the order automatic selection ranks them: a running screen reader,
+the system voices, Narrator only while it runs, and the built-in voice. It
+never lists the clipboard or the silent backend. Pass the chosen name to
+`select_main_backend`, or `None` for automatic. A chosen voice that cannot
+speak yet stays chosen: automatic selection speaks until the voice can,
+and the health check then switches to it. `MY_GAME_SPEECH_BACKEND` still
+comes first. When the event voice names the voice that is the main voice,
+events go through the main voice.
+
 ### Play and release with the hearken command
 
 [Getting started](#getting-started) installs the command. Besides
@@ -664,6 +681,61 @@ instead a new performance on every play, from a fresh seed:
   octave. `Variation::NONE` plays a track as recorded.
 - `Track::live` hands the play to the game's own `Performer`, made from
   that play's `Variety`, for music the game composes as it goes.
+- `Track::take` plays a `Take`: one run's music, recorded as the calls
+  that made it (see [Takes](#takes-a-run-as-a-track)).
+
+#### Takes: a run as a track
+
+Music a game builds as it goes (voices joining and dropping, a chorus
+swelling, a fade as the player falters) is different every run, and a
+seed cannot bring it back once the run depended on the player. A take
+keeps it: a timed list of every call the game made on the buses it
+follows, usually `Bus::MUSIC` (each clip's start, with its key, volume,
+pan, pitch, loop, region, offset and position; stops and releases;
+pauses; volume, pitch and pan ramps; positions; listener moves). The
+mixed sound is never recorded, only the calls, so a take of an hour is a
+few hundred kilobytes of JSON (`Take::to_json`), and playing it back
+goes through the pool's own spatial code, so a positioned part lands
+where it did.
+
+```rust
+fn enter(&mut self, ctx: &mut Ctx<MyGame>) {
+    ctx.begin_take(&[Bus::MUSIC]);
+}
+
+fn finish(&mut self, ctx: &mut Ctx<MyGame>) {
+    if let Some(take) = ctx.end_take() {
+        if !take.is_empty() {
+            save(take.to_json());
+            ctx.soundtrack.set_tracks(my_tracks_with(Track::take("run-7", "Tuesday evening", take)));
+        }
+    }
+}
+```
+
+The take belongs to the screen that began it. While another screen is
+on top (a pause, a menu) the take is held: its clock stops and sounds
+started there are not followed, so the song has no gap and no menu
+music. A screen that leaves the stack without ending its take drops it.
+The recorder's state (`TakeState`: idle, recording, held, ended) changes
+in one place and each change goes into `ctx.changes` as
+`[take] recording -> held`, so a test can watch it with
+`Headless::changes`. Ramps set every frame are coalesced: a change is
+written once the value has sat still for 50 ms, and a change smaller
+than 0.01 is nothing. A take stops itself at an hour or 250,000 events
+and is marked `cut`.
+
+A `Track::take` (or `Track::take_shared` for an `Rc<Take>` the game
+keeps loaded) is open from the start, plays in the menu as
+`TakePerformer` (`Replay`: waiting, playing, ringing out, done) and
+exports like any other track; on an album with export on, Shift and
+Enter on any unlocked track saves that one track as a file, numbered
+as the album lists it, and a take's export runs for the take's own
+length, not the 15-minute cap of a piece that never ends. A take replays
+on the music bus whatever buses it followed. A game's own "Save this
+run's song" row opens the menu with
+`SoundtrackScreen::new().album("Runs").saving("run-7")`, which starts
+that save on arrival.
 
 #### Exporting an album
 
@@ -683,7 +755,8 @@ Export plays each track once on a mixer with no device, faster than real
 time, and writes only its finished mix, never the stems, as a stereo
 48 kHz Ogg Vorbis file (quality 6, about 192 kbit/s) to
 `Music/<game>/<album>/01 <title>.ogg`, tagged with its title, album, game
-and track number. A portable
+and track number. Shift and Enter on one unlocked track saves that
+track alone ("Saving Night song. Escape stops it."). A portable
 copy (one with `portable.txt` beside its executable) writes to
 `Music/<album>/` in its own folder instead, as it keeps its saves there,
 and says the path from that folder. When the system has no Music folder
@@ -739,6 +812,8 @@ What this cannot protect, as no offline game can:
 - `discord`: Discord Rich Presence. See Discord status.
 - `update`: a released copy checks for, downloads and installs its own
   updates, from wherever the game publishes them. See Updates.
+- `report`: the player reports a problem from Settings, with the game log,
+  and is offered to report a crash at the next start. See Problem reports.
 
 ## Discord status
 
@@ -823,6 +898,36 @@ Now never update themselves.
 
 `docs/updates.md` covers publishing, keys, the manifest format and what
 this cannot protect against.
+
+## Problem reports
+
+A game can take a problem report from the player and have it emailed to
+its developer, with the session log attached. Turn on `hearken`'s `report`
+feature and name the relay the reports go to:
+
+```rust
+impl Game for MyGame {
+    // ...
+    fn reports() -> Option<hearken::ReportConfig> {
+        hearken::ReportConfig::new("My Game", env!("CARGO_PKG_VERSION"),
+            "https://example.com/api/problem-reports")
+    }
+}
+```
+
+Settings gets a Report a problem row. It sends the game log ahead and
+opens the relay's web page in the browser, where the player writes what
+happened with the log already attached; with `.in_game_form()`, or when
+the page cannot be opened, the game's own screen takes the report instead:
+what happened, an email address for a reply, whether the log goes along,
+Read the report, and Send. A run that never exited cleanly is noticed at
+the next start, and the game offers to report it, with Don't ask again.
+Sending runs off the game loop, and a report the relay will not take can
+be saved to a file instead. The relay is a small web service that emails
+each report to one address; the game never holds a mail password. The
+format is mailbag's, so a `mailbag-server` takes these reports too.
+
+`docs/reports.md` covers the screens, the format and running a relay.
 
 ## Commentary voices
 

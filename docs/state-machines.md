@@ -149,6 +149,15 @@ screen that plays them returns `self.run.phase()` from `State::phase` and
 never keeps its own copy; `Recording::phase` reads it through the
 recording. Rules with a single phase leave the default, `None`.
 
+## Machines outside a screen
+
+Background work a game steps every frame is a machine too. `hearken::sync::FileSync`
+(a save kept with the player's account) is the pattern: one `SyncState`
+enum with a stable `name()`, every change made through one function that
+logs `[sync] from -> to`, and anything the game must do answered as a
+`Need` rather than done behind its back. A game shows the state in its
+Settings row and to agents from that same `name()`.
+
 ## Testing phases
 
 `Headless` reads the record:

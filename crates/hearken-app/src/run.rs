@@ -121,6 +121,11 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
         return say_and_exit::<G>(&line, 0);
     }
 
+    // From here on a run that never gets to a clean exit counts as a crash,
+    // and the next start offers to report it.
+    #[cfg(feature = "report")]
+    let session = hearken_report::Session::begin(&paths.data_dir.join("session.running"));
+
     // An update stopped part-way is undone before anything is read from the
     // game's folder; only the copy holding the lock does it.
     #[cfg(feature = "update")]
@@ -141,6 +146,8 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     if fresh {
         settings.language = G::default_language().to_string();
     }
+    #[cfg(feature = "report")]
+    let paths_for_logs = paths.clone();
     let mut ctx = Ctx::new(Box::new(start_speech::<G>()), settings, paths, game);
     let sounds = hearken_audio::discover_clips(G::ENV_PREFIX);
     ctx.install_audio(Audio::deferred(
@@ -172,6 +179,21 @@ pub fn run<G: Game>(game: G::Data, first: impl FnOnce() -> Box<dyn State<G>>) ->
     #[cfg(feature = "online")]
     if !sandboxed {
         ctx.online
+            .set_opener(Box::new(|url: &str| sdl2::url::open_url(url).is_ok()));
+    }
+
+    // An agent session plays in a sandbox and never sends a report.
+    #[cfg(feature = "report")]
+    if sandboxed {
+        ctx.reports = crate::reports::Reports::dormant();
+        session.end();
+    } else {
+        let log = crate::logging::log_path(&paths_for_logs, G::ENV_PREFIX);
+        let mut prev = log.clone().into_os_string();
+        prev.push(".prev");
+        ctx.reports.adopt_session(session, vec![log, prev.into()]);
+        // The report's web form opens in the browser.
+        ctx.reports
             .set_opener(Box::new(|url: &str| sdl2::url::open_url(url).is_ok()));
     }
 

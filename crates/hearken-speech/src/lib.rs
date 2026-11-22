@@ -68,6 +68,7 @@ pub mod capture;
 pub mod fakes;
 pub mod live;
 pub mod pacer;
+pub mod projection;
 pub mod spoken;
 pub mod threaded;
 pub mod verbosity;
@@ -75,8 +76,9 @@ pub mod verbosity;
 pub mod voiceover;
 
 pub use backend::{
-    narrator_running, pick_backend, pick_backend_gated, pick_event_backend,
-    preserve_backend_default_pitch, usable, BackendId, PrismRegistry, PrismVoice, VoiceBackend,
+    event_voice_choice, main_backend_options, narrator_running, pick_backend,
+    pick_backend_explained, pick_backend_gated, pick_event_backend, preserve_backend_default_pitch,
+    usable, BackendId, EventVoiceChoice, PreferenceMiss, PrismRegistry, PrismVoice, VoiceBackend,
     VoiceFeatures, VoiceRegistry,
 };
 pub use capture::{
@@ -88,6 +90,7 @@ pub use pacer::{
     monotonic_seconds, Clock, Cut, DeliveryStatus, EventPriority, EventSpeechPacer, PacerConfig,
     Protect, Valid,
 };
+pub use projection::SpeechProjection;
 pub use spoken::{terse_silent, SpokenMessage};
 pub use threaded::ThreadedSpeech;
 pub use verbosity::{Category, Level, NoCategory, Rule, Verbosity};
@@ -253,11 +256,32 @@ pub trait SpeechSink {
     fn select_event_backend(&mut self, name: Option<&str>);
 
     /// Make `name` the main voice whenever it can speak (the player chose
-    /// the built-in voice in Settings); `None` goes back to the automatic
-    /// choice. An environment override still comes first. Sinks with a
-    /// single voice ignore it.
+    /// it in Settings); `None` goes back to the automatic choice. A chosen
+    /// voice that cannot speak right now stays chosen: the automatic pick
+    /// speaks meanwhile, and the health check binds the chosen voice once it
+    /// can. A chosen `UIA` counts only while Narrator runs. An environment
+    /// override still comes first. Sinks with a single voice ignore it.
     fn select_main_backend(&mut self, name: Option<&str>) {
         let _ = name;
+    }
+
+    /// The voices a player can choose as the main voice: every backend that
+    /// can speak right now, by registry name, in the order the automatic
+    /// pick ranks them. Never `Clipboard` or `No Speech`; `UIA` only while
+    /// Narrator runs. Unlike [`event_backend_options`](Self::event_backend_options)
+    /// it includes the bound main voice, so it does not depend on which voice
+    /// is bound. Empty for sinks with a single voice.
+    fn main_backend_options(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Whether every voice change asked for so far (`configure`, the main
+    /// and event voice selections) has run, so the queries answer for the
+    /// voices it chose. Never waits. A sink that runs changes as they are
+    /// asked for is always settled; the threaded sink is not until its
+    /// worker has run and published them.
+    fn settled(&self) -> bool {
+        true
     }
 
     /// Installed voice names from the first backend that lets us pick one;
@@ -442,7 +466,13 @@ pub fn apply_speech_settings(sink: &mut dyn SpeechSink, settings: &mut SpeechSet
     sink.select_event_backend(preference.as_deref());
     if settings.separate_event_voice {
         let options = sink.event_backend_options();
-        if !options.is_empty() && !options.contains(&settings.event_backend) {
+        // A saved voice that can be the main voice is on this machine; it
+        // may only be the main voice right now, and events share it.
+        let on_machine = options.contains(&settings.event_backend)
+            || sink
+                .main_backend_options()
+                .contains(&settings.event_backend);
+        if !options.is_empty() && !on_machine {
             log::info!(
                 "Event speech backend {} is not on this machine; using {}",
                 settings.event_backend,

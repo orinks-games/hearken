@@ -1,14 +1,24 @@
 [package]
 name = "hearken-genny"
-description = "genny's formant speech synthesizer in Rust: a built-in voice for devices with no screen reader"
+description = "The formant speech synthesizer from genny by Oriol Gómez, in Rust: a built-in voice for devices with no screen reader"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-# Ported from genny with its authors' permission; not under Hearken's
-# MIT/Apache licence. See LICENSE.
+# Ported from genny by Oriol Gómez with his permission; not under Hearken's
+# MIT/Apache licence. The bundled CMU Pronouncing Dictionary keeps its own
+# BSD-style licence (data/CMUDICT_LICENSE). See LICENSE.
 license-file = "LICENSE"
 repository.workspace = true
-authors = ["Oriol Gómez", "blal1", "Joshua Tubbs (Orinks)"]
+authors = ["Oriol Gómez", "Joshua Tubbs (Orinks)"]
 publish = false
 
+[features]
+default = ["cmudict"]
+# Look words up in the bundled CMU Pronouncing Dictionary (126,000 words,
+# about 850 KB compressed in the binary) before the letter-to-sound rules,
+# as genny does. Without it, words outside the small built-in dictionary
+# go straight to letter-to-sound.
+cmudict = ["dep:flate2"]
+
 [dependencies]
+flate2 = { version = "1", optional = true }

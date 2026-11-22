@@ -13,8 +13,9 @@ build = "build.rs"
 
 [features]
 # The built-in voice (genny's formant synth through the sound device), for
-# players with no screen reader or speech engine. See `builtin`.
-genny-voice = ["dep:hearken-genny", "dep:cpal"]
+# players with no screen reader or speech engine, with the CMU Pronouncing
+# Dictionary for its English words. See `builtin`.
+genny-voice = ["dep:hearken-genny", "hearken-genny/cmudict", "dep:cpal"]
 
 [dependencies]
 prismer.workspace = true
@@ -31,3 +32,7 @@ objc2.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[[example]]
+name = "builtin_voice_watch"
+required-features = ["genny-voice"]

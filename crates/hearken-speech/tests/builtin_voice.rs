@@ -90,3 +90,32 @@ fn every_voice_is_offered_and_renders() {
     assert_eq!(engine.queued(), 0);
     assert!(!s.is_speaking());
 }
+
+#[test]
+fn a_device_at_another_rate_is_followed() {
+    static ENGINE: OnceLock<Arc<BuiltinEngine>> = OnceLock::new();
+    fn shared() -> Arc<BuiltinEngine> {
+        Arc::clone(ENGINE.get_or_init(BuiltinEngine::offline))
+    }
+    let reg = WithBuiltin::with_engine(None, shared);
+    let mut s = Speech::with_registry(Box::new(reg), None);
+    let engine = shared();
+    let line = "Fuel is low. The next truck stop is twelve miles ahead.";
+    s.say(line, false);
+    assert!(engine.wait_rendered(Duration::from_secs(20)));
+    let at_16k = engine.queued();
+    assert!(at_16k > 16_000, "{at_16k} samples");
+
+    // What the output thread does on opening a 44.1 kHz device.
+    engine.follow_rate(44_100);
+    assert_eq!(engine.queued(), 0, "samples for the old rate are dropped");
+
+    s.say(line, false);
+    assert!(engine.wait_rendered(Duration::from_secs(20)));
+    let ratio = engine.queued() as f64 / at_16k as f64;
+    let expected = 44_100.0 / 16_000.0;
+    assert!(
+        (ratio / expected - 1.0).abs() < 0.03,
+        "{ratio:.3} times as many samples, expected {expected:.3}"
+    );
+}

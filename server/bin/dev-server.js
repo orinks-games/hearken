@@ -11,7 +11,7 @@
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
-import { createService, memoryAccounts, memoryLimiter, memoryRooms, memoryRuns } from "../src/index.js";
+import { createService, memoryAccounts, memoryLimiter, memoryRooms, memoryRuns, memorySaves } from "../src/index.js";
 import { rulesFromDir, serve, workerReplay } from "../src/node.js";
 
 const { values } = parseArgs({
@@ -40,6 +40,9 @@ const service = createService({
   rooms: memoryRooms(),
   limiter: memoryLimiter(),
   handlers,
+  // A handlers module may also export `saves` ({ files, guests?, onSave? })
+  // for synced files, kept in memory here.
+  saves: handlerModule.saves ? { ...handlerModule.saves, store: memorySaves() } : null,
   replay: workerReplay(),
 });
 

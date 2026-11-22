@@ -11,12 +11,15 @@
 //   GET  <kind>/<path...>     a handler's own read route, when it has one
 //   rooms, rooms/...          matches and chat between players (see rooms.js),
 //                             when the service is given a `rooms` store
+//   saves/<name>[/head]       a copy of the player's save kept with their
+//                             account (see saves.js), when given `saves`
 //
 // docs/online.md in the Hearken repository is the protocol in full.
 
 import { BUILD_OFFSET, buildOf, MAX_RUN_BYTES, RulesError, sha256Hex } from "./rules.js";
 import { Refusal, refuse } from "./refusal.js";
 import { roomRoutes } from "./rooms.js";
+import { saveRoutes } from "./saves.js";
 
 export const KIND_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
@@ -110,6 +113,9 @@ function isSeed(seed) {
  *   id, `player` the account. Move the guest's scores here.
  * @param {object} [options.rooms]  Where rooms and their events live (see
  *   `memoryRooms`). Without it the rooms routes answer 404.
+ * @param {object} [options.saves]  Synced files: `{ store, files, guests?,
+ *   onSave? }` (see `saveRoutes` in saves.js). Without it the saves routes
+ *   answer 404.
  * @param {({ text, tag, player, room }) => Promise<boolean | string | { code, message } | undefined>} [options.screen]
  *   Looks at each chat line before it is stored: `false` or a string (a
  *   line for the player) refuses it as `screened`; `{ code, message }`
@@ -137,6 +143,7 @@ export function createService(options) {
     // Called once when a guest connects an account: move the guest's scores.
     onLink = async () => {},
     rooms: roomStore = null,
+    saves = null,
     screen,
     report,
     now = () => Date.now(),
@@ -165,6 +172,7 @@ export function createService(options) {
       }
       continue;
     }
+    if (kind === "saves") throw new Error(`"saves" cannot name a kind: it is the saves route`);
     if (typeof handler.expect !== "function" || typeof handler.accept !== "function") {
       throw new Error(`the handler for "${kind}" needs expect() and accept()`);
     }
@@ -172,6 +180,9 @@ export function createService(options) {
   const base = basePath.replace(/\/+$/, "");
   const rooms = roomStore
     ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, report, limits: options.limits })
+    : null;
+  const savesRoute = saves
+    ? saveRoutes({ saves, accounts, limiter, bearer, readBody, json, error, log, now, limits: options.limits })
     : null;
 
   async function submit(request, url) {
@@ -358,6 +369,7 @@ export function createService(options) {
     const parts = path.split("/").filter(Boolean);
     const method = request.method.toUpperCase();
     if (rooms && parts[0] === "rooms") return rooms(request, method, parts, url);
+    if (parts[0] === "saves") return savesRoute ? savesRoute(request, method, parts) : error(404, "not-found");
     if (method === "POST" && parts.length === 1 && parts[0] === "runs") return submit(request, url);
     if (method === "POST" && parts.length === 1 && parts[0] === "start") return begin(request, url);
     if (method === "POST" && parts.length === 2 && parts[0] === "activate") {

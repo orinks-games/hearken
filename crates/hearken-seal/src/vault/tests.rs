@@ -525,3 +525,45 @@ fn a_build_without_a_key_adds_nothing_to_a_release_s_folder() {
     dev.write("progress.json", b"b").unwrap();
     dev.write(NAME, b"c").unwrap();
 }
+
+#[test]
+fn sealed_bytes_open_on_another_computer_without_the_disk() {
+    let (dir, vault, key) = sealing();
+    let copy = vault.seal_bytes(NAME, b"{\"best\":12}").unwrap();
+    assert!(copy.starts_with(b"HKSL"));
+    let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+    assert!(names.is_empty(), "sealing bytes writes nothing");
+    let elsewhere = tempfile::tempdir().unwrap();
+    let other = Vault::with_key(elsewhere.path(), Some(key.clone()));
+    assert_eq!(sealed(other.open_bytes(NAME, &copy)), b"{\"best\":12}");
+    // Bound to its name, its key, and every byte.
+    assert_eq!(
+        tampered(other.open_bytes("other.json", &copy)),
+        Tamper::Forged
+    );
+    let stranger = Vault::with_key(elsewhere.path(), Some(Key::generate().unwrap()));
+    assert_eq!(tampered(stranger.open_bytes(NAME, &copy)), Tamper::Forged);
+    let mut bent = copy.clone();
+    *bent.last_mut().unwrap() ^= 1;
+    assert_eq!(tampered(other.open_bytes(NAME, &bent)), Tamper::Forged);
+    // A plain copy from elsewhere is never trusted by a sealing build.
+    assert_eq!(
+        tampered(other.open_bytes(NAME, b"{\"best\":99}")),
+        Tamper::Unsealed
+    );
+}
+
+#[test]
+fn a_build_without_a_key_passes_plain_bytes_and_locks_sealed_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = Vault::with_key(dir.path(), None);
+    assert_eq!(plain.seal_bytes(NAME, b"abc").unwrap(), b"abc");
+    assert!(matches!(plain.open_bytes(NAME, b"abc"), Opened::Plain(b) if b == b"abc"));
+    let (_d, sealing, _k) = sealing();
+    let copy = sealing.seal_bytes(NAME, b"abc").unwrap();
+    assert!(matches!(plain.open_bytes(NAME, &copy), Opened::Locked));
+    assert!(matches!(
+        plain.open_bytes("../x", b"abc"),
+        Opened::Failed(_)
+    ));
+}

@@ -5,8 +5,8 @@
 //! are in `speech_live.rs`.
 
 use hearken_speech::{
-    apply_speech_settings, CaptureSpeech, NullSpeech, SpeechChannel, SpeechSettings, SpeechSink,
-    SpokenMessage, REFRESH_INTERVAL_S,
+    apply_speech_settings, CaptureProfile, CaptureSpeech, NullSpeech, SpeechChannel,
+    SpeechSettings, SpeechSink, SpokenMessage, REFRESH_INTERVAL_S,
 };
 
 fn spoken(lines: &[(&str, bool)]) -> Vec<(String, bool)> {
@@ -273,4 +273,47 @@ fn a_shared_capture_is_read_through_its_handle() {
     sink.say_event("two", false);
     assert_eq!(handle.borrow().main_lines(), vec!["one".to_string()]);
     assert_eq!(handle.borrow().event_lines(), vec!["two".to_string()]);
+}
+
+#[test]
+fn capture_records_main_voice_choices_and_binds_the_profile_options() {
+    let mut capture = CaptureSpeech::full_voice();
+    assert_eq!(
+        capture.main_backend_options(),
+        ["NVDA", "OneCore", "SAPI", "Genny"]
+    );
+    capture.select_main_backend(Some("Genny"));
+    assert_eq!(capture.backend_name(), "Genny");
+    // A choice the profile cannot bind answers with the profile's voice.
+    capture.select_main_backend(Some("JAWS"));
+    assert_eq!(capture.backend_name(), "NVDA");
+    capture.select_main_backend(None);
+    assert_eq!(capture.backend_name(), "NVDA");
+    assert_eq!(
+        capture.main_selections(),
+        [Some("Genny".to_string()), Some("JAWS".to_string()), None]
+    );
+}
+
+#[test]
+fn worker_lag_holds_a_voice_change_until_the_step() {
+    let mut capture = CaptureSpeech::with_profile(CaptureProfile::headless());
+    assert!(capture.settled());
+    capture.stage_profile(CaptureProfile::full_voice());
+    capture.set_worker_lag(true);
+    capture.select_main_backend(Some("SAPI"));
+    assert!(!capture.settled());
+    assert!(!capture.supports_rate(), "still the old voice");
+    capture.step_worker();
+    assert!(capture.settled());
+    assert!(capture.supports_rate());
+    // Without lag a staged profile lands with the change itself.
+    let mut capture = CaptureSpeech::with_profile(CaptureProfile::headless());
+    capture.stage_profile(CaptureProfile::full_voice());
+    capture.configure(Some(0.5), None, None, None);
+    assert!(capture.settled());
+    assert!(capture.supports_rate());
+    // An outside change answers at once.
+    capture.set_profile(CaptureProfile::headless());
+    assert!(!capture.supports_rate());
 }

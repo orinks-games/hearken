@@ -1,9 +1,10 @@
 //! A light British accent over genny's American phonemes: no r after a
 //! vowel, a rounded LOT vowel, NURSE without r-colouring and a central
-//! start to GOAT. Not genny's; added for Hearken.
+//! start to GOAT. Not part of genny; added for Hearken by Joshua Tubbs
+//! (Orinks).
 
 use crate::phonemes::{id, ph};
-use crate::text::{Phone, Phrase, Word};
+use crate::text::{Phone, Phrase};
 
 fn swap(name: &str) -> usize {
     id(name).expect("the British vowels are in the inventory")
@@ -52,8 +53,8 @@ pub fn british_word(phones: &[Phone]) -> Vec<Phone> {
 
 pub fn british(phrases: &mut [Phrase]) {
     for phrase in phrases {
-        for Word::Spoken { ph: phones, .. } in phrase.words.iter_mut() {
-            *phones = british_word(phones);
+        for word in phrase.words.iter_mut() {
+            word.ph = british_word(&word.ph);
         }
     }
 }

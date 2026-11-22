@@ -1,17 +1,32 @@
 //! Segments, durations, parameter tracks, pitch and the Klatt-style
-//! cascade, ported from genny's `speech.py`.
+//! cascade, ported from `speech.py` in genny by Oriol Gómez.
 
 use std::f64::consts::PI;
 
 use crate::phonemes::{
     burst_db, burst_spec, coart, fric_db, fric_spec, locus, ph, Kind, Place, Spectrum, F4, F5, FNP,
 };
-use crate::text::{Phrase, Word};
+use crate::text::Phrase;
 use crate::Voice;
 
 // ---------------------------------------------------------------------------
 // Segments
 // ---------------------------------------------------------------------------
+
+// genny's timing and level constants (its `TUNE`), measured against real
+// voices.
+/// Global duration scale at rate 1.
+const STRETCH: f64 = 1.0;
+/// Lengthening of the phrase-final syllable's vowel.
+const FINAL: f64 = 1.45;
+/// Lengthening of the phrase-final syllable's consonants.
+const FINAL_C: f64 = 1.15;
+/// Extra vowel length for a word said on its own.
+const CITATION: f64 = 1.15;
+/// Source level of a nasal murmur (a vowel is 1.0): about 10 dB under the vowels.
+const NASAL_AV: f64 = 0.22;
+const LIQUID_AV: f64 = 0.7;
+const GLIDE_AV: f64 = 0.78;
 
 #[derive(Clone, Debug, Default)]
 struct Seg {
@@ -21,6 +36,7 @@ struct Seg {
     phrase: usize,
     word: Option<(usize, usize)>,
     letter: bool,
+    func: bool,
     wstart: bool,
     wend: bool,
     fin: bool,
@@ -60,10 +76,11 @@ fn build_segments(phrases: &[Phrase], rate: f64) -> Vec<Seg> {
             .words
             .iter()
             .enumerate()
-            .filter(|(_, Word::Spoken { ph, .. })| !ph.is_empty())
+            .filter(|(_, w)| !w.ph.is_empty())
             .map(|(i, _)| i)
             .collect();
-        for (wi, Word::Spoken { ph: phones, letter }) in phr.words.iter().enumerate() {
+        for (wi, w) in phr.words.iter().enumerate() {
+            let phones = &w.ph;
             if phones.is_empty() {
                 continue;
             }
@@ -73,14 +90,15 @@ fn build_segments(phrases: &[Phrase], rate: f64) -> Vec<Seg> {
                     st,
                     phrase: pi,
                     word: Some((pi, wi)),
-                    letter: *letter,
+                    letter: w.letter,
+                    func: w.func,
                     wstart: k == 0,
                     wend: k == phones.len() - 1,
                     ..Seg::default()
                 });
             }
             let is_last = real.last().is_none_or(|&last| last == wi);
-            if !is_last && *letter {
+            if !is_last && w.letter {
                 segs.push(Seg::pause(0.07));
             }
         }
@@ -109,13 +127,13 @@ fn build_segments(phrases: &[Phrase], rate: f64) -> Vec<Seg> {
 
 fn durations(segs: &mut [Seg], rate: f64) {
     let r = rate.max(0.1);
-    let stretch = 1.12 / r;
+    let stretch = STRETCH / r;
     let n = segs.len();
     let mut words: Vec<(usize, usize)> = segs.iter().filter_map(|s| s.ph.and(s.word)).collect();
     words.dedup();
     words.sort();
     words.dedup();
-    let citation = if words.len() == 1 { 1.25 } else { 1.0 };
+    let citation = if words.len() == 1 { CITATION } else { 1.0 };
     for i in 0..n {
         let Some(p) = segs[i].ph else {
             segs[i].dur /= r;
@@ -132,11 +150,15 @@ fn durations(segs: &mut [Seg], rate: f64) {
         if k.vowelish() {
             if sg.st == 0 {
                 pct *= 0.5;
-            } else if sg.st == 2 {
+            }
+            if sg.func {
+                pct *= 0.75;
+            }
+            if sg.st == 2 {
                 pct *= 0.8;
             }
             if sg.fin {
-                pct *= 1.9;
+                pct *= FINAL;
             }
             if same_word_next {
                 let nk = ph(nxt.as_ref().and_then(|x| x.ph).unwrap_or(0));
@@ -155,7 +177,7 @@ fn durations(segs: &mut [Seg], rate: f64) {
                 pct *= 0.8;
             }
             if sg.fin {
-                pct *= 1.25;
+                pct *= FINAL_C;
             }
         }
         let c = if k.vowelish() { citation } else { 1.0 };
@@ -217,38 +239,17 @@ fn durations(segs: &mut [Seg], rate: f64) {
 // Targets
 // ---------------------------------------------------------------------------
 
-const HM_LO: [f64; 6] = [
-    165.327516,
-    -6.73636734e-01,
-    1.80874446e-03,
-    -4.52201682e-06,
-    7.49514000e-09,
-    -4.70219241e-12,
-];
-const HM_HI: [f64; 6] = [
-    15.8146139,
-    8.10159009e-02,
-    -9.79728215e-05,
-    5.28725064e-08,
-    -1.07099364e-11,
-    7.91528509e-16,
-];
-
-/// Hawks & Miller 1995 formant bandwidth at F0 = 132 Hz.
-fn formant_bandwidth(f: f64) -> f64 {
-    let f = f.clamp(100.0, 5000.0);
-    let c = if f < 500.0 { &HM_LO } else { &HM_HI };
-    c.iter()
-        .enumerate()
-        .map(|(i, ci)| ci * f.powi(i as i32))
-        .sum()
-}
-
 type Target = [f64; 10];
 
 fn with_bw(f: [f64; 5], kind: Kind) -> Target {
     let bw: [f64; 5] = if kind.vowelish() {
-        f.map(formant_bandwidth)
+        [
+            55.0 + (f[0] - 300.0).max(0.0) * 0.07,
+            85.0 + (f[1] - 1000.0).max(0.0) * 0.02,
+            140.0,
+            250.0,
+            320.0,
+        ]
     } else if kind == Kind::Nasal {
         [100.0, 300.0, 300.0, 350.0, 400.0]
     } else if matches!(kind, Kind::Liquid | Kind::Glide) {
@@ -554,9 +555,9 @@ fn build_tracks(segs: &[Seg], v: &Voice) -> Tracks {
                 }
             } else {
                 match k {
-                    Kind::Nasal => 0.8,
-                    Kind::Liquid => 0.85,
-                    Kind::Glide => 0.88,
+                    Kind::Nasal => NASAL_AV,
+                    Kind::Liquid => LIQUID_AV,
+                    Kind::Glide => GLIDE_AV,
                     _ => 0.85,
                 }
             };
@@ -847,7 +848,9 @@ fn pitch_points(segs: &[Seg], phrases: &[Phrase], v: &Voice) -> Vec<(f64, f64)> 
 // DSP
 // ---------------------------------------------------------------------------
 
-/// A small seeded generator (SplitMix64) for noise, jitter and shimmer.
+/// A small seeded generator (SplitMix64) for noise, jitter and shimmer. Not
+/// numpy's, so a render matches genny's in timing and spectrum, not sample
+/// for sample.
 struct Rng(u64);
 
 impl Rng {
@@ -1032,25 +1035,18 @@ fn polyblep(t: f64, dt: f64) -> f64 {
     }
 }
 
-/// Praat local jitter = sqrt(pi)/2 times the per-cycle standard deviation.
-const PRAAT_LOCAL: f64 = 0.886_226_925_452_758;
-
-/// Scale every glottal cycle of `f0` by its own factor 1 + d, d normal, so
-/// the periods measure a Praat local jitter of `jitter`.
-fn cycle_jitter(f0: &mut [f64], jitter: f64, rng: &mut Rng, sr: f64) {
-    let sd = jitter * PRAAT_LOCAL;
-    let mut ph = 0.0;
-    let mut edge = 0.0;
-    let mut d = (rng.normal() * sd).clamp(-3.0 * sd, 3.0 * sd);
-    for f in f0.iter_mut() {
-        let base = *f;
-        ph += base / sr;
-        while ph >= edge + 1.0 / (1.0 + d) {
-            edge += 1.0 / (1.0 + d);
-            d = (rng.normal() * sd).clamp(-3.0 * sd, 3.0 * sd);
-        }
-        *f = base * (1.0 + d);
-    }
+/// A smooth random signal, about N(0, 1), varying at about `rate_hz`.
+fn slow_noise(n: usize, sr: f64, rate_hz: f64, rng: &mut Rng) -> Vec<f64> {
+    let m = ((n as f64 / sr * rate_hz) as usize + 4).max(4);
+    let pts: Vec<f64> = (0..m).map(|_| rng.normal()).collect();
+    let xs: Vec<f64> = (0..m).map(|k| k as f64).collect();
+    let step = if n > 1 {
+        (m - 3) as f64 / (n - 1) as f64
+    } else {
+        0.0
+    };
+    let at: Vec<f64> = (0..n).map(|k| k as f64 * step).collect();
+    interp(&at, &xs, &pts)
 }
 
 pub fn render(phrases: &[Phrase], v: &Voice, sr: f64, rate: f64) -> Vec<f32> {
@@ -1088,8 +1084,9 @@ fn synth(segs: &[Seg], tr: &Tracks, vs: &Voice, sr: f64) -> Vec<f32> {
     let f0c = smooth(&tr.curve(Tr::F0, &tc, vs.pitch), 0.045 * sr / blk as f64);
     let mut f0 = up(&f0c);
     if vs.jitter > 0.0 {
-        cycle_jitter(&mut f0, vs.jitter, &mut rng, sr);
-        for (f, t) in f0.iter_mut().zip(&ts) {
+        let wander = slow_noise(n, sr, 25.0, &mut rng);
+        for ((f, t), w) in f0.iter_mut().zip(&ts).zip(&wander) {
+            *f *= 1.0 + vs.jitter * w;
             *f *= 1.0 + 0.004 * ((2.0 * PI * 4.7 * t).sin() + (2.0 * PI * 7.1 * t + 1.0).sin());
         }
     }
@@ -1103,8 +1100,6 @@ fn synth(segs: &[Seg], tr: &Tracks, vs: &Voice, sr: f64) -> Vec<f32> {
     let mut src = vec![0.0; n];
     let mut flow = vec![0.0; n];
     let mut ph_acc = 0.0;
-    let mut cycle = 0i64;
-    let mut shimmer_gain = 1.0 + vs.shimmer * PRAAT_LOCAL * rng.normal();
     for i in 0..n {
         ph_acc += f0[i] / sr;
         let t = ph_acc.fract();
@@ -1118,16 +1113,7 @@ fn synth(segs: &[Seg], tr: &Tracks, vs: &Voice, sr: f64) -> Vec<f32> {
             flow[i] = (0.5 * PI * (t - tp) / tn).cos();
         }
         dflow += (jj / 2.0) * polyblep((t - oq).rem_euclid(1.0), dt);
-        let mut s = dflow / jj;
-        if vs.shimmer > 0.0 {
-            let c = ph_acc.floor() as i64;
-            while cycle < c {
-                cycle += 1;
-                shimmer_gain = 1.0 + vs.shimmer * PRAAT_LOCAL * rng.normal();
-            }
-            s *= shimmer_gain;
-        }
-        src[i] = s;
+        src[i] = dflow / jj;
     }
     if vs.tilt > 0.0 {
         let a = (-2.0 * PI * vs.tilt / sr).exp();
@@ -1139,6 +1125,12 @@ fn synth(segs: &[Seg], tr: &Tracks, vs: &Voice, sr: f64) -> Vec<f32> {
         let rms = (src.iter().map(|s| s * s).sum::<f64>() / n as f64).sqrt() + 1e-9;
         for s in src.iter_mut() {
             *s = *s / rms * 0.35;
+        }
+    }
+    if vs.shimmer > 0.0 {
+        let wander = slow_noise(n, sr, 30.0, &mut rng);
+        for (s, w) in src.iter_mut().zip(&wander) {
+            *s *= 1.0 + vs.shimmer * w;
         }
     }
 

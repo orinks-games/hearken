@@ -78,6 +78,9 @@ impl SpeechSink for StubSink {
         self.enumerations.fetch_add(1, Ordering::SeqCst);
         vec!["stub-event".to_string()]
     }
+    fn main_backend_options(&self) -> Vec<String> {
+        vec!["stub".to_string(), "stub-event".to_string()]
+    }
     fn select_event_backend(&mut self, name: Option<&str>) {
         self.calls
             .lock()
@@ -566,6 +569,7 @@ fn queries_answer_from_the_snapshot_without_touching_the_backend() {
     assert!(sink.supports_rate());
     assert!(!sink.supports_pitch());
     assert_eq!(sink.voice_names(), ["Stub Voice"]);
+    assert_eq!(sink.main_backend_options(), ["stub", "stub-event"]);
 }
 
 /// A SAPI purge that never returns can take both voices for the rest of
@@ -638,6 +642,8 @@ fn a_worker_stuck_past_the_respawn_threshold_is_replaced_and_speech_resumes() {
     std::thread::sleep(Duration::from_millis(50));
     sink.poll(0.016);
     assert!(sink.available());
+    // The replay counts on the replacement, and it has run: settled.
+    assert!(sink.settled());
     // The cap: a second wedge on the replacement is not respawned.
     wedge.store(true, Ordering::SeqCst);
     sink.say("wedges the replacement", false);
@@ -816,4 +822,38 @@ fn test_voice_report_never_waits_and_never_piles_up() {
         .filter(|call| *call == "report")
         .count();
     assert_eq!(asks, 1, "the second ask waited for the first answer");
+}
+
+/// A voice change leaves the sink unsettled until the worker has run it
+/// and published the snapshot, so a menu that rebuilds on `settled` reads
+/// the new voice's answers. Says do not count.
+#[test]
+fn settled_waits_for_the_worker_to_run_and_publish_voice_changes() {
+    let Rig {
+        mut sink,
+        calls,
+        slow,
+        ..
+    } = rig();
+    assert!(sink.settled(), "nothing asked yet");
+    slow.store(true, Ordering::SeqCst);
+    sink.say("a long line", false);
+    assert!(sink.settled(), "a say is not a voice change");
+    sink.select_main_backend(Some("stub-event"));
+    sink.select_event_backend(Some("stub-event"));
+    sink.configure(Some(0.5), None, None, None);
+    // The worker is still inside the say.
+    assert!(!sink.settled());
+    for _ in 0..300 {
+        if sink.settled() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(sink.settled());
+    let log = calls.lock().unwrap().clone();
+    assert!(
+        log.contains(&"configure rate=Some(0.5)".to_string()),
+        "{log:?}"
+    );
 }

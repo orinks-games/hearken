@@ -5,6 +5,7 @@ use crate::clips::{ClipSource, LooseClips};
 use crate::feed::Feed;
 use crate::silent::SilentBackend;
 use crate::spatial::{place, SpatialConfig};
+use crate::take::{Recorder, Take, TakeState};
 use crate::types::{Bus, Listener, LoopRegion, Mix, Ramps, Start, Vec3};
 use crate::voicing::Insert;
 use hearken_synth::{builtin_wav, Params, Recipe, Voice};
@@ -254,6 +255,8 @@ pub struct Audio {
     /// started since `take_watched`.
     watched: BTreeSet<String>,
     seen: Vec<String>,
+    /// A take being recorded (`begin_take`).
+    take: Option<Recorder>,
 }
 
 /// A sound that started, as an agent listening to the game hears of it.
@@ -287,6 +290,7 @@ impl Audio {
             heard: None,
             watched: BTreeSet::new(),
             seen: Vec::new(),
+            take: None,
         }
     }
 
@@ -343,6 +347,9 @@ impl Audio {
         live.region = Some(region);
         let channel = live.channel;
         self.backend.set_loop_region(channel, region);
+        if let Some(take) = self.take.as_mut() {
+            take.region_set(sound, region);
+        }
     }
 
     /// Starts a live synth voice from `recipe`, looping until stopped.
@@ -538,10 +545,17 @@ impl Audio {
     /// into the clip. The clip comes from the pool's clip source, the same
     /// as [`Audio::play`].
     pub fn start_with(&mut self, key: &str, bus: Bus, start: Start) -> Sound {
+        self.start_at_with(key, None, bus, start)
+    }
+
+    /// [`Audio::start_with`], positioned at `pos` when given: the pan in
+    /// `start` is then ignored and the sound takes its place from where it
+    /// is, as [`Audio::play_at`] does.
+    pub fn start_at_with(&mut self, key: &str, pos: Option<Vec3>, bus: Bus, start: Start) -> Sound {
         let Some(bytes) = self.clip_or_default(key) else {
             return Sound::NONE;
         };
-        self.start_clip(key, bytes, false, bus, start)
+        self.start_clip(key, bytes, false, pos, bus, start)
     }
 
     /// Starts each `(key, bus, start)` as [`Audio::start_with`] would, all
@@ -565,7 +579,7 @@ impl Audio {
     /// refused clip from the source does (see
     /// [`Audio::set_default_fallback`]).
     pub fn play_clip(&mut self, key: &str, bytes: Arc<[u8]>, bus: Bus, start: Start) -> Sound {
-        self.start_clip(key, bytes, true, bus, start)
+        self.start_clip(key, bytes, true, None, bus, start)
     }
 
     /// [`Audio::play_clip`], but a clip the backend refuses (one that will
@@ -627,6 +641,7 @@ impl Audio {
         live.channel = channel;
         live.sent = mix;
         let sound = self.alloc(live);
+        self.note_started(sound, offset(start));
         if let (true, Some(region)) = (start.looping, start.region) {
             self.apply_region(sound, region);
         }
@@ -638,10 +653,12 @@ impl Audio {
         key: &str,
         bytes: Arc<[u8]>,
         keep: bool,
+        pos: Option<Vec3>,
         bus: Bus,
         start: Start,
     ) -> Sound {
-        let live = self.live_for(key, keep.then(|| bytes.clone()), bus, start);
+        let mut live = self.live_for(key, keep.then(|| bytes.clone()), bus, start);
+        live.pos = pos.filter(|p| p.is_finite());
         let mix = self.mix_of(&live);
         let from_s = offset(start);
         match self.play_with_fallback(key, Source::Clip(bytes), live.looping, mix, from_s, bus) {
@@ -659,7 +676,9 @@ impl Audio {
             Some(channel) => {
                 live.channel = channel;
                 live.sent = mix;
-                self.alloc(live)
+                let sound = self.alloc(live);
+                self.note_started(sound, 0.0);
+                sound
             }
             None => Sound::NONE,
         }
@@ -671,6 +690,9 @@ impl Audio {
         let Some(channel) = slot_ref(&self.slots, sound).map(|live| live.channel) else {
             return;
         };
+        if let Some(take) = self.take.as_mut() {
+            take.stopped(sound, fade_ms);
+        }
         self.backend.stop(channel, fade_ms);
         self.free_slot(sound.index);
     }
@@ -691,6 +713,9 @@ impl Audio {
         live.looping = false;
         let channel = live.channel;
         self.backend.release(channel, fade_ms);
+        if let Some(take) = self.take.as_mut() {
+            take.released(sound, fade_ms);
+        }
     }
 
     /// Pauses `sound`. Clears `paused_by_all`: an explicit pause is the
@@ -705,6 +730,9 @@ impl Audio {
         live.paused_by_all = false;
         let channel = live.channel;
         self.backend.pause(channel, true);
+        if let Some(take) = self.take.as_mut() {
+            take.paused(sound, true);
+        }
     }
 
     /// Resumes a paused `sound`, and clears `paused_by_all` the same way
@@ -717,22 +745,19 @@ impl Audio {
         live.paused_by_all = false;
         let channel = live.channel;
         self.backend.pause(channel, false);
+        if let Some(take) = self.take.as_mut() {
+            take.paused(sound, false);
+        }
     }
 
     /// Sets `sound`'s volume, clamped to `0..=1`.
     pub fn set_volume(&mut self, sound: Sound, volume: f32) {
-        if let Some(live) = slot_mut(&mut self.slots, sound) {
-            live.volume = clamped_or(live.volume, volume, 0.0, 1.0);
-        }
-        self.resend(sound, self.fades.move_ms);
+        self.set_volume_over(sound, volume, self.fades.move_ms);
     }
 
     /// Sets `sound`'s pitch, clamped to `0.05..=4`.
     pub fn set_pitch(&mut self, sound: Sound, pitch: f32) {
-        if let Some(live) = slot_mut(&mut self.slots, sound) {
-            live.pitch = clamped_or(live.pitch, pitch, 0.05, 4.0);
-        }
-        self.resend(sound, self.fades.move_ms);
+        self.set_pitch_over(sound, pitch, self.fades.move_ms);
     }
 
     /// Sets `sound`'s volume, clamped to `0..=1`, ramping over `ramp_ms`
@@ -741,6 +766,10 @@ impl Audio {
     pub fn set_volume_over(&mut self, sound: Sound, volume: f32, ramp_ms: u32) {
         if let Some(live) = slot_mut(&mut self.slots, sound) {
             live.volume = clamped_or(live.volume, volume, 0.0, 1.0);
+            let value = live.volume;
+            if let Some(take) = self.take.as_mut() {
+                take.volume(sound, value, ramp_ms);
+            }
         }
         let ramps = Ramps {
             gain_ms: ramp_ms,
@@ -754,6 +783,10 @@ impl Audio {
     pub fn set_pitch_over(&mut self, sound: Sound, pitch: f32, ramp_ms: u32) {
         if let Some(live) = slot_mut(&mut self.slots, sound) {
             live.pitch = clamped_or(live.pitch, pitch, 0.05, 4.0);
+            let value = live.pitch;
+            if let Some(take) = self.take.as_mut() {
+                take.pitch(sound, value, ramp_ms);
+            }
         }
         let ramps = Ramps {
             pitch_ms: ramp_ms,
@@ -773,6 +806,10 @@ impl Audio {
     pub fn set_pan_over(&mut self, sound: Sound, pan: f32, ramp_ms: u32) {
         if let Some(live) = slot_mut(&mut self.slots, sound) {
             live.pan = clamped_or(live.pan, pan, -1.0, 1.0);
+            let value = live.pan;
+            if let Some(take) = self.take.as_mut() {
+                take.pan(sound, value, ramp_ms);
+            }
         }
         let ramps = Ramps {
             pan_ms: ramp_ms,
@@ -791,6 +828,9 @@ impl Audio {
     pub fn set_position(&mut self, sound: Sound, pos: Option<Vec3>) {
         if let Some(live) = slot_mut(&mut self.slots, sound) {
             live.pos = pos;
+            if let Some(take) = self.take.as_mut() {
+                take.moved(sound, pos);
+            }
         }
         self.resend(sound, self.fades.move_ms);
     }
@@ -811,6 +851,9 @@ impl Audio {
     /// Moves the listener.
     pub fn set_listener(&mut self, pos: Vec3, facing: f32) {
         self.listener = Listener { pos, facing };
+        if let Some(take) = self.take.as_mut() {
+            take.listener_moved(pos, facing);
+        }
     }
 
     /// The listener's current position and facing.
@@ -1071,6 +1114,79 @@ impl Audio {
         self.backend.stop_capture()
     }
 
+    /// Starts recording a take of every clip started on `buses` from now on
+    /// (see [`crate::take`]). A take already recording is dropped.
+    pub fn begin_take(&mut self, buses: &[Bus]) {
+        self.take = Some(Recorder::new(
+            buses,
+            self.listener.pos,
+            self.listener.facing,
+        ));
+    }
+
+    /// Holds the take (its clock stops and new sounds go unfollowed) or
+    /// lets it run again. Nothing without a take.
+    pub fn hold_take(&mut self, held: bool) {
+        if let Some(take) = self.take.as_mut() {
+            take.hold(held);
+        }
+    }
+
+    /// Moves the take's clock on by `dt` seconds of play. The app calls it
+    /// once a frame; a pool with no take ignores it.
+    pub fn advance_take(&mut self, dt: f64) {
+        if let Some(take) = self.take.as_mut() {
+            take.advance(dt);
+        }
+    }
+
+    /// Ends the take and hands it back, or `None` when nothing was
+    /// recording.
+    pub fn end_take(&mut self) -> Option<Take> {
+        self.take.take().map(|mut take| take.end())
+    }
+
+    /// Where the recorder is: [`TakeState::Idle`] with no take.
+    pub fn take_state(&self) -> TakeState {
+        self.take.as_ref().map_or(TakeState::Idle, |t| t.state())
+    }
+
+    /// Recorded seconds so far, 0 with no take.
+    pub fn take_seconds(&self) -> f64 {
+        self.take.as_ref().map_or(0.0, |t| t.seconds())
+    }
+
+    /// Events recorded so far, 0 with no take.
+    pub fn take_events(&self) -> usize {
+        self.take.as_ref().map_or(0, |t| t.len())
+    }
+
+    /// Tells the take about a clip that just took `sound`'s slot. A live
+    /// voice or a feed has no clip to perform again, so it is not followed.
+    fn note_started(&mut self, sound: Sound, from_s: f64) {
+        let Some(take) = self.take.as_mut() else {
+            return;
+        };
+        let Some(live) = slot_ref(&self.slots, sound) else {
+            return;
+        };
+        if live.voice.is_some() || live.feed.is_some() {
+            return;
+        }
+        take.started(
+            sound,
+            live.bus,
+            &live.key,
+            live.volume,
+            live.pan,
+            live.pitch,
+            live.looping,
+            live.region,
+            from_s,
+            live.pos,
+        );
+    }
+
     fn alloc(&mut self, live: Live) -> Sound {
         if self.watched.contains(&live.key) && !self.seen.contains(&live.key) {
             self.seen.push(live.key.clone());
@@ -1105,6 +1221,12 @@ impl Audio {
 
     pub(crate) fn free_slot(&mut self, index: u32) {
         let slot = &mut self.slots[index as usize];
+        if let Some(take) = self.take.as_mut() {
+            take.freed(Sound {
+                index,
+                generation: slot.generation,
+            });
+        }
         slot.live = None;
         slot.generation = slot.generation.wrapping_add(1);
         self.free.push(index);

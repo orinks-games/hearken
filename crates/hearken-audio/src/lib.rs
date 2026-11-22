@@ -18,6 +18,7 @@ mod recording;
 mod silent;
 mod slots;
 mod spatial;
+pub mod take;
 mod types;
 mod voicing;
 
@@ -36,5 +37,6 @@ pub use pool::{Audio, Fades, Heard, LiveSound, PlayError, Sound};
 pub use recording::{Call, Recorder, RecordingBackend};
 pub use silent::SilentBackend;
 pub use spatial::{place, Placement, SpatialConfig};
+pub use take::{Take, TakeEvent, TakeState};
 pub use types::{Bus, Listener, LoopRegion, Mix, Ramps, Start, Vec3};
 pub use voicing::{CabSpeakers, CabSpeakersDsp, CabSpeakersParams, CabTone, Insert, Reflection};

@@ -1,0 +1,12 @@
+[package]
+name = "hearken-l10n-tools"
+description = "Translation tooling for Hearken games: extract spoken lines from source, keep PO files in step, check translations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+regex = "1"
