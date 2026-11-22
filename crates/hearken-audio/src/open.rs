@@ -137,7 +137,7 @@ impl Audio {
                     }
                 },
             };
-            match self.play_with_fallback(&key, source, true, mix, 0.0, bus) {
+            match self.play_with_fallback(&key, source, true, mix, 0.0, bus, None) {
                 Some(channel) => {
                     if let Some(region) = region {
                         self.backend.set_loop_region(channel, region);

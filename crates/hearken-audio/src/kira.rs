@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hearken_synth::Voice;
+use kira::clock::{ClockHandle, ClockSpeed, ClockTime};
 use kira::effect::filter::{FilterBuilder, FilterHandle};
 use kira::effect::panning_control::{PanningControlBuilder, PanningControlHandle};
 use kira::effect::Effect;
@@ -184,6 +185,10 @@ pub struct KiraBackend<B: kira::backend::Backend = DeviceBackend> {
     next: Channel,
     curve: GainCurve,
     law: PanLaw,
+    /// Ticks once a second of mixed sound from the moment Kira starts:
+    /// the clock scheduled starts wait on. `None` if Kira had no room for
+    /// it, and every start is then at once.
+    clock: Option<ClockHandle>,
 }
 
 impl KiraBackend {
@@ -209,8 +214,20 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
     pub fn with_settings(mut settings: AudioManagerSettings<B>) -> Result<Self, B::Error> {
         let (tap, capture) = capture::tap();
         settings.main_track_builder.add_effect(tap);
+        let mut manager = AudioManager::new(settings)?;
+        let clock = match manager.add_clock(ClockSpeed::SecondsPerTick(1.0)) {
+            Ok(mut clock) => {
+                clock.start();
+                Some(clock)
+            }
+            Err(e) => {
+                log::warn!("kira: no clock for scheduled starts ({e}); they start at once");
+                None
+            }
+        };
         Ok(KiraBackend {
-            manager: Some(AudioManager::new(settings)?),
+            manager: Some(manager),
+            clock,
             capture,
             channels: HashMap::new(),
             fading: Vec::new(),
@@ -370,6 +387,7 @@ fn play_clip(
     pitch: f32,
     from_s: f64,
     whole: bool,
+    at: Option<ClockTime>,
 ) -> Result<(Playing, f64), BackendError> {
     let stream_over = if whole {
         usize::MAX
@@ -385,6 +403,9 @@ fn play_clip(
         if looping {
             data = data.loop_region(file_region(points));
         }
+        if let Some(at) = at {
+            data = data.start_time(at);
+        }
         let length = data.duration().as_secs_f64();
         track
             .play(data)
@@ -395,6 +416,9 @@ fn play_clip(
         let mut data = data.playback_rate(rate(pitch)).start_position(from);
         if looping {
             data = data.loop_region(file_region(points));
+        }
+        if let Some(at) = at {
+            data = data.start_time(at);
         }
         let length = data.duration().as_secs_f64();
         track
@@ -505,8 +529,20 @@ impl Effect for Amp {
 }
 
 impl<B: kira::backend::Backend> KiraBackend<B> {
+    /// `at_s` seconds on the clock as Kira's time, or `None` with no clock.
+    fn clock_time(&self, at_s: f64) -> Option<ClockTime> {
+        let clock = self.clock.as_ref()?;
+        let at_s = at_s.max(0.0);
+        Some(ClockTime {
+            clock: clock.id(),
+            ticks: at_s.floor() as u64,
+            fraction: at_s.fract(),
+        })
+    }
+
     /// A channel of its own for `source`: a sub-track carrying `insert`
     /// first, if there is one, then the low-pass, the panner and the gain.
+    #[allow(clippy::too_many_arguments)]
     fn start_channel(
         &mut self,
         _key: &str,
@@ -515,7 +551,9 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
         mix: Mix,
         from_s: f64,
         insert: Option<&Insert>,
+        at_s: Option<f64>,
     ) -> Result<Channel, BackendError> {
+        let at = at_s.and_then(|at_s| self.clock_time(at_s));
         let (curve, law) = (self.curve, self.law);
         let manager = self
             .manager
@@ -566,8 +604,9 @@ impl<B: kira::backend::Backend> KiraBackend<B> {
         let mut length_s = None;
         let playing = match source {
             Source::Clip(bytes) => {
-                let (playing, length) =
-                    play_clip(&mut track, bytes, looping, mix.pitch, from_s, self.whole)?;
+                let (playing, length) = play_clip(
+                    &mut track, bytes, looping, mix.pitch, from_s, self.whole, at,
+                )?;
                 length_s = Some(length);
                 playing
             }
@@ -655,7 +694,7 @@ impl<B: kira::backend::Backend + Send + 'static> Backend for KiraBackend<B> {
         mix: Mix,
         from_s: f64,
     ) -> Result<Channel, BackendError> {
-        self.start_channel(key, source, looping, mix, from_s, None)
+        self.start_channel(key, source, looping, mix, from_s, None, None)
     }
 
     fn play_inserted(
@@ -667,7 +706,35 @@ impl<B: kira::backend::Backend + Send + 'static> Backend for KiraBackend<B> {
         from_s: f64,
         insert: &Insert,
     ) -> Result<Channel, BackendError> {
-        self.start_channel(key, source, looping, mix, from_s, Some(insert))
+        self.start_channel(key, source, looping, mix, from_s, Some(insert), None)
+    }
+
+    fn play_scheduled(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+        insert: Option<&Insert>,
+        at_s: f64,
+    ) -> Result<Channel, BackendError> {
+        self.start_channel(key, source, looping, mix, from_s, insert, Some(at_s))
+    }
+
+    fn clock_s(&self) -> Option<f64> {
+        let clock = self.clock.as_ref()?;
+        // Whole ticks and the fraction are read apart, so a read that
+        // straddles a tick reads again.
+        for _ in 0..4 {
+            let a = clock.time();
+            let b = clock.time();
+            if a.ticks == b.ticks {
+                return Some(b.ticks as f64 + b.fraction);
+            }
+        }
+        let t = clock.time();
+        Some(t.ticks as f64)
     }
 
     fn set_mix(&mut self, channel: Channel, mix: Mix, ramp_ms: u32) {

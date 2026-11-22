@@ -491,6 +491,15 @@ impl Replay {
 /// stopped.
 const TAKE_TAIL_S: f64 = 1.5;
 
+/// How far ahead of the clock a take's starts are handed over, in seconds:
+/// more than a slow frame, so a note is placed on its sample before its
+/// time comes.
+pub const TAKE_AHEAD_S: f64 = 0.15;
+
+/// How far the audio clock may wander from the take's own before a
+/// performance takes its bearings again, in seconds.
+const TAKE_DRIFT_S: f64 = 0.1;
+
 /// Performs a [`Take`]: every recorded call, on a new sound of its own, at
 /// its recorded time, all on [`Bus::MUSIC`]. Live in the soundtrack menu it
 /// is the run heard again; on an offline mixer it is the run written to a
@@ -499,9 +508,17 @@ const TAKE_TAIL_S: f64 = 1.5;
 /// where it was when the performance ends.
 pub struct TakePerformer {
     take: Rc<Take>,
-    /// The next event to fire.
+    /// The next event to fire, starts aside.
     at: usize,
+    /// The next start to hand over: starts go [`TAKE_AHEAD_S`] early, each
+    /// placed on its own sample of the audio clock, so notes land where
+    /// the run played them, not on the frame after.
+    ahead: usize,
     clock: f64,
+    /// The audio clock at the take's second 0, or `None` before the first
+    /// start is handed over. Kept while the two clocks agree; a gap (the
+    /// menu stalled, a pause) sets it again.
+    anchor: Option<f64>,
     /// The pool's sound for each recorded id, while it plays.
     sounds: HashMap<u32, Sound>,
     /// The listener as it stood before the take moved it.
@@ -514,7 +531,9 @@ impl TakePerformer {
         TakePerformer {
             take,
             at: 0,
+            ahead: 0,
             clock: 0.0,
+            anchor: None,
             sounds: HashMap::new(),
             listener: None,
             state: Replay::Waiting,
@@ -543,7 +562,21 @@ impl TakePerformer {
         self.state = next;
     }
 
+    /// Where take time `t` falls on the audio clock.
+    fn audio_time(&mut self, audio: &Audio, t: f64) -> f64 {
+        let now = audio.clock_s() - self.clock;
+        let anchor = match self.anchor {
+            Some(a) if (a - now).abs() <= TAKE_DRIFT_S => a,
+            _ => {
+                self.anchor = Some(now);
+                now
+            }
+        };
+        anchor + t
+    }
+
     fn fire(&mut self, audio: &mut Audio, event: TakeEvent) {
+        let event_t = event.t();
         match event {
             TakeEvent::Start {
                 id,
@@ -564,6 +597,7 @@ impl TakePerformer {
                     looping,
                     region,
                     from_s,
+                    at_s: Some(self.audio_time(audio, event_t)),
                 };
                 let sound = audio.start_at_with(&key, pos, Bus::MUSIC, start);
                 if sound == Sound::NONE {
@@ -622,15 +656,29 @@ impl TakePerformer {
         }
     }
 
-    /// Fires every event the clock has reached.
+    /// Hands over every start within [`TAKE_AHEAD_S`] of the clock, then
+    /// fires every other event the clock has reached. A start always goes
+    /// before anything done to its sound.
     fn fire_due(&mut self, audio: &mut Audio) {
+        while let Some(event) = self.take.events.get(self.ahead) {
+            if event.t() > self.clock + TAKE_AHEAD_S {
+                break;
+            }
+            self.ahead += 1;
+            if matches!(event, TakeEvent::Start { .. }) {
+                let event = event.clone();
+                self.fire(audio, event);
+            }
+        }
         while let Some(event) = self.take.events.get(self.at) {
             if event.t() > self.clock {
                 break;
             }
-            let event = event.clone();
             self.at += 1;
-            self.fire(audio, event);
+            if !matches!(event, TakeEvent::Start { .. }) {
+                let event = event.clone();
+                self.fire(audio, event);
+            }
         }
     }
 
@@ -648,7 +696,9 @@ impl Performer for TakePerformer {
     fn start(&mut self, audio: &mut Audio) {
         self.listener = Some(audio.listener());
         self.at = 0;
+        self.ahead = 0;
         self.clock = 0.0;
+        self.anchor = None;
         self.set(Replay::Playing);
         self.fire_due(audio);
     }

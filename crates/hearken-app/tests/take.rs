@@ -521,3 +521,37 @@ fn a_screen_opened_to_save_a_track_starts_saving_on_arrival() {
         h.spoken()
     );
 }
+
+#[test]
+fn a_note_handed_over_ahead_is_kept_at_its_time_and_replayed_ahead_of_it() {
+    let mut h = game();
+    h.app.ctx.begin_take(&[Bus::MUSIC]);
+    h.frame(1.0);
+    // A note for 0.3 s from now, on the audio clock.
+    let at = h.app.ctx.audio.clock_s() + 0.3;
+    h.app
+        .ctx
+        .audio
+        .start_with("music/bell", Bus::MUSIC, Start::ONCE.at(at));
+    h.frame(1.0);
+    let take = h.app.ctx.end_take().expect("a take");
+    let start = take
+        .events
+        .iter()
+        .find(|e| matches!(e, TakeEvent::Start { .. }))
+        .expect("the note");
+    assert!((start.t() - 1.3).abs() < 0.01, "kept at {}", start.t());
+
+    // Replayed, the note is handed over before its time, not on it.
+    let mut h2 = game();
+    let mut performer = TakePerformer::new(Rc::new(take));
+    performer.start(&mut h2.app.ctx.audio);
+    let mut clock = 0.0;
+    while h2.sounds.channel_of("music/bell").is_none() {
+        assert!(performer.update(&mut h2.app.ctx.audio, 0.05));
+        h2.frame(0.05);
+        clock += 0.05;
+        assert!(clock < 2.0, "never handed over");
+    }
+    assert!((1.1..1.3).contains(&clock), "handed over at {clock}");
+}
