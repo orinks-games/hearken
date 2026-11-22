@@ -123,6 +123,10 @@ function isSeed(seed) {
  * @param {({ reporter, about, room, lines, note }) => Promise<void>} [options.report]
  *   Takes a player's report of another: who, where, and the reported
  *   player's last lines in that room. Without it reports are only logged.
+ * @param {string} [options.handleKey]  A secret mixed into every player's
+ *   handle, so a handle cannot be worked out from an account id seen
+ *   elsewhere. Set it once and keep it: changing it changes every handle,
+ *   and mutes and blocks are kept by handle.
  * @param {object} [options.limits]
  */
 export function createService(options) {
@@ -146,6 +150,7 @@ export function createService(options) {
     saves = null,
     screen,
     report,
+    handleKey = "",
     now = () => Date.now(),
   } = options;
   const limits = {
@@ -179,7 +184,7 @@ export function createService(options) {
   }
   const base = basePath.replace(/\/+$/, "");
   const rooms = roomStore
-    ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, report, limits: options.limits })
+    ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, report, handleKey, limits: options.limits })
     : null;
   const savesRoute = saves
     ? saveRoutes({ saves, accounts, limiter, bearer, readBody, json, error, log, now, limits: options.limits })

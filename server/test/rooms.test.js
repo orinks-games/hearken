@@ -517,3 +517,86 @@ test("a report hands the host that player's recent lines, and a screen can name 
   assert.ok(reports[0].lines.every((l) => !("player" in l)));
   assert.equal((await call(service, "POST", `rooms/${id}/report`, ada, { handle: "0".repeat(16) })).status, 404);
 });
+
+test("a history read counts the lines the reader hears, and can leave out comings and goings", { skip }, async () => {
+  const { service, clock, accounts, ada, bo } = await setup();
+  const first = await call(service, "POST", "rooms/find?kind=lobby&name=general", ada);
+  const id = first.body.room.id;
+  await call(service, "POST", "rooms/find?kind=lobby&name=general", bo);
+  for (const text of ["one", "two"]) {
+    clock.t += 3_100;
+    await call(service, "POST", `rooms/${id}/events`, ada, { type: "chat", text });
+  }
+  for (const text of ["bo one", "bo two", "bo three"]) {
+    clock.t += 3_100;
+    await call(service, "POST", `rooms/${id}/events`, bo, { type: "chat", text });
+  }
+  // Many arrivals after the lines.
+  for (let i = 0; i < 6; i += 1) {
+    await call(service, "POST", "rooms/find?kind=lobby&name=general", await accounts.tokenFor(`P${i}`));
+  }
+  const cy = await accounts.tokenFor("Cy");
+  await call(service, "POST", "rooms/find?kind=lobby&name=general", cy);
+  const read = await call(service, "GET", `rooms/${id}`, cy);
+  const boHandle = read.body.room.members.find((m) => m.name === "Bo").handle;
+  await call(service, "POST", "rooms/mutes", cy, { handle: boHandle, mode: "mute" });
+  // Two lines heard, though Bo's three and the joins sit after them.
+  const lines = await call(service, "GET", `rooms/${id}?last=2&only=chat`, cy);
+  assert.deepEqual(lines.body.events.map((e) => e.text), ["one", "two"]);
+  assert.equal(lines.body.more, true);
+  const earlier = await call(service, "GET", `rooms/${id}?last=2&only=chat&before=${lines.body.first_seq}`, cy);
+  assert.deepEqual(earlier.body.events, []);
+  assert.equal(earlier.body.more, false);
+});
+
+test("a channel member who stops listening gives up the seat; a named channel never closes", { skip }, async () => {
+  const { service, clock, ada, bo } = await setup({}, {});
+  const first = await call(service, "POST", "rooms/find?kind=lobby&name=general", ada);
+  const id = first.body.room.id;
+  await call(service, "POST", "rooms/find?kind=lobby&name=general", bo);
+  clock.t += 10 * 60_000;
+  await call(service, "GET", `rooms/${id}`, ada);
+  clock.t += 10 * 60_000;
+  // Bo has not read for twenty minutes; Ada read ten minutes ago.
+  const now = await call(service, "GET", `rooms/${id}?after=0`, ada);
+  assert.deepEqual(now.body.room.members.map((m) => m.name), ["Ada"]);
+  const gone = now.body.events.find((e) => e.type === "leave");
+  assert.equal(gone.reason, "away");
+  assert.equal(gone.name, "Bo");
+  // Bo's next read finds him out; asking again seats him.
+  assert.equal((await call(service, "GET", `rooms/${id}`, bo)).status, 403);
+  const back = await call(service, "POST", "rooms/find?kind=lobby&name=general", bo);
+  assert.equal(back.body.room.id, id);
+  // Every member away: the named channel stays open, past any idle limit.
+  clock.t += 400 * 86_400_000;
+  const later = await call(service, "POST", "rooms/find?kind=lobby&name=general", ada);
+  assert.equal(later.body.room.id, id);
+  assert.equal(later.body.room.phase, "open");
+  assert.deepEqual(later.body.room.members.map((m) => m.name), ["Ada"]);
+});
+
+test("a block closes a direct room, and a line across a block is refused", { skip }, async () => {
+  const { service, ada, bo } = await setup();
+  const lobby = await call(service, "POST", "rooms/find?kind=lobby&name=general", bo);
+  const boHandle = lobby.body.room.members[0].handle;
+  const made = await call(service, "POST", "rooms/direct?kind=dm", ada, { handle: boHandle });
+  const id = made.body.room.id;
+  const adaHandle = made.body.room.members[0].handle;
+  assert.equal((await call(service, "POST", `rooms/${id}/events`, bo, { type: "chat", text: "hi" })).status, 200);
+  await call(service, "POST", "rooms/mutes", bo, { handle: adaHandle, mode: "block" });
+  const read = await call(service, "GET", `rooms/${id}`, ada);
+  assert.equal(read.body.room.phase, "closed");
+  const said = await call(service, "POST", `rooms/${id}/events`, ada, { type: "chat", text: "hello?" });
+  assert.equal(said.status, 409);
+  assert.equal((await call(service, "POST", "rooms/direct?kind=dm", ada, { handle: boHandle })).status, 403);
+});
+
+test("a handle key changes every handle, and the same key keeps them", { skip }, async () => {
+  const a = await setup({}, { handleKey: "k1" });
+  const b = await setup({}, { handleKey: "k2" });
+  const c = await setup({}, { handleKey: "k1" });
+  const handle = async ({ service, ada }) => (await call(service, "POST", "rooms/find?kind=lobby&name=general", ada)).body.room.members[0].handle;
+  const [ha, hb, hc] = [await handle(a), await handle(b), await handle(c)];
+  assert.notEqual(ha, hb);
+  assert.equal(ha, hc);
+});

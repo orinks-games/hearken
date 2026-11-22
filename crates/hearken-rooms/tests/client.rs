@@ -645,7 +645,7 @@ fn a_channel_starts_from_its_recent_lines_and_hidden_lines_do_not_leave_it_behin
 
     // Watching reads the last lines, not the log from its first line, and
     // the one the player does not hear (seq 40, muted) leaves a marker.
-    script.push_for("?last=20", reply(200, json!({
+    script.push_for("?last=20&only=chat", reply(200, json!({
         "ok": true,
         "room": channel(40),
         "events": [
@@ -672,7 +672,10 @@ fn a_channel_starts_from_its_recent_lines_and_hidden_lines_do_not_leave_it_behin
     settle(&mut rooms, now + POLL_ACTIVE);
     assert_eq!(rooms.room(&room_id()).unwrap().chat().count(), 2);
     let paths = script.paths();
-    assert!(paths.iter().any(|p| p.ends_with("?last=20")), "{paths:?}");
+    assert!(
+        paths.iter().any(|p| p.ends_with("?last=20&only=chat")),
+        "{paths:?}"
+    );
     assert!(paths.iter().any(|p| p.ends_with("?after=40")), "{paths:?}");
     assert!(!paths.iter().any(|p| p.ends_with("?after=0")), "{paths:?}");
 

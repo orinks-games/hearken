@@ -821,7 +821,7 @@ impl Rooms {
                 break;
             }
             let url = match history {
-                Some(last) => config.endpoint(&format!("rooms/{id}?last={last}")),
+                Some(last) => config.endpoint(&format!("rooms/{id}?last={last}&only=chat")),
                 None => config.endpoint(&format!("rooms/{id}?after={after}")),
             };
             let ticket = self.send(Request::Poll(id.clone()), Method::Get, url);

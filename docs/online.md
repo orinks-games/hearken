@@ -557,7 +557,10 @@ closes, and keeps its lines for the kind's `history` (a week by default).
 another player, for a kind with `seats: {min: 2, max: 2}`; it is on both
 players' lists, and closes when either leaves. Players are known to each
 other by `handle`, a short stable id on every member and chat event, never
-the account id. `rooms.set_mute(handle, MuteMode::Mute)` leaves that
+the account id. A host whose account ids appear anywhere public passes the
+service a secret `handleKey`, so a handle cannot be worked out from an id;
+set it once, since changing it changes every handle and the mutes kept by
+them. `rooms.set_mute(handle, MuteMode::Mute)` leaves that
 player's lines out of what this player reads, in every room, without
 telling them; `Block` does that both ways and keeps the two out of each
 other's direct rooms and Play-with-anyone games; `rooms.report(id, handle,
@@ -581,12 +584,12 @@ ids are not sent).
 | `POST rooms/direct?kind=K` `{handle}` | The two-member room of that kind with the player whose handle this is, found or made (they are seated too). `404 unknown-player`, `403 blocked`, `422 not-direct` for a kind that is not two seats without rules. |
 | `GET rooms` | The player's rooms, newest first, each with `unread`: events since the player last read it. |
 | `GET rooms/<id>?after=<seq>` | The room, the events after `seq` (`more` when there are over 500), presence, and `read_to`, the last seq the page covered. The client's poll; it marks the room read. |
-| `GET rooms/<id>?last=N` | The room and its last `N` events (at most 100), oldest first, with `first_seq`; `&before=<seq>` pages back. For a channel's history. |
+| `GET rooms/<id>?last=N` | The room and its last `N` events the reader hears (at most 100), oldest first, with `first_seq`, the earliest seq looked at; `&before=<seq>` pages back from there, and `more` says whether there is more to page. `&only=chat` counts and returns chat lines alone. For a channel's history. |
 | `POST rooms/<id>/start` | The host starts with at least `seats.min` filled. `403 not-the-host`, `422 not-enough-players`. |
 | `POST rooms/<id>/events` | One event: `turn {inputs:[[code,value],...]}`, `chat {text, tag?}`, `leave`, or `finish`. Answers `{seq}`. `leave` frees a waiting seat, forfeits a match in play, leaves a channel, closes a direct room, and drops a room that is over from the player's list. |
 | `POST rooms/<id>/report` `{handle, note?}` | Hands that member's last 20 lines in the room, with the note, to the service's `report` hook. |
 | `GET rooms/mutes` | Who the player has muted or blocked: `{mutes:[{handle, mode, name}]}`. |
-| `POST rooms/mutes` `{handle, mode}` | `mode` is `mute`, `block` or `none`. The other player is not told. |
+| `POST rooms/mutes` `{handle, mode}` | `mode` is `mute`, `block` or `none`. The other player is not told. A block closes any direct room between the two, and a line posted to a direct room across a block is `403 blocked`. |
 
 A room is `{id, kind, code, name, direct, phase, open, seats:{min,max},
 host, members, you, seed, context, seq, snapshot, result, updated_at,
@@ -603,7 +606,11 @@ before they are stored, 10 a minute per player unless the kind says
 otherwise (`chat_limit`); a line that comes too soon is `429 too-fast`,
 and one the screen turns away is `422 screened` with a line for the
 player, or the screen's own code. A reader's own mutes and blocks, and
-anyone who has blocked them, are left out of the events they read. A room
+anyone who has blocked them, are left out of the events they read. A
+channel member not seen for 15 minutes (`channelAwayMs`) gives up the
+seat, logged as a `leave` with `reason: "away"`; the next read is `403
+not-a-member`, and the game joins again. A named channel never closes,
+whatever its kind's `idle_limit`. A room
 takes 60 events a minute per player, and a player holds at most 20 rooms
 that are not over.
 
