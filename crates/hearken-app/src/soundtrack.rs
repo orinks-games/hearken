@@ -2016,7 +2016,13 @@ impl<G: Game> SoundtrackScreen<G> {
                     ("ARTIST", G::TITLE),
                     ("TRACKNUMBER", number.as_str()),
                 ];
-                match export::Render::start(performer, clips, e.dir.join(name), &tags) {
+                // A saved track never replaces an earlier save of the same
+                // name; an album export writes its folder afresh.
+                let path = match e.what {
+                    ExportWhat::Track => export::unused_path(&e.dir, &name),
+                    ExportWhat::Album => e.dir.join(name),
+                };
+                match export::Render::start(performer, clips, path, &tags) {
                     Ok(r) => e.step = ExportStep::Write(Box::new(r)),
                     Err(err) => {
                         log::warn!("export of {:?} failed: {err}", track.id);
@@ -2375,6 +2381,23 @@ pub mod export {
     const CHUNK: usize = 1024;
     /// Silence kept after a piece ends, so its last fade is whole.
     const TAIL_S: f64 = 1.0;
+
+    /// `dir/name`, or, when a file is there already, the first of
+    /// `dir/stem (2).ext`, `dir/stem (3).ext` and so on that is free.
+    pub fn unused_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let first = dir.join(name);
+        if !first.exists() {
+            return first;
+        }
+        let (stem, ext) = match name.rsplit_once('.') {
+            Some((stem, ext)) => (stem, format!(".{ext}")),
+            None => (name, String::new()),
+        };
+        (2..)
+            .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+            .find(|p| !p.exists())
+            .expect("a free name")
+    }
 
     /// `text` as a file or folder name on any system: no path separators
     /// or characters Windows refuses, no trailing dots or spaces, at most 80

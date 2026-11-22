@@ -612,3 +612,24 @@ fn a_lent_take_is_dropped_when_another_screen_takes_its_place() {
         assert!(h.app.ctx.end_take().is_none(), "{leave}");
     }
 }
+
+#[test]
+fn a_second_save_of_the_same_name_keeps_the_first_file() {
+    use hearken_app::soundtrack::export::unused_path;
+    let dir = tempfile::tempdir().unwrap();
+    let name = "01 Morning, 22 November 2026.ogg";
+    let first = unused_path(dir.path(), name);
+    assert_eq!(first, dir.path().join(name));
+    std::fs::write(&first, b"first").unwrap();
+    let second = unused_path(dir.path(), name);
+    assert_eq!(
+        second,
+        dir.path().join("01 Morning, 22 November 2026 (2).ogg")
+    );
+    std::fs::write(&second, b"second").unwrap();
+    assert_eq!(
+        unused_path(dir.path(), name),
+        dir.path().join("01 Morning, 22 November 2026 (3).ogg")
+    );
+    assert_eq!(std::fs::read(&first).unwrap(), b"first");
+}
