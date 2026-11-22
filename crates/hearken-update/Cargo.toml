@@ -9,6 +9,12 @@ repository.workspace = true
 authors.workspace = true
 build = "build.rs"
 
+# What `hearken release` reads (through `cargo metadata`) to tell whether a
+# game's copy of this crate keeps a copy portable or installed when it
+# updates, before it builds the other kind of copy.
+[package.metadata.hearken-update]
+keeps-kind = true
+
 [features]
 default = ["http"]
 # The real HTTPS client. `hearken release` signs manifests with this crate

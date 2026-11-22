@@ -30,7 +30,7 @@ use project::Project;
 
 const USAGE: &str = "Usage: hearken new <name> [--template=menu|blank] [--title=TITLE]
        hearken play [game] [--download | --source]
-       hearken release [game] [--channel=NAME] [--notes=FILE]
+       hearken release [game] [--channel=NAME] [--notes=FILE] [--portable | --no-portable]
        hearken seal-key [game] [--print]
        hearken update-key [game] [--print]
        hearken doctor
@@ -46,6 +46,12 @@ release    builds the zip players get, without the agent server, into dist/,
            and the rules module for verified runs when the game names one.
            A game with update = true also gets a signed update manifest
            for --channel (stable unless named), with --notes as its notes.
+           --portable or --no-portable builds the other kind of copy for this
+           release only: portable keeps saves beside the game, installed
+           keeps them in the user's folder. The archive name then ends in
+           -portable or -installed. It gets no update manifest of its own:
+           its copies update from the usual build's, and each update keeps
+           a copy portable or installed as it was.
 seal-key   shows where a game's seal key is kept and its ID; --print shows
            the key itself, for a CI secret.
 update-key shows where a game's update key is kept and its public half;
@@ -144,9 +150,13 @@ fn play(game: Option<Game>, flags: &[&str]) -> Result<(), String> {
         ["--download"] => false,
         _ => return Err(USAGE.to_string()),
     };
+    // No flag was given and Rust was not found: downloading is a fallback
+    // the player did not ask for, so a failure says so.
+    let fell_back = flags.is_empty() && !from_source;
     let (dir, exe, title) = match (game, from_source) {
         (Some(Game::Repo(repo)), false) => {
-            let (dir, exe) = download(&repo)?;
+            let (dir, exe) =
+                download(&repo).map_err(|e| if fell_back { fallback_error(&e) } else { e })?;
             (dir, exe, repo_name(&repo).to_string())
         }
         (_, false) => return Err("Name the game's repository (owner/name) to download it.".into()),
@@ -181,12 +191,23 @@ fn play(game: Option<Game>, flags: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-/// `--channel=NAME` and `--notes=FILE`, each at most once; `None` for
-/// anything else.
+/// `--channel=NAME` and `--notes=FILE`, each at most once, and at most one
+/// of `--portable` and `--no-portable`; `None` for anything else.
 fn release_options(flags: &[&str]) -> Option<release::Options> {
     let mut options = release::Options::default();
     let (mut channel, mut notes) = (None, None);
     for flag in flags {
+        if let Some(portable) = match *flag {
+            "--portable" => Some(true),
+            "--no-portable" => Some(false),
+            _ => None,
+        } {
+            if options.portable.is_some() {
+                return None;
+            }
+            options.portable = Some(portable);
+            continue;
+        }
         let (slot, value) = match flag.split_once('=') {
             Some(("--channel", value)) => (&mut channel, value),
             Some(("--notes", value)) => (&mut notes, value),
@@ -243,7 +264,7 @@ fn checkout(repo: &str, pull: bool) -> Result<PathBuf, String> {
                 println!("Getting {name} into {}...", dir.display());
                 let url = format!("https://github.com/{repo}.git");
                 if !run_ok(Command::new("git").arg("clone").arg(&url).arg(&dir)) {
-                    return Err(format!("Could not clone {url}."));
+                    return Err(clone_error(&url));
                 }
             }
             dir
@@ -260,6 +281,43 @@ fn checkout(repo: &str, pull: bool) -> Result<PathBuf, String> {
         }
     }
     Ok(dir)
+}
+
+/// What a failed clone says. Git's own message is shown above it.
+fn clone_error(url: &str) -> String {
+    format!(
+        "Could not clone {url}. A private repository needs read access to it and Git signed in \
+         to GitHub. The name may also be misspelled."
+    )
+}
+
+/// What a failed look for the latest release says. `status` is the HTTP
+/// status when GitHub answered, and `detail` is the underlying error.
+fn release_list_error(repo: &str, status: Option<u16>, detail: &str) -> String {
+    if status == Some(404) {
+        format!(
+            "{repo} has no published release to download. The repository may not have one yet, \
+             it may be private, or its name may be misspelled. A private repository can only be \
+             played by building it from source with --source, with Git signed in to GitHub."
+        )
+    } else {
+        format!(
+            "Could not reach the release list for {repo} ({detail}). Check your internet \
+             connection and try again. If GitHub is limiting requests, try again later."
+        )
+    }
+}
+
+/// What a download that nobody asked for says when it fails: why hearken
+/// tried it, and how to build from source instead.
+fn fallback_error(error: &str) -> String {
+    format!(
+        "{error}\nRust was not found on this computer, so hearken looked for a release to \
+         download instead. To build the game from source, install Rust (see Getting started in \
+         Hearken's README, https://github.com/orinks-games/hearken#getting-started), open a new \
+         terminal, and run the command again. Run hearken doctor to see what this computer is \
+         missing."
+    )
 }
 
 /// The git checkout holding the current folder, when it is `repo`'s.
@@ -284,7 +342,13 @@ fn download(repo: &str) -> Result<(PathBuf, PathBuf), String> {
     let release: serde_json::Value = ureq::get(&api)
         .set("User-Agent", "hearken-cli")
         .call()
-        .map_err(|e| format!("{repo} has no release to download ({e})."))?
+        .map_err(|e| {
+            let status = match &e {
+                ureq::Error::Status(code, _) => Some(*code),
+                _ => None,
+            };
+            release_list_error(repo, status, &e.to_string())
+        })?
         .into_json()
         .map_err(|e| format!("Could not read the release list: {e}"))?;
     let tag = release["tag_name"].as_str().unwrap_or("latest");
@@ -386,12 +450,20 @@ fn pick_asset(names: &[&str], os: &str, arch: &str) -> Option<usize> {
             _ => None,
         }
     };
+    // A release built as the other kind (`-portable` or `-installed`) comes
+    // after the game's own whatever the processor, so the pick does not
+    // depend on the order the names are listed in.
+    let other_kind = |name: &str| {
+        let name = name.to_lowercase();
+        name.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|w| w == "portable" || w == "installed")
+    };
     names
         .iter()
         .enumerate()
-        .filter_map(|(i, n)| Some((rank(n)?, i)))
+        .filter_map(|(i, n)| Some((other_kind(n), rank(n)?, i)))
         .min()
-        .map(|(_, i)| i)
+        .map(|(_, _, i)| i)
 }
 
 /// The programs in an unpacked release, from the shallowest folder that
@@ -578,6 +650,97 @@ mod tests {
         assert_eq!(release_options(&["--channel=a", "--channel=b"]), None);
         assert_eq!(release_options(&["--notes="]), None);
         assert_eq!(release_options(&["--print"]), None);
+    }
+
+    #[test]
+    fn release_takes_portable_or_not_but_not_both() {
+        assert_eq!(release_options(&[]).unwrap().portable, None);
+        assert_eq!(
+            release_options(&["--portable"]).unwrap().portable,
+            Some(true)
+        );
+        assert_eq!(
+            release_options(&["--no-portable", "--channel=beta"])
+                .unwrap()
+                .portable,
+            Some(false)
+        );
+        assert_eq!(release_options(&["--portable", "--no-portable"]), None);
+        assert_eq!(release_options(&["--portable", "--portable"]), None);
+        assert_eq!(release_options(&["--no-portable", "--no-portable"]), None);
+        assert_eq!(release_options(&["--portable=yes"]), None);
+    }
+
+    #[test]
+    fn the_games_own_kind_is_downloaded_when_both_are_there() {
+        for names in [
+            [
+                "game-1.0.0-windows-x64-portable.zip",
+                "game-1.0.0-windows-x64.zip",
+            ],
+            [
+                "game-1.0.0-windows-x64.zip",
+                "game-1.0.0-windows-x64-portable.zip",
+            ],
+        ] {
+            let pick = pick_asset(&names, "windows", "x86_64").unwrap();
+            assert_eq!(names[pick], "game-1.0.0-windows-x64.zip");
+        }
+        let names = [
+            "game-1.0.0-linux-x64-installed.tar.gz",
+            "game-1.0.0-linux-x64.tar.gz",
+        ];
+        assert_eq!(pick_asset(&names, "linux", "x86_64"), Some(1));
+        // Only the other kind is there: still better than nothing.
+        assert_eq!(
+            pick_asset(
+                &["game-1.0.0-windows-x64-portable.zip"],
+                "windows",
+                "x86_64"
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_missing_release_says_why_and_what_to_try() {
+        let missing = release_list_error("me/game", Some(404), "ignored");
+        assert!(missing.contains("no published release"), "{missing}");
+        assert!(missing.contains("private"), "{missing}");
+        assert!(missing.contains("misspelled"), "{missing}");
+        assert!(!missing.contains("ignored"), "{missing}");
+        for status in [Some(403), None] {
+            let other = release_list_error("me/game", status, "connection refused");
+            assert!(
+                other.contains("Could not reach the release list"),
+                "{other}"
+            );
+            assert!(other.contains("connection refused"), "{other}");
+            assert!(!other.contains("misspelled"), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_download_nobody_asked_for_points_at_rust() {
+        let text = fallback_error("me/game has no published release to download.");
+        assert!(
+            text.starts_with("me/game has no published release"),
+            "{text}"
+        );
+        assert!(text.contains("Rust was not found"), "{text}");
+        assert!(text.contains("install Rust"), "{text}");
+        assert!(text.contains("https://github.com/orinks-games/hearken#getting-started"));
+        assert!(text.contains("open a new terminal"), "{text}");
+        assert!(text.contains("hearken doctor"), "{text}");
+    }
+
+    #[test]
+    fn a_failed_clone_mentions_private_repositories_and_spelling() {
+        let text = clone_error("https://github.com/me/game.git");
+        assert!(text.contains("Could not clone https://github.com/me/game.git."));
+        assert!(text.contains("private"), "{text}");
+        assert!(text.contains("Git signed in to GitHub"), "{text}");
+        assert!(text.contains("misspelled"), "{text}");
     }
 
     #[test]

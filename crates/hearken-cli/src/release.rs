@@ -30,6 +30,9 @@ pub struct Options {
     pub channel: String,
     /// A Markdown file of release notes for the update manifest.
     pub notes: Option<PathBuf>,
+    /// Build as portable (`Some(true)`) or installed (`Some(false)`) for this
+    /// release only, whatever the game's `portable` setting says.
+    pub portable: Option<bool>,
 }
 
 impl Default for Options {
@@ -37,7 +40,42 @@ impl Default for Options {
         Options {
             channel: hearken_update::DEFAULT_CHANNEL.to_string(),
             notes: None,
+            portable: None,
         }
+    }
+}
+
+/// Which kind of copy a release is, and the part of its name that tells it
+/// apart from the game's usual kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Kind {
+    /// Whether the copy carries `portable.txt`.
+    portable: bool,
+    /// `portable` or `installed` when this release is not the kind the game's
+    /// `Cargo.toml` asks for, so both kinds can sit in `dist/` and on one
+    /// GitHub release. The game's own kind has none.
+    suffix: Option<&'static str>,
+}
+
+/// The kind a release is: the game's setting, unless `requested` overrides
+/// it. A Mac app ignores `portable`, so on a Mac the kinds are one build and
+/// never differ in name.
+fn release_kind(game_portable: bool, requested: Option<bool>, mac_app: bool) -> Kind {
+    let portable = requested.unwrap_or(game_portable);
+    let suffix = match (mac_app || portable == game_portable, portable) {
+        (true, _) => None,
+        (false, true) => Some("portable"),
+        (false, false) => Some("installed"),
+    };
+    Kind { portable, suffix }
+}
+
+/// The release's name without its extension: `my-game-1.4.0-windows-x64`,
+/// with `-portable` or `-installed` after it for the other kind.
+fn release_stem(package: &str, version: &str, platform: &str, kind: Kind) -> String {
+    match kind.suffix {
+        Some(suffix) => format!("{package}-{version}-{platform}-{suffix}"),
+        None => format!("{package}-{version}-{platform}"),
     }
 }
 
@@ -73,6 +111,14 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
     let seal = crate::seal_key::release_key(project)?.map(|k| k.to_hex());
     // The public half goes into the game; the secret signs the manifest.
     let update = crate::update_key::release_key(project)?;
+    let kind = release_kind(
+        project.portable,
+        options.portable,
+        cfg!(target_os = "macos"),
+    );
+    if let Some(suffix) = kind_check_for(update.is_some(), kind) {
+        updater_keeps_kind(&project.dir, suffix)?;
+    }
     let identity = match &update {
         Some(key) => UpdateIdentity {
             key: key.public().to_string(),
@@ -95,7 +141,7 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
     // The platform part of the name, the one `hearken play --download`
     // looks for and the update manifest names.
     let platform = hearken_update::platform::current();
-    let stem = format!("{}-{}-{platform}", project.package, project.version);
+    let stem = release_stem(&project.package, &project.version, &platform, kind);
     let dist = project.dir.join("dist");
     // An earlier release's module is not this one's.
     let stale = format!("{}-{}-rules-", project.package, project.version);
@@ -156,7 +202,7 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
     if cfg!(windows) {
         windows_runtime(&project.release_dir(), &stage)?;
     }
-    if project.portable {
+    if kind.portable {
         if layout.app.is_some() {
             // An app is replaced whole on update, and macOS may run it from
             // a read-only copy, so its saves go in Application Support.
@@ -183,7 +229,12 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
             make_archive(&dist, &stem)?;
         }
     }
-    if let Some(key) = &update {
+    if let (Some(_), Some(suffix)) = (&update, kind.suffix) {
+        // The manifest's name is the usual build's, which older copies ask
+        // for, so this build gets none: an update keeps each copy's kind
+        // whichever kind of archive it installs.
+        println!("{}", other_kind_note(suffix));
+    } else if let Some(key) = &update {
         let manifest = write_manifest(
             &archive,
             &ManifestFor {
@@ -219,6 +270,87 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
         }
     }
     Ok(archive)
+}
+
+/// What `hearken release` says about the update manifest of a build of the
+/// other kind, `portable` or `installed`.
+fn other_kind_note(suffix: &str) -> String {
+    format!(
+        "No update manifest is written for this {suffix} build. Its copies update from the \
+         manifest of the game's usual build, and each update keeps a copy {suffix}, with its \
+         saves where they were. Publish this archive as an extra download, beside the usual \
+         build for this platform."
+    )
+}
+
+/// Whether every copy of `hearken-update` in a game's `cargo metadata`
+/// (with its dependencies) keeps a copy portable or installed when it
+/// updates: those that do say so in their package metadata.
+fn keeps_kind(meta: &serde_json::Value) -> bool {
+    let mut updaters = meta["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["name"] == "hearken-update")
+        .peekable();
+    updaters.peek().is_some()
+        && updaters.all(|p| p["metadata"]["hearken-update"]["keeps-kind"] == true)
+}
+
+/// Whether a release must have an updater that keeps a copy's kind, and if
+/// so the kind's suffix to name in the refusal. Every copy applies the next
+/// update with the updater this release ships, and copies of both kinds
+/// update from the usual manifest. So every update-enabled release, the
+/// usual kind included, must keep each copy's kind: one older updater in any
+/// later release would turn the other kind into the usual one and leave its
+/// saves behind.
+fn kind_check_for(update: bool, kind: Kind) -> Option<Option<&'static str>> {
+    update.then_some(kind.suffix)
+}
+
+/// Refuses an update-enabled release when the game's Hearken is too old to
+/// keep a copy's kind on update. `suffix` is `portable` or `installed` for a
+/// build of the other kind, and `None` for the game's usual kind.
+fn updater_keeps_kind(dir: &Path, suffix: Option<&str>) -> Result<(), String> {
+    let out = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--locked"])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("Could not run cargo: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "Could not read the game's dependencies: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("Could not read cargo metadata: {e}"))?;
+    kind_check(keeps_kind(&meta), suffix)
+}
+
+/// What `hearken release` says when the game's updater does (`keeps`) or
+/// does not keep a copy's kind, for a build of kind `suffix`.
+fn kind_check(keeps: bool, suffix: Option<&str>) -> Result<(), String> {
+    if keeps {
+        return Ok(());
+    }
+    let build = match suffix {
+        Some(suffix) => {
+            let article = if suffix.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                "an"
+            } else {
+                "a"
+            };
+            format!("{article} {suffix} build")
+        }
+        None => "a release with update = true".to_string(),
+    };
+    Err(format!(
+        "This game's Hearken is too old to keep a copy portable or installed when it \
+         updates, which {build} needs: with an older updater, a player's copy of the \
+         other kind could change kind on its next update and leave its saves behind. \
+         Update it with `cargo update -p hearken`."
+    ))
 }
 
 /// The update identity a release is built with. Empty, every variable is
@@ -596,9 +728,152 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        directml_notices, engine_reads_packs, key_env, read_notes, require_sdl2, rfc3339,
-        rules_file_name, vc_arch, write_manifest, ManifestFor, UpdateIdentity,
+        directml_notices, engine_reads_packs, keeps_kind, key_env, kind_check, kind_check_for,
+        other_kind_note, read_notes, release_kind, release_stem, require_sdl2, rfc3339,
+        rules_file_name, vc_arch, write_manifest, Kind, ManifestFor, UpdateIdentity,
     };
+
+    #[test]
+    fn a_release_is_the_games_kind_unless_asked_otherwise() {
+        let kind = |game, asked, mac| release_kind(game, asked, mac);
+        let plain = |portable| Kind {
+            portable,
+            suffix: None,
+        };
+        assert_eq!(kind(true, None, false), plain(true));
+        assert_eq!(kind(false, None, false), plain(false));
+        // Asking for what the game already is changes nothing, name included.
+        assert_eq!(kind(true, Some(true), false), plain(true));
+        assert_eq!(kind(false, Some(false), false), plain(false));
+        assert_eq!(
+            kind(false, Some(true), false),
+            Kind {
+                portable: true,
+                suffix: Some("portable")
+            }
+        );
+        assert_eq!(
+            kind(true, Some(false), false),
+            Kind {
+                portable: false,
+                suffix: Some("installed")
+            }
+        );
+        // A Mac app is the same build either way, so the name stays.
+        assert_eq!(kind(false, Some(true), true).suffix, None);
+        assert_eq!(kind(true, Some(false), true).suffix, None);
+    }
+
+    #[test]
+    fn the_other_kind_needs_an_updater_that_keeps_kinds() {
+        let updater = |keeps: serde_json::Value| serde_json::json!({ "name": "hearken-update", "metadata": keeps });
+        let game = serde_json::json!({ "name": "my-game", "metadata": null });
+        let keeps = serde_json::json!({ "hearken-update": { "keeps-kind": true } });
+        let meta = |packages: Vec<serde_json::Value>| serde_json::json!({ "packages": packages });
+        assert!(keeps_kind(&meta(vec![
+            game.clone(),
+            updater(keeps.clone())
+        ])));
+        // One that predates it says nothing, and says it in no other way.
+        assert!(!keeps_kind(&meta(vec![
+            game.clone(),
+            updater(serde_json::Value::Null)
+        ])));
+        assert!(!keeps_kind(&meta(vec![
+            game.clone(),
+            updater(serde_json::json!({ "hearken-update": { "keeps-kind": "yes" } }))
+        ])));
+        // Two copies in one game must both keep it, and a game with none
+        // cannot update at all.
+        assert!(!keeps_kind(&meta(vec![
+            updater(keeps.clone()),
+            updater(serde_json::Value::Null)
+        ])));
+        assert!(!keeps_kind(&meta(vec![game])));
+        assert!(!keeps_kind(&serde_json::json!({})));
+    }
+
+    /// Every update-enabled release is checked, the usual kind too: a later
+    /// usual build with an older updater would turn copies of the other kind
+    /// into the usual one on the update after it.
+    #[test]
+    fn every_update_enabled_release_needs_an_updater_that_keeps_kinds() {
+        for suffix in [None, Some("portable"), Some("installed")] {
+            assert!(kind_check(true, suffix).is_ok());
+            let err = kind_check(false, suffix).unwrap_err();
+            assert!(err.contains("cargo update -p hearken"), "{err}");
+            assert!(err.contains("saves"), "{err}");
+            // Building without a flag is no way out any more.
+            assert!(!err.contains("--portable"), "{err}");
+            assert!(!err.contains('\u{2014}'), "{err}");
+        }
+        assert!(kind_check(false, None)
+            .unwrap_err()
+            .contains("a release with update = true needs"));
+        assert!(kind_check(false, Some("installed"))
+            .unwrap_err()
+            .contains("an installed build needs"));
+        assert!(kind_check(false, Some("portable"))
+            .unwrap_err()
+            .contains("a portable build needs"));
+    }
+
+    /// The check runs for every release with an update key, whatever its
+    /// kind, and for none without one.
+    #[test]
+    fn the_kind_check_is_not_limited_to_the_other_kind() {
+        for (game, asked) in [
+            (true, None),
+            (false, None),
+            (true, Some(false)),
+            (false, Some(true)),
+        ] {
+            let kind = release_kind(game, asked, false);
+            assert_eq!(kind_check_for(true, kind), Some(kind.suffix));
+            assert_eq!(kind_check_for(false, kind), None);
+        }
+        // A Mac app has one kind, and is checked too.
+        let mac = release_kind(true, None, true);
+        assert_eq!(kind_check_for(true, mac), Some(None));
+    }
+
+    /// This workspace's own updater says it keeps kinds, as a game's
+    /// `cargo metadata` shows it.
+    #[test]
+    fn this_updater_says_it_keeps_kinds() {
+        // A Windows checkout may have CRLF line endings.
+        let manifest = include_str!("../../hearken-update/Cargo.toml").replace("\r\n", "\n");
+        assert!(manifest.contains("\n[package.metadata.hearken-update]\nkeeps-kind = true\n"));
+    }
+
+    #[test]
+    fn the_other_kinds_note_says_it_updates_from_the_usual_manifest() {
+        for suffix in ["portable", "installed"] {
+            let note = other_kind_note(suffix);
+            assert!(note.contains(&format!("keeps a copy {suffix}")), "{note}");
+            assert!(note.contains("usual build"), "{note}");
+            assert!(!note.contains("Take care") && !note.contains('\u{2014}'));
+        }
+    }
+
+    #[test]
+    fn the_other_kind_gets_its_own_archive_name() {
+        let usual = release_kind(false, None, false);
+        let other = release_kind(false, Some(true), false);
+        assert_eq!(
+            release_stem("my-game", "1.4.0", "windows-x64", usual),
+            "my-game-1.4.0-windows-x64"
+        );
+        assert_eq!(
+            release_stem("my-game", "1.4.0", "windows-x64", other),
+            "my-game-1.4.0-windows-x64-portable"
+        );
+        let installed = release_kind(true, Some(false), false);
+        assert_eq!(
+            release_stem("my-game", "1.4.0", "linux-x64", installed),
+            "my-game-1.4.0-linux-x64-installed"
+        );
+    }
 
     #[test]
     fn a_windows_release_without_sdl2_is_refused() {

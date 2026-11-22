@@ -449,6 +449,24 @@ events go through the main voice.
   same GitHub release. `hearken play --download` picks the one for the
   player's computer, and on an Arm Windows PC or Mac takes the x64 build
   when there is no Arm one.
+- `hearken release --portable` or `--no-portable` builds the other kind of
+  copy for that one release, whatever `portable` says in `Cargo.toml`, so one
+  game can ship both. Give at most one, once. When the flag makes the build
+  differ from the game's setting, the archive's name ends in `-portable` or
+  `-installed` (`my-game-1.4.0-windows-x64-portable.zip`), so the two never
+  overwrite each other in `dist/` and both can go to the same GitHub release.
+  The game's own kind keeps the plain name, and `hearken play --download`
+  takes it when both are there. The other kind gets no update manifest:
+  its copies update from the usual build's manifest, so publish it as an
+  extra download beside the usual build. An update keeps every copy the kind
+  it is, whichever kind of archive it installs: a portable copy's `portable.txt`
+  goes into an update that lacks one, and an installed copy gets none from
+  the update, so the saves stay where the copy reads them. With `update = true`, every release,
+  with the flag or without it, needs a Hearken that does this, and
+  `hearken release` says to run `cargo update -p hearken` when the game's is
+  older. On a Mac the flag
+  changes nothing, because the app always keeps its saves in Application
+  Support.
 - On a Mac, the zip holds an app (`My Game.app`), so players open the
   game from Finder with no Terminal window. The program goes in
   `Contents/MacOS`, the game's files and `sounds.pak` in
@@ -509,6 +527,8 @@ icon = "icon.png"                             # the Mac app's icon, a square PNG
 
 A portable release carries `portable.txt`, so the game keeps its settings,
 saves and log in a `saves` folder beside it instead of the user's folder.
+`hearken release --portable` or `--no-portable` overrides the setting for one
+build; see the `hearken release` entry above.
 
 A packed release ships the `sounds` folder as one file, `sounds.pak`, so a
 player who opens the zip cannot listen to the sounds or read their names,

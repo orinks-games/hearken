@@ -87,7 +87,9 @@ impl Paths {
 }
 
 /// The marker a portable copy carries beside its executable. `hearken
-/// release` adds it for a game that sets `portable = true`.
+/// release` adds it for a game that sets `portable = true`, and the updater
+/// keeps a copy with or without it as it was
+/// (`hearken_update::install::PORTABLE_MARKER`, the same name).
 pub const PORTABLE_MARKER: &str = "portable.txt";
 
 /// `exe_dir/saves` when `exe_dir` holds the portable marker.
@@ -132,6 +134,13 @@ fn witnesses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The updater keeps a copy's kind by this same file.
+    #[cfg(feature = "update")]
+    #[test]
+    fn the_updater_knows_the_marker() {
+        assert_eq!(PORTABLE_MARKER, hearken_update::install::PORTABLE_MARKER);
+    }
 
     #[test]
     fn a_portable_copy_saves_beside_itself() {

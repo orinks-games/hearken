@@ -149,6 +149,20 @@ writes its own manifest. `hearken release` writes, in `dist/`:
 - its signed manifest, `update-stable-windows-x64.json`, which signs the
   index's size and SHA-256 too.
 
+A release built with `hearken release --portable` or `--no-portable`, the
+other kind from the game's `portable` setting, gets no manifest of its own.
+Its copies update from the usual build's manifest, so publish it beside the
+usual build. One archive serves both kinds because they differ only in
+`portable.txt` (and the names of the archive and its top folder): an update
+keeps each copy the kind it is, whichever kind of archive it installs (see
+[Portable and installed copies](#portable-and-installed-copies)). With
+`update = true`, `hearken release` builds a release of either kind only for
+a game whose Hearken does this, and says to run `cargo update -p hearken`
+when it is older. The usual build is checked too: every copy applies its
+next update with the updater the last one shipped, so one later release
+with an older updater would turn copies of the other kind into the usual
+kind, and leave their saves behind, on the update after it.
+
 `--channel=beta` publishes on another channel, and `--notes=NOTES.md` puts
 release notes (Markdown) in the manifest.
 
@@ -318,7 +332,9 @@ player back to a version with a known flaw.
    and at most 20 times the archive's size (never less than 32 MB, never
    more than 32 GB), counted as they are written. `__MACOSX` and `._` files
    from macOS are skipped. The update must hold the running program under
-   the same name, or it is refused.
+   the same name, or it is refused. Its `portable.txt` is then made to match
+   the install's (see
+   [Portable and installed copies](#portable-and-installed-copies)).
 
    The folder gets a random name and is made new (never one that is
    already there), and on Linux and macOS only the player's own user can
@@ -368,8 +384,13 @@ player back to a version with a known flaw.
    - **A Mac app**: the whole app is swapped. The new app is first copied
      in beside the old one (`My Game.app.update-new`), so a copy that fails
      or is stopped leaves the old app as it was. Then the old app is moved
-     aside (`My Game.app.old`), the new one renamed into its place, and the
-     old one removed; if the rename fails, the old app is moved back. An
+     aside (`My Game.app.old`), the new one renamed into its place, the
+     player's own files in an app made portable by hand moved into it (see
+     [Portable and installed copies](#portable-and-installed-copies)), and
+     the old one removed; if the rename fails, the old app is moved back.
+     What goes wrong is written to `My Game.app.hearken-update.log` beside
+     the app, never inside it, and the next start copies that into the
+     game's log and deletes it. An
      app running from App Translocation (opened straight from a quarantined
      download) is never swapped: the player is told where the new one is
      saved instead.
@@ -378,7 +399,90 @@ player back to a version with a known flaw.
      never touched. `hearken release` does not make AppImages; a game that
      ships one is updated this way.
 
+## Portable and installed copies
+
+A copy with `portable.txt` beside its program keeps its settings, saves and
+log in a `saves` folder there; any other copy keeps them in the player's
+user folder. An update never changes which one a copy is. Once the update
+is unpacked, and before anything is swapped in, the marker in it is made to
+match the player's own install:
+
+- an installed copy gets no `portable.txt`, even when the archive has one;
+- a portable copy stays portable: when the archive has no `portable.txt`
+  of its own (or has something else under that name), the install's is
+  copied into the update, so an app swapped whole, or an update installed
+  by hand, is portable too.
+
+The answer comes from the install alone, never from the manifest, the
+archive or anything else downloaded, so a host or anyone between it and the
+player cannot move a player's saves by changing the kind of archive. A
+`saves` folder in an archive is never copied over a folder install's. A Mac
+app is never portable as `hearken release` makes it. One made portable by
+hand keeps `saves` beside its program inside the app (`Contents/MacOS`),
+along with anything else the game or the player put there, such as
+exported music or the file that vouches for sealed saves. The swap moves
+`saves`, and every other file there that the new app does not have, into
+the new app before the old one is removed. If any of them cannot be moved,
+the ones already moved go back, the old app is put back in its place
+exactly as it was, and the new one is removed; the next start says "The
+last update could not be installed, so this version was kept, and your
+saves are where they were." The next update tries again.
+
+An old app (`My Game.app.old`) that still holds such files, because the
+swap was stopped part-way or the old app could not be put back, is never
+removed. An update finds it, changes nothing and opens the game again, and
+every start tells the player where it is, until they have moved what they
+need out of it and deleted it.
+
+A `portable.txt` that is a link (on Linux or a Mac) is put into the update
+as the same link, so copying the update in never writes through it to a
+file outside the game.
+
+Manifests and their names are unchanged: every copy asks for
+`update-<channel>-<platform>.json`, which is always the game's usual kind.
+
 ## Accepted limits
+
+- **Older copies apply an update as it is.** The update a copy installs
+  is applied by the version it is running. A copy built with a Hearken
+  that does not yet keep a copy's kind applies the archive as it is: it
+  never removes `portable.txt`, but it adds one the archive has, so
+  an installed copy of a game whose usual kind is portable (one whose
+  player deleted `portable.txt`) turns portable on that update, and its
+  earlier saves stay in the user's folder. Every update it installs after
+  that keeps its kind. In the same way, a Mac app made portable by hand
+  that runs such a Hearken removes the old app, and with it everything
+  beside its program but `saves`, on its next update; a failed move of
+  `saves` then keeps `My Game.app.old`, which that version removes on the
+  update after. From the first update a newer Hearken installs, the rules
+  above hold, for as long as every later release keeps a newer Hearken.
+  `hearken release` refuses any release with `update = true`, of either
+  kind, for a game with such a Hearken.
+- **A release built some other way can still ship an older updater.** The
+  check above is in `hearken release`. A developer who builds a release
+  with an older Hearken command line tool, or archives and signs one by
+  hand, can still ship an updater that does not keep a copy's kind, for
+  example after pinning an old Hearken on a hotfix branch. Copies that
+  install that release change kind as described above on the update after
+  it. Only the developer, who holds the signing key, can do this, and
+  nothing on a player's machine can tell an older updater from a newer one
+  before it runs, so it is accepted.
+- **A portable Mac app keeps files a release dropped.** Everything beside
+  the program of an app made portable by hand that the new app lacks is
+  treated as the player's and moved into it, so a file the game shipped
+  in an earlier version and no longer ships stays there, as it does in a
+  folder install. Such an app no longer matches its signature anyway,
+  since the player added files to it. An installed app carries nothing
+  over but a stray `saves` folder.
+- **A linked `portable.txt` on Windows is copied over as a file.** Making
+  a link there takes the player's own choice (and, on most systems,
+  administrator rights or developer mode). The update's `portable.txt` is
+  copied over it, which may write the shipped note into the file it leads
+  to. The copy stays portable and its saves stay where they are. This is
+  read, not tested, on Windows.
+- **An AppImage is the kind its developer built.** It is swapped whole and
+  runs from a read-only mount, so nothing can be added to it or taken out.
+  `hearken release` makes none.
 
 - **Whoever has the secret key can publish updates.** Anything it signs,
   every player's copy will install. Keep it out of the repository,
