@@ -408,9 +408,10 @@ is unpacked, and before anything is swapped in, the marker in it is made to
 match the player's own install:
 
 - an installed copy gets no `portable.txt`, even when the archive has one;
-- a portable copy keeps its own: copied into the update when the archive
-  has none, so an app swapped whole, or an update installed by hand, is
-  portable too.
+- a portable copy stays portable: when the archive has no `portable.txt`
+  of its own (or has something else under that name), the install's is
+  copied into the update, so an app swapped whole, or an update installed
+  by hand, is portable too.
 
 The answer comes from the install alone, never from the manifest, the
 archive or anything else downloaded, so a host or anyone between it and the

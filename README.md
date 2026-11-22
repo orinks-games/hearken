@@ -459,9 +459,9 @@ events go through the main voice.
   takes it when both are there. The other kind gets no update manifest:
   its copies update from the usual build's manifest, so publish it as an
   extra download beside the usual build. An update keeps every copy the kind
-  it is, whichever kind of archive it installs: it adds `portable.txt` to a
-  portable copy that lacks it and leaves it out of an installed one, so the
-  saves stay where the copy reads them. With `update = true`, every release,
+  it is, whichever kind of archive it installs: a portable copy's `portable.txt`
+  goes into an update that lacks one, and an installed copy gets none from
+  the update, so the saves stay where the copy reads them. With `update = true`, every release,
   with the flag or without it, needs a Hearken that does this, and
   `hearken release` says to run `cargo update -p hearken` when the game's is
   older. On a Mac the flag
