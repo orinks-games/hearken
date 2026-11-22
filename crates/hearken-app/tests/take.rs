@@ -555,3 +555,60 @@ fn a_note_handed_over_ahead_is_kept_at_its_time_and_replayed_ahead_of_it() {
     }
     assert!((1.1..1.3).contains(&clock), "handed over at {clock}");
 }
+
+#[test]
+fn a_lent_take_waits_through_screens_between_rounds_and_records_the_whole_run() {
+    let mut h = game();
+    h.app.ctx.push(Probe::new("play"));
+    h.frame(0.0);
+    h.app.ctx.begin_take(&[Bus::MUSIC]);
+    let first = h.app.ctx.audio.play("music/round-1", Bus::MUSIC);
+    h.frame(1.0);
+    h.app.ctx.audio.stop(first, 0);
+    h.app.ctx.lend_take(&["between"]);
+    h.app.ctx.replace(Probe::new("between"));
+    h.frame(0.0);
+    assert_eq!(h.app.ctx.take_state(), TakeState::Held);
+    // A pause over the screen between rounds holds it too.
+    h.app.ctx.push(Probe::new("pause"));
+    h.frame(3.0);
+    h.app.ctx.pop();
+    h.frame(2.0);
+    assert_eq!(h.app.ctx.take_state(), TakeState::Held);
+    h.app.ctx.replace(Probe::new("play"));
+    h.frame(0.0);
+    assert_eq!(h.app.ctx.take_state(), TakeState::Recording);
+    let second = h.app.ctx.audio.play("music/round-2", Bus::MUSIC);
+    h.frame(0.5);
+    h.app.ctx.audio.stop(second, 0);
+    let take = h.app.ctx.end_take().expect("one take for the run");
+    assert_eq!(take.starts(), 2);
+    assert!((take.length_s - 1.5).abs() < 0.01, "{}", take.length_s);
+}
+
+#[test]
+fn a_lent_take_is_dropped_when_another_screen_takes_its_place() {
+    for leave in ["pop", "other"] {
+        let mut h = game();
+        h.app.ctx.push(Probe::new("play"));
+        h.frame(0.0);
+        h.app.ctx.begin_take(&[Bus::MUSIC]);
+        h.app.ctx.audio.play("music/bed", Bus::MUSIC);
+        h.frame(1.0);
+        h.app.ctx.lend_take(&["between"]);
+        h.app.ctx.replace(Probe::new("between"));
+        h.frame(0.0);
+        assert_eq!(h.app.ctx.take_state(), TakeState::Held);
+        if leave == "pop" {
+            h.app.ctx.pop();
+        } else {
+            h.app.ctx.replace(Probe::new("other"));
+        }
+        h.frame(0.0);
+        assert_eq!(h.app.ctx.take_state(), TakeState::Idle, "{leave}");
+        // Lending is spent with the take: a new owner starts plain.
+        h.app.ctx.replace(Probe::new("play"));
+        h.frame(0.0);
+        assert!(h.app.ctx.end_take().is_none(), "{leave}");
+    }
+}
