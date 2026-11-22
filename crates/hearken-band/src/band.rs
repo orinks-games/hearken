@@ -154,6 +154,9 @@ pub struct Band {
     last_clock: Option<f64>,
     /// A game asked to move on to the next section at the next bar line.
     move_on: bool,
+    /// The game's own speed on top of the song's tempo (a course that
+    /// quickens sector by sector).
+    speed: f32,
 }
 
 fn role_index(role: Role) -> usize {
@@ -180,6 +183,7 @@ impl Band {
             feel: Feel::default(),
             last_clock: None,
             move_on: false,
+            speed: 1.0,
         }
     }
 
@@ -217,7 +221,7 @@ impl Band {
         } else {
             1.0
         };
-        self.song.bpm * speed
+        self.song.bpm * speed * self.speed
     }
 
     /// The one place the state changes; a change is logged.
@@ -231,13 +235,20 @@ impl Band {
     /// Starts the song from its first bar at `feel`'s levels. Playing
     /// already, it starts over.
     pub fn start(&mut self, audio: &mut Audio, feel: Feel) {
+        self.start_at(audio, feel, 0);
+    }
+
+    /// Starts the song at the top of section `section` (counting round the
+    /// form for ever): a run that comes back after a break between its
+    /// sectors carries on where its song had got to.
+    pub fn start_at(&mut self, audio: &mut Audio, feel: Feel, section: usize) {
         self.silence(audio, 0);
-        log::info!(target: TARGET, "{} song {}: {}", self.song.style.name, self.song.seed, self.song.describe());
+        log::info!(target: TARGET, "{} song, section {section}: {}", self.song.style.name, self.song.describe());
         self.feel = feel;
         for role in Role::ALL {
             self.levels[role_index(role)] = layer_level(role, feel);
         }
-        self.section = self.song.section(0);
+        self.section = self.song.section(section);
         self.bar = 0;
         self.bars_played = 0;
         let now = audio.clock_s();
@@ -253,6 +264,33 @@ impl Band {
     /// new day.
     pub fn next_section(&mut self) {
         self.move_on = true;
+    }
+
+    /// Sets the game's own speed on top of the song's tempo, from the next
+    /// bar: `1.0` is the song's, `1.1` ten percent faster. Kept between a
+    /// half and twice.
+    pub fn set_speed(&mut self, speed: f32) {
+        if speed.is_finite() {
+            self.speed = speed.clamp(0.5, 2.0);
+        }
+    }
+
+    /// Jumps every layer straight to its level for `feel`, for a change
+    /// play makes all at once.
+    pub fn jump(&mut self, audio: &mut Audio, feel: Feel) {
+        self.feel = feel;
+        for role in Role::ALL {
+            self.levels[role_index(role)] = layer_level(role, feel);
+        }
+        for i in 0..self.live.len() {
+            let level = self.levels[role_index(self.live[i].role)];
+            let part_volume = self.part_volume(self.live[i].part);
+            let live = &mut self.live[i];
+            if live.held {
+                live.level = level;
+                audio.set_volume(live.sound, (live.vel * part_volume * level).clamp(0.0, 1.0));
+            }
+        }
     }
 
     /// Follows play: layers ease toward their levels for `feel`, notes due
