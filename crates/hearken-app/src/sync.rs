@@ -256,6 +256,9 @@ pub struct FileSync {
     /// When the next upload may go, and the next look at the account.
     next_upload: f64,
     next_check: f64,
+    /// `Online::reached` when last looked at: when it grows while offline,
+    /// the server answered something else, so it is worth looking again.
+    reached: u64,
     /// A first meeting with an account is being settled.
     meeting: bool,
     events: Vec<SyncEvent>,
@@ -276,6 +279,7 @@ impl FileSync {
             dirty: true,
             next_upload: 0.0,
             next_check: 0.0,
+            reached: 0,
             meeting: false,
             events: Vec::new(),
         }
@@ -384,11 +388,13 @@ impl FileSync {
             self.ticket = None;
             self.answered(vault, answer, now);
         }
+        let back = online.reached() != self.reached;
+        self.reached = online.reached();
         match self.state.clone() {
-            SyncState::Starting => self.send_head(online),
-            SyncState::Offline if now >= self.next_check => self.send_head(online),
+            SyncState::Starting => self.send_head(online, now),
+            SyncState::Offline if back || now >= self.next_check => self.send_head(online, now),
             SyncState::UpToDate | SyncState::LocalNewer if now >= self.next_check => {
-                self.send_head(online)
+                self.send_head(online, now)
             }
             SyncState::UpToDate if self.dirty && now >= self.next_upload => {
                 self.then = Then::UploadIfChanged;
@@ -605,14 +611,15 @@ impl FileSync {
         self.go(SyncState::Downloading);
     }
 
-    fn send_head(&mut self, online: &mut Online) {
+    fn send_head(&mut self, online: &mut Online, now: f64) {
         match online.save_head(&self.config.name) {
             Ok(ticket) => {
                 self.ticket = Some(ticket);
                 self.go(SyncState::Checking);
             }
+            // Other requests fill the queue: the next frame tries again.
             Err(OnlineError::Busy) => {}
-            Err(e) => self.failed(&e, 0.0),
+            Err(e) => self.failed(&e, now),
         }
     }
 
