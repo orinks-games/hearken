@@ -248,7 +248,7 @@ fn offered_codes_by<'a>(
 
 /// True when `text` reads as a catalog with at least one translated line.
 fn translates_any(code: &str, text: &str) -> bool {
-    Catalog::from_po(code, text).is_ok_and(|catalog| catalog.len() > 0)
+    Catalog::from_po(code, text).is_ok_and(|catalog| !catalog.is_empty())
 }
 
 /// [`translates_any`] for a built-in catalog, remembered by the text's
