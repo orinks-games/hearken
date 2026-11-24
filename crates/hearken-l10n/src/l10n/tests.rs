@@ -1185,3 +1185,34 @@ msgstr "Tightrope, {what}"
         .translate("Tightrope, learn to play: skipped.")
         .contains("::"));
 }
+
+#[test]
+fn a_template_does_not_cut_a_clause_the_catalog_has_whole() {
+    let catalog = Catalog::from_po(
+        "es",
+        "msgid \"far left\"\nmsgstr \"a la izquierda del todo\"\n\n\
+         msgid \"Thin ice\"\nmsgstr \"Hielo fino\"\n\n\
+         msgid \"far\"\nmsgstr \"lejos\"\n\n\
+         msgid \"{time} left.\"\nmsgstr \"Quedan {time}.\"\n\n\
+         msgid \"{title}, {left} left.\"\nmsgstr \"{title}, quedan {left}.\"\n",
+    )
+    .expect("parses");
+    let tr = Translator::new(catalog);
+    assert_eq!(
+        tr.translate("Thin ice, far left."),
+        "Hielo fino, a la izquierda del todo."
+    );
+    // A template that holds the clause in its own words still wins.
+    let catalog = Catalog::from_po(
+        "es",
+        "msgid \"far left\"\nmsgstr \"a la izquierda del todo\"\n\n\
+         msgid \"Thin ice\"\nmsgstr \"Hielo fino\"\n\n\
+         msgid \"{what}, far left.\"\nmsgstr \"{what}, en el extremo izquierdo.\"\n",
+    )
+    .expect("parses");
+    let tr = Translator::new(catalog);
+    assert_eq!(
+        tr.translate("Thin ice, far left."),
+        "Hielo fino, en el extremo izquierdo."
+    );
+}
