@@ -318,6 +318,9 @@ struct Hit {
     /// A hole took a clause (", "): a looser fit than one whose holes
     /// hold single values.
     loose: bool,
+    /// The lowercase hole values and literal pieces of the template: a
+    /// clause none of them holds whole was cut between a hole and words.
+    pieces: Vec<String>,
 }
 
 impl Hit {
@@ -327,6 +330,7 @@ impl Hit {
             out,
             kept: Vec::new(),
             loose: false,
+            pieces: Vec::new(),
         }
     }
 
@@ -808,6 +812,21 @@ impl Pass<'_, '_> {
             (Some(direct), _) => Some(direct),
             (None, stopped) => stopped,
         };
+        // A template loses to the clauses translated each when it cuts a
+        // clause the catalog has whole between a hole and its own words:
+        // "Thin ice, far left." is "Thin ice" and the catalog's "far left",
+        // not "{time} left." with "Thin ice, far" as the time.
+        if let Some(hit) = best.as_ref().filter(|hit| hit.kept.is_empty()) {
+            if self.cuts_a_whole_clause(core, &hit.pieces) {
+                let start = self.missed.len();
+                if let Some(out) = self.split_by(core, depth, true) {
+                    if self.missed.len() == start {
+                        return Some(wrap(out));
+                    }
+                }
+                self.missed.truncate(start);
+            }
+        }
         match best {
             Some(hit) if hit.kept.is_empty() => Some(wrap(hit.out)),
             // A match that keeps English pieces loses to splitting the
@@ -824,6 +843,31 @@ impl Pass<'_, '_> {
             }
             None => self.split_piece(core, depth, split).map(wrap),
         }
+    }
+
+    /// Whether a clause of `core` is a catalog entry whole that no hole
+    /// value or literal piece of the template holds whole.
+    fn cuts_a_whole_clause(&self, core: &str, pieces: &[String]) -> bool {
+        let clauses = split_clauses(core);
+        clauses.len() >= 2
+            && clauses.iter().any(|(clause, _)| {
+                let clause = clause.trim();
+                let bare = clause.trim_end_matches(['.', '!', '?']);
+                if bare.is_empty() || !has_words(bare) {
+                    return false;
+                }
+                let known = [clause.to_string(), bare.to_string(), format!("{bare}.")]
+                    .iter()
+                    .any(|form| {
+                        self.catalog.exact.contains_key(form.as_str())
+                            || self
+                                .catalog
+                                .exact
+                                .contains_key(capitalize_first_letter(form).as_str())
+                    });
+                let lower = bare.to_lowercase();
+                known && !pieces.iter().any(|piece| piece.contains(&lower))
+            })
     }
 
     /// A piece no exact entry or template has whole: its sentences,
@@ -1422,6 +1466,14 @@ impl Pass<'_, '_> {
             out,
             kept,
             loose: captures.values().any(|value| value.contains(", ")),
+            pieces: captures
+                .values()
+                .map(|value| value.to_lowercase())
+                .chain(template.segs.iter().filter_map(|seg| match seg {
+                    Seg::Lit(text) => Some(text.to_lowercase()),
+                    Seg::Hole(_) => None,
+                }))
+                .collect(),
         })
     }
 }
