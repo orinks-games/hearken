@@ -29,6 +29,8 @@ fn settings(token: &str) -> OnlineSettings {
         token: Some(Secret(token.into())),
         name: Some("Ada".into()),
         guest: false,
+        #[cfg(feature = "online")]
+        chat: Default::default(),
     }
 }
 

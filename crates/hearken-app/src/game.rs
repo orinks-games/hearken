@@ -102,6 +102,16 @@ pub trait Game: Sized + 'static {
         None
     }
 
+    /// Chat between the players in a room: the engine's keys (T says a
+    /// line, Shift+T reads the chat back) and whether it speaks incoming
+    /// lines under the player's chat setting. A game whose keys clash
+    /// moves them; one that speaks lines its own way, or has no chat, turns
+    /// parts off. `None` leaves chat to the game entirely.
+    #[cfg(feature = "online")]
+    fn chat() -> Option<crate::chat::ChatConfig> {
+        Some(crate::chat::ChatConfig::default())
+    }
+
     /// Where the game's updates are published, for a released copy to
     /// update itself: GitHub releases, a manifest URL on any HTTPS host, or
     /// a source of the game's own. `None` (the default) offers no updates.

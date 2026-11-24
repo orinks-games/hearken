@@ -116,9 +116,17 @@ function isSeed(seed) {
  * @param {object} [options.saves]  Synced files: `{ store, files, guests?,
  *   onSave? }` (see `saveRoutes` in saves.js). Without it the saves routes
  *   answer 404.
- * @param {({ text, player, room }) => Promise<boolean | string | undefined>} [options.screen]
+ * @param {({ text, tag, player, room }) => Promise<boolean | string | { code, message } | undefined>} [options.screen]
  *   Looks at each chat line before it is stored: `false` or a string (a
- *   line for the player) refuses it.
+ *   line for the player) refuses it as `screened`; `{ code, message }`
+ *   refuses it with the game's own code (`muted`, say).
+ * @param {({ reporter, about, room, lines, note }) => Promise<void>} [options.report]
+ *   Takes a player's report of another: who, where, and the reported
+ *   player's last lines in that room. Without it reports are only logged.
+ * @param {string} [options.handleKey]  A secret mixed into every player's
+ *   handle, so a handle cannot be worked out from an account id seen
+ *   elsewhere. Set it once and keep it: changing it changes every handle,
+ *   and mutes and blocks are kept by handle.
  * @param {object} [options.limits]
  */
 export function createService(options) {
@@ -141,6 +149,8 @@ export function createService(options) {
     rooms: roomStore = null,
     saves = null,
     screen,
+    report,
+    handleKey = "",
     now = () => Date.now(),
   } = options;
   const limits = {
@@ -158,11 +168,13 @@ export function createService(options) {
     if (!KIND_PATTERN.test(kind)) throw new Error(`"${kind}" cannot name a kind of run`);
     const handler = handlers[kind];
     if (handler.seats) {
+      if (kind === "rooms") throw new Error(`"rooms" cannot name a kind: it is the rooms route`);
+      // A channel: seats and chat, nothing to play.
+      if (handler.rules === undefined) continue;
       // A kind played in rooms: the server starts it and takes the outcome.
       if (typeof handler.rules !== "string" || typeof handler.start !== "function" || typeof handler.accept !== "function") {
         throw new Error(`the room handler for "${kind}" needs rules, start() and accept()`);
       }
-      if (kind === "rooms") throw new Error(`"rooms" cannot name a kind: it is the rooms route`);
       continue;
     }
     if (kind === "saves") throw new Error(`"saves" cannot name a kind: it is the saves route`);
@@ -172,7 +184,7 @@ export function createService(options) {
   }
   const base = basePath.replace(/\/+$/, "");
   const rooms = roomStore
-    ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, limits: options.limits })
+    ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, report, handleKey, limits: options.limits })
     : null;
   const savesRoute = saves
     ? saveRoutes({ saves, accounts, limiter, bearer, readBody, json, error, log, now, limits: options.limits })

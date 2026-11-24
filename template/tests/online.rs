@@ -134,6 +134,33 @@ fn two_copies_play_a_match_by_invite_code() {
         hear(waiter, " took ");
     }
     turn(&mut ada, &mut bo, Key::Num3);
+
+    // A line of chat between moves: T, the line, Enter. Bo hears it as
+    // "Ada: ..." and Shift+T reads it back.
+    ada.clear();
+    bo.clear();
+    ada.press(Key::T);
+    assert_eq!(ada.app.top_name(), "text_entry");
+    for c in "good luck".chars() {
+        ada.send(hearken::InputEvent::typed(c));
+    }
+    ada.press(Key::Return);
+    assert_eq!(ada.app.top_name(), "pebbles_match");
+    let line = format!(
+        "{}: good luck",
+        ada.app.ctx.online.player_name().unwrap_or_default()
+    );
+    hear(&mut bo, &line);
+    assert!(
+        !ada.spoken().iter().any(|l| l.contains(&line)),
+        "own line not read back: {:?}",
+        ada.spoken()
+    );
+    bo.clear();
+    bo.send(hearken::InputEvent::key_mods(Key::T, hearken::Mods::SHIFT));
+    bo.frame(0.0);
+    assert_eq!(bo.spoken().last(), Some(&line));
+
     turn(&mut bo, &mut ada, Key::Num3);
     turn(&mut ada, &mut bo, Key::Num3);
     turn(&mut bo, &mut ada, Key::Num1);

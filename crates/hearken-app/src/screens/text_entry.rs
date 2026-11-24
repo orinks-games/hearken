@@ -173,6 +173,10 @@ impl<G: Game> State<G> for TextEntryScreen<G> {
         "text_entry"
     }
 
+    fn takes_text(&self) -> bool {
+        true
+    }
+
     fn enter(&mut self, ctx: &mut Ctx<G>) {
         let field = match (self.label.is_empty(), self.chars.is_empty()) {
             (true, true) => String::new(),
