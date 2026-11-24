@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hearken_l10n::{
-    self as l10n, discover_languages, load_translator, offered_codes, override_folders,
+    self as l10n, discover_languages, load_translator, offered_codes_built_in, override_folders,
     system_locale, Translator, AUTO, ENGLISH, LANG_ENV_SUFFIX, MISSES_ENV_SUFFIX,
 };
 
@@ -32,7 +32,7 @@ pub fn lang_folders(data_dir: &Path) -> Vec<PathBuf> {
 /// then.
 pub fn has_catalogs<G: Game>(data_dir: &Path) -> bool {
     let folders = lang_folders(data_dir);
-    offered_codes(&folders, G::translation_catalogs())
+    offered_codes_built_in(&folders, G::translation_catalogs())
         .into_iter()
         .any(|code| code != ENGLISH)
 }
@@ -50,6 +50,9 @@ pub fn load_for_game<G: Game>(setting: &str, data_dir: &Path) -> Arc<Translator>
     let folders = lang_folders(data_dir);
     let built_in = G::translation_catalogs();
     discover_languages(&folders, built_in);
+    // Settings asks which catalogs translate anything; answer that while
+    // the player is still on the title, not when they press Enter on it.
+    l10n::warm_built_in(built_in);
     let wanted = std::env::var(format!("{}{LANG_ENV_SUFFIX}", G::ENV_PREFIX))
         .ok()
         .filter(|value| !value.is_empty())
@@ -66,7 +69,7 @@ pub fn load_for_game<G: Game>(setting: &str, data_dir: &Path) -> Arc<Translator>
 pub fn offered_settings<G: Game>(data_dir: &Path) -> Vec<String> {
     let folders = lang_folders(data_dir);
     let mut options = vec![AUTO.to_string()];
-    for code in offered_codes(&folders, G::translation_catalogs()) {
+    for code in offered_codes_built_in(&folders, G::translation_catalogs()) {
         options.push(code.to_string());
     }
     options

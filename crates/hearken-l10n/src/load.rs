@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::l10n::{self, po, Catalog, Translator, ENGLISH};
 
@@ -187,21 +187,87 @@ pub fn discover_languages(folders: &[PathBuf], built_in: &[(&str, &str)]) {
 /// Language codes a Settings row should offer: English, then every discovered
 /// language whose catalog translates at least one line.
 pub fn offered_codes(folders: &[PathBuf], built_in: &[(&str, &str)]) -> Vec<&'static str> {
+    offered_codes_by(folders, built_in, |code, text| translates_any(code, &text))
+}
+
+/// [`offered_codes`] for catalogs built into the game. Whether a built-in
+/// catalog translates anything is worked out once per run and remembered,
+/// because reading every catalog takes about a second and the Settings
+/// screen asks each time it opens. A drop-in file in `folders` is still read
+/// every time, so a translator's edits show without a restart.
+pub fn offered_codes_built_in(
+    folders: &[PathBuf],
+    built_in: &'static [(&'static str, &'static str)],
+) -> Vec<&'static str> {
+    offered_codes_by(folders, built_in, |code, text| match text {
+        Cow::Borrowed(text) => built_in_translates(code, text),
+        Cow::Owned(text) => translates_any(code, &text),
+    })
+}
+
+/// Work out in the background which built-in catalogs translate anything,
+/// so the first [`offered_codes_built_in`] (the Settings screen) has the
+/// answer ready instead of reading every catalog while the player waits.
+pub fn warm_built_in(built_in: &'static [(&'static str, &'static str)]) {
+    if built_in.iter().all(|(code, _)| *code == ENGLISH) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("hearken-l10n-warm".into())
+        .spawn(move || {
+            for (code, text) in built_in {
+                if *code != ENGLISH {
+                    built_in_translates(code, text);
+                }
+            }
+        });
+    if let Err(err) = spawned {
+        log::warn!("Could not check the translations ahead of time: {err}");
+    }
+}
+
+fn offered_codes_by<'a>(
+    folders: &[PathBuf],
+    built_in: &[(&str, &'a str)],
+    translates: impl Fn(&str, Cow<'a, str>) -> bool,
+) -> Vec<&'static str> {
     discover_languages(folders, built_in);
     let mut codes = vec![ENGLISH];
     for lang in l10n::languages() {
         if lang.code == ENGLISH {
             continue;
         }
-        let text = catalog_text(folders, lang.code, built_in);
-        let count = text
-            .and_then(|text| Catalog::from_po(lang.code, &text).ok())
-            .map_or(0, |catalog| catalog.len());
-        if count > 0 {
+        if catalog_text(folders, lang.code, built_in)
+            .is_some_and(|text| translates(lang.code, text))
+        {
             codes.push(lang.code);
         }
     }
     codes
+}
+
+/// True when `text` reads as a catalog with at least one translated line.
+fn translates_any(code: &str, text: &str) -> bool {
+    Catalog::from_po(code, text).is_ok_and(|catalog| !catalog.is_empty())
+}
+
+/// [`translates_any`] for a built-in catalog, remembered by the text's
+/// address: a `'static` catalog never moves or changes.
+fn built_in_translates(code: &str, text: &'static str) -> bool {
+    type Key = (usize, usize);
+    static KNOWN: Mutex<Vec<(Key, bool)>> = Mutex::new(Vec::new());
+    let key = (text.as_ptr() as usize, text.len());
+    let known = |list: &Vec<(Key, bool)>| list.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+    if let Some(answer) = KNOWN.lock().ok().and_then(|list| known(&list)) {
+        return answer;
+    }
+    let answer = translates_any(code, text);
+    if let Ok(mut list) = KNOWN.lock() {
+        if known(&list).is_none() {
+            list.push((key, answer));
+        }
+    }
+    answer
 }
 
 /// Shared translator handle used by Hearken's `Ctx`.
@@ -231,6 +297,34 @@ mod tests {
         write_catalog(&game.path().join("lang"), "es", "Desde el juego.");
         let text = catalog_text(&folders, "es", &[]).expect("catalog");
         assert!(text.contains("Desde el juego."), "{text}");
+    }
+
+    #[test]
+    fn built_in_offers_stay_right_when_remembered() {
+        static BUILT_IN: &[(&str, &str)] = &[
+            (
+                "es",
+                "msgid \"\"\nmsgstr \"\"\n\nmsgid \"New screen.\"\nmsgstr \"Pantalla nueva.\"\n",
+            ),
+            (
+                "fr",
+                "msgid \"\"\nmsgstr \"\"\n\nmsgid \"New screen.\"\nmsgstr \"\"\n",
+            ),
+        ];
+        warm_built_in(BUILT_IN);
+        let first = offered_codes_built_in(&[], BUILT_IN);
+        assert!(first.contains(&"es"), "{first:?}");
+        assert!(
+            !first.contains(&"fr"),
+            "an empty catalog is not offered: {first:?}"
+        );
+        assert_eq!(offered_codes_built_in(&[], BUILT_IN), first);
+        assert_eq!(offered_codes(&[], BUILT_IN), first);
+        // A drop-in file is read fresh, so a translator's new line shows.
+        let game = tempfile::tempdir().expect("game");
+        let folders = override_folders(Some(game.path()), None);
+        write_catalog(&game.path().join("lang"), "fr", "Nouvel écran.");
+        assert!(offered_codes_built_in(&folders, BUILT_IN).contains(&"fr"));
     }
 
     #[test]
