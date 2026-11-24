@@ -368,6 +368,26 @@ fn offline_waits_and_tries_again() {
 }
 
 #[test]
+fn any_answer_from_the_server_ends_the_wait() {
+    let (server, key) = setup();
+    let mut one = computer(&server, &key, Some(ONE));
+    server.set_offline(true);
+    one.play(40, "");
+    assert_eq!(one.settle(), "offline");
+    server.set_offline(false);
+    // Something else the game sends gets an answer, well before the retry.
+    let ticket = one.online.save_head("other").unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while one.online.result(ticket).is_none() && Instant::now() < until {
+        one.online.update();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    one.later(1.0);
+    assert_eq!(one.settle(), "up-to-date");
+    assert_eq!(server.kept("ada", "records").len(), 1);
+}
+
+#[test]
 fn a_copy_from_a_newer_version_is_left_alone() {
     let (server, key) = setup();
     let mut one = computer(&server, &key, Some(ONE));

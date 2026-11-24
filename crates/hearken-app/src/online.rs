@@ -412,6 +412,9 @@ pub struct Online {
     /// Counts tokens, so a late "signed out" for an old token cannot
     /// disconnect the account the player has connected since.
     token_gen: u64,
+    /// Answers the server gave, of any kind: it grows whenever the server
+    /// is reachable, so a caller waiting out an outage can look again.
+    reached: u64,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     next: u64,
@@ -448,6 +451,7 @@ impl Online {
             name: saved.name.clone(),
             guest: saved.guest,
             token_gen: 0,
+            reached: 0,
             tx,
             rx,
             next: 1,
@@ -670,6 +674,12 @@ impl Online {
         self.token_gen
     }
 
+    /// How many answers the server has given since the game started: when
+    /// it grows, the server is reachable again.
+    pub fn reached(&self) -> u64 {
+        self.reached
+    }
+
     fn send(&mut self, url: String, token: Secret, body: Body, answer: Answer) -> Ticket {
         let ticket = Ticket(self.next);
         self.next += 1;
@@ -881,6 +891,9 @@ impl Online {
             match msg {
                 Msg::Done(ticket, generation, answer) => {
                     self.in_flight.remove(&ticket);
+                    if answer != Err(OnlineError::Offline) {
+                        self.reached += 1;
+                    }
                     if answer == Err(OnlineError::SignedOut) && generation == self.token_gen {
                         self.forget();
                     }
