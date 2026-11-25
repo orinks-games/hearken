@@ -780,7 +780,10 @@ fn the_pulse_goes_once_a_minute_and_tells_what_changed() {
     let notices = rooms.take_lobby_notices();
     assert_eq!(
         notices,
-        vec![hearken_rooms::LobbyNotice::Arrived { waiting: 0, here: 1 }]
+        vec![hearken_rooms::LobbyNotice::Arrived {
+            waiting: 0,
+            here: 1
+        }]
     );
     assert_eq!(rooms.lobby().unwrap().here[0].line(), "Bo");
 
@@ -796,7 +799,9 @@ fn the_pulse_goes_once_a_minute_and_tells_what_changed() {
     settle(&mut rooms, t0 + Duration::from_secs(61));
     assert_eq!(script.paths().len(), 2);
     let notices = rooms.take_lobby_notices();
-    assert!(matches!(&notices[..], [hearken_rooms::LobbyNotice::Invited(i)] if i.from.name == "Bo"));
+    assert!(
+        matches!(&notices[..], [hearken_rooms::LobbyNotice::Invited(i)] if i.from.name == "Bo")
+    );
     assert_eq!(rooms.lobby().unwrap().waiting(), 1);
 
     // Its notice given: the next pulse says heard, and comes sooner while
@@ -807,7 +812,13 @@ fn the_pulse_goes_once_a_minute_and_tells_what_changed() {
     settle(&mut rooms, t0 + Duration::from_secs(70));
     let sent = script.bodies();
     assert_eq!(sent.len(), 3);
-    assert_eq!(sent.last().unwrap()["heard"], json!(["0123456789abcdef01234567"]));
+    assert_eq!(
+        sent.last().unwrap()["heard"],
+        json!(["0123456789abcdef01234567"])
+    );
     assert!(rooms.take_lobby_notices().is_empty());
-    assert!(rooms.describe().iter().any(|l| l.starts_with("lobby: playing larkfield")));
+    assert!(rooms
+        .describe()
+        .iter()
+        .any(|l| l.starts_with("lobby: playing larkfield")));
 }

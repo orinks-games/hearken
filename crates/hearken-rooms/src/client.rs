@@ -608,7 +608,11 @@ impl Rooms {
         }
         if let Ok(config) = self.ready(None) {
             let url = config.endpoint("rooms/pulse");
-            self.send(Request::Pulse, Method::Post(json!({ "state": "away" })), url);
+            self.send(
+                Request::Pulse,
+                Method::Post(json!({ "state": "away" })),
+                url,
+            );
             self.pulse.lobby = None;
         }
     }
@@ -706,7 +710,13 @@ impl Rooms {
         self.pulse.next = Some(now + pace);
     }
 
-    fn finish_pulse(&mut self, ticket: Ticket, answer: Result<Value, RoomsError>, now: Instant, notices: &mut Vec<Notice>) {
+    fn finish_pulse(
+        &mut self,
+        ticket: Ticket,
+        answer: Result<Value, RoomsError>,
+        now: Instant,
+        notices: &mut Vec<Notice>,
+    ) {
         if self.pulse.ticket != Some(ticket) {
             // A leaving pulse, or one from before the player changed.
             return;
@@ -1175,7 +1185,11 @@ impl Rooms {
                     l.waiting(),
                     l.open.len()
                 ),
-                None => format!("lobby: {} {}, no pulse answered yet", w.presence.name(), w.game.as_deref().unwrap_or("-")),
+                None => format!(
+                    "lobby: {} {}, no pulse answered yet",
+                    w.presence.name(),
+                    w.game.as_deref().unwrap_or("-")
+                ),
             });
         }
         for room in self.rooms.values() {

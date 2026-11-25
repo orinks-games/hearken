@@ -64,7 +64,11 @@ pub enum Visibility {
 }
 
 impl Visibility {
-    pub const ALL: [Visibility; 3] = [Visibility::Everyone, Visibility::Friends, Visibility::Nobody];
+    pub const ALL: [Visibility; 3] = [
+        Visibility::Everyone,
+        Visibility::Friends,
+        Visibility::Nobody,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -525,9 +529,13 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(p.line(), "Marlow, in Larkfield");
-        let away: Player = serde_json::from_value(json!({ "handle": "h", "name": "Marlow", "state": "away" })).unwrap();
+        let away: Player =
+            serde_json::from_value(json!({ "handle": "h", "name": "Marlow", "state": "away" }))
+                .unwrap();
         assert_eq!(away.line(), "Marlow, away");
-        let table: Player = serde_json::from_value(json!({ "handle": "h", "name": "Bo", "state": "table" })).unwrap();
+        let table: Player =
+            serde_json::from_value(json!({ "handle": "h", "name": "Bo", "state": "table" }))
+                .unwrap();
         assert_eq!(table.state, Presence::AtTable);
         assert_eq!(Visibility::Everyone.stepped(-1), Visibility::Nobody);
     }
@@ -540,7 +548,13 @@ mod tests {
             "rooms": [room("0123456789abcdef01234567", &["Ada", "Bo"], Some(0), "playing")],
         }));
         let got = changes(None, &new);
-        assert_eq!(got[0], LobbyNotice::Arrived { waiting: 3, here: 1 });
+        assert_eq!(
+            got[0],
+            LobbyNotice::Arrived {
+                waiting: 3,
+                here: 1
+            }
+        );
         assert_eq!(got.len(), 2);
         assert!(matches!(&got[1], LobbyNotice::Invited(i) if i.id == "i1"));
     }
@@ -562,7 +576,14 @@ mod tests {
         let names: Vec<&str> = changes(Some(&old), &new).iter().map(|n| n.name()).collect();
         assert_eq!(
             names,
-            ["invited", "answered", "sat-down", "your-move", "friend-here", "open-table"]
+            [
+                "invited",
+                "answered",
+                "sat-down",
+                "your-move",
+                "friend-here",
+                "open-table"
+            ]
         );
         // Nothing new: nothing said.
         let same = lobby(json!({

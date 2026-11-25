@@ -29,11 +29,11 @@ pub use client::{
     Answer, Connection, Notice, Room, Rooms, RoomsConfig, Ticket, HISTORY_LINES, MAX_IN_FLIGHT,
     POLL_ACTIVE, POLL_QUIET, PULSE_EVERY, PULSE_FAST, QUIET_AFTER,
 };
+pub use error::RoomsError;
 pub use lobby::{
     Invite, InviteAnswer, InviteState, Lobby, LobbyNotice, OpenTable, Player, Presence, Side,
     Visibility, Whereabouts,
 };
-pub use error::RoomsError;
 pub use matches::{Applied, Match, MatchError, Sync};
 pub use protocol::{
     valid_handle, Event, EventKind, Member, Mute, MuteMode, Phase, RoomId, RoomInfo, Seats,

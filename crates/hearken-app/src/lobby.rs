@@ -111,7 +111,10 @@ impl NoticeLevel {
     }
 
     pub fn stepped(self, delta: i32) -> NoticeLevel {
-        let at = NoticeLevel::ALL.iter().position(|l| *l == self).unwrap_or(0) as i32;
+        let at = NoticeLevel::ALL
+            .iter()
+            .position(|l| *l == self)
+            .unwrap_or(0) as i32;
         let n = NoticeLevel::ALL.len() as i32;
         NoticeLevel::ALL[((at + delta).rem_euclid(n)) as usize]
     }
@@ -217,7 +220,10 @@ pub fn notice_line(notice: &LobbyNotice, label: impl Fn(&str) -> String) -> Stri
             let mut parts = Vec::new();
             if *waiting > 0 {
                 let verb = if *waiting == 1 { "waits" } else { "wait" };
-                parts.push(format!("{} {verb} on you.", plural(*waiting, "game", "games")));
+                parts.push(format!(
+                    "{} {verb} on you.",
+                    plural(*waiting, "game", "games")
+                ));
             }
             if *here > 0 {
                 parts.push(format!("{} here.", plural(*here, "player", "players")));
@@ -232,7 +238,11 @@ pub fn notice_line(notice: &LobbyNotice, label: impl Fn(&str) -> String) -> Stri
         }
         LobbyNotice::YourMove { kind, .. } => format!("Your move. {}.", label(kind)),
         LobbyNotice::Invited(invite) => {
-            format!("{} invites you. {}.", clean(&invite.from.name), label(&invite.kind))
+            format!(
+                "{} invites you. {}.",
+                clean(&invite.from.name),
+                label(&invite.kind)
+            )
         }
         LobbyNotice::Answered(invite) => {
             let name = clean(&invite.to.name);
@@ -282,11 +292,21 @@ impl<G: Game> Ctx<G> {
             return false;
         }
         if !from.allows(to) {
-            log::warn!("[notice] {id} {}: no change from {} to {}", n.notice.name(), from.name(), to.name());
+            log::warn!(
+                "[notice] {id} {}: no change from {} to {}",
+                n.notice.name(),
+                from.name(),
+                to.name()
+            );
             return false;
         }
         n.state = to;
-        let line = format!("[notice] {id} {}: {} -> {}", n.notice.name(), from.name(), to.name());
+        let line = format!(
+            "[notice] {id} {}: {} -> {}",
+            n.notice.name(),
+            from.name(),
+            to.name()
+        );
         log::info!("{line}");
         self.note_change(line);
         true
@@ -433,8 +453,10 @@ impl<G: Game> Ctx<G> {
             .going
             .as_ref()
             .is_some_and(|(id, at)| id == room && at.elapsed() < GOING_FOR);
-        matches!(notice, LobbyNotice::YourMove { .. } | LobbyNotice::SatDown { .. })
-            && (going || self.rooms.room(room).is_some_and(|r| r.is_watched()))
+        matches!(
+            notice,
+            LobbyNotice::YourMove { .. } | LobbyNotice::SatDown { .. }
+        ) && (going || self.rooms.room(room).is_some_and(|r| r.is_watched()))
     }
 
     fn take_notice(&mut self, notice: LobbyNotice, kinds: &[RoomKind<G>], level: NoticeLevel) {
@@ -569,7 +591,15 @@ impl<G: Game> Ctx<G> {
         self.lobby
             .notices
             .iter()
-            .map(|n| format!("notice {} {} {}: {}", n.id, n.notice.name(), n.state.name(), n.line))
+            .map(|n| {
+                format!(
+                    "notice {} {} {}: {}",
+                    n.id,
+                    n.notice.name(),
+                    n.state.name(),
+                    n.line
+                )
+            })
             .collect()
     }
 }
@@ -589,16 +619,43 @@ mod tests {
 
     #[test]
     fn lines_are_short_and_name_the_game() {
-        let label = |k: &str| if k == "pebbles" { "Pebbles".to_string() } else { k.to_string() };
+        let label = |k: &str| {
+            if k == "pebbles" {
+                "Pebbles".to_string()
+            } else {
+                k.to_string()
+            }
+        };
         assert_eq!(
-            notice_line(&LobbyNotice::Arrived { waiting: 2, here: 4 }, label),
+            notice_line(
+                &LobbyNotice::Arrived {
+                    waiting: 2,
+                    here: 4
+                },
+                label
+            ),
             "2 games wait on you. 4 players here."
         );
         assert_eq!(
-            notice_line(&LobbyNotice::Arrived { waiting: 1, here: 0 }, label),
+            notice_line(
+                &LobbyNotice::Arrived {
+                    waiting: 1,
+                    here: 0
+                },
+                label
+            ),
             "1 game waits on you."
         );
-        assert_eq!(notice_line(&LobbyNotice::Arrived { waiting: 0, here: 0 }, label), "");
+        assert_eq!(
+            notice_line(
+                &LobbyNotice::Arrived {
+                    waiting: 0,
+                    here: 0
+                },
+                label
+            ),
+            ""
+        );
         let invite = Invite {
             id: "x".into(),
             kind: "pebbles".into(),

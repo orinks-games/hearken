@@ -16,9 +16,7 @@
 //! when a new pulse comes. A request on its way is one explicit state
 //! (`Asking`), spoken when it is answered.
 
-use hearken_rooms::{
-    Answer, InviteAnswer, LobbyNotice, MuteMode, Player, RoomsError, Ticket,
-};
+use hearken_rooms::{Answer, InviteAnswer, LobbyNotice, MuteMode, Player, RoomsError, Ticket};
 
 use crate::ctx::Ctx;
 use crate::game::Game;
@@ -250,7 +248,9 @@ impl<G: Game> Menu for PlayOnlineScreen<G> {
         if kept > 0 {
             items.push(
                 MenuItem::new(
-                    Label::dynamic(|_: &Self, ctx: &Ctx<G>| count_label("Notices", Some(ctx.notices().count()))),
+                    Label::dynamic(|_: &Self, ctx: &Ctx<G>| {
+                        count_label("Notices", Some(ctx.notices().count()))
+                    }),
                     |_: &mut Self, ctx: &mut Ctx<G>| ctx.push(NoticesScreen::new()),
                 )
                 .help("What happened online since you looked: Enter opens one."),
@@ -470,13 +470,17 @@ impl<G: Game> Menu for LobbyPlayerScreen<G> {
                             return;
                         }
                         let name = s.player.name.clone();
-                        let sent = ctx.rooms.invite(&s.player.handle, &kind.kind, &kind.context);
+                        let sent = ctx
+                            .rooms
+                            .invite(&s.player.handle, &kind.kind, &kind.context);
                         if let Some(a) = send(ctx, sent, |t| Asking::Invite(t, name)) {
                             s.asking = a;
                         }
                     },
                 )
-                .help(format!("{name} hears the invite wherever they are. If they say yes, the game starts.")),
+                .help(format!(
+                    "{name} hears the invite wherever they are. If they say yes, the game starts."
+                )),
             );
         }
         let friend = ctx
@@ -485,7 +489,11 @@ impl<G: Game> Menu for LobbyPlayerScreen<G> {
             .is_some_and(|l| l.is_friend(&self.player.handle));
         items.push(
             MenuItem::new(
-                if friend { "Remove friend" } else { "Add friend" },
+                if friend {
+                    "Remove friend"
+                } else {
+                    "Add friend"
+                },
                 move |s: &mut Self, ctx: &mut Ctx<G>| {
                     if s.busy(ctx) {
                         return;
@@ -537,7 +545,10 @@ impl<G: Game> Menu for LobbyPlayerScreen<G> {
                     self.mutes = MutesRead::Read;
                     if let Ok(Answer::Mutes(mutes)) = answer {
                         let handle = &self.player.handle;
-                        let mode = mutes.iter().find(|m| &m.handle == handle).map_or(MuteMode::None, |m| m.mode);
+                        let mode = mutes
+                            .iter()
+                            .find(|m| &m.handle == handle)
+                            .map_or(MuteMode::None, |m| m.mode);
                         if mode != self.mode {
                             self.mode = mode;
                             self.refresh(ctx, true);
@@ -618,9 +629,12 @@ impl<G: Game> Menu for InvitesScreen<G> {
                 kind_label(&kinds, &invite.kind)
             );
             let invite = invite.clone();
-            items.push(MenuItem::new(line, move |_: &mut Self, ctx: &mut Ctx<G>| {
-                ctx.push(InviteScreen::new(invite.clone()));
-            }));
+            items.push(MenuItem::new(
+                line,
+                move |_: &mut Self, ctx: &mut Ctx<G>| {
+                    ctx.push(InviteScreen::new(invite.clone()));
+                },
+            ));
         }
         for invite in lobby.outgoing() {
             let line = format!(
@@ -629,9 +643,12 @@ impl<G: Game> Menu for InvitesScreen<G> {
                 kind_label(&kinds, &invite.kind)
             );
             let invite = invite.clone();
-            items.push(MenuItem::new(line, move |_: &mut Self, ctx: &mut Ctx<G>| {
-                ctx.push(InviteScreen::new(invite.clone()));
-            }));
+            items.push(MenuItem::new(
+                line,
+                move |_: &mut Self, ctx: &mut Ctx<G>| {
+                    ctx.push(InviteScreen::new(invite.clone()));
+                },
+            ));
         }
         if items.is_empty() {
             items.push(MenuItem::inert("No invites."));
@@ -661,9 +678,15 @@ impl<G: Game> InviteScreen<G> {
     pub fn new(invite: hearken_rooms::Invite) -> Self {
         InviteScreen {
             menu: MenuCore::new(if invite.mine {
-                format!("Invite to {}", hearken_rooms::clean_text(&invite.to.name, 64))
+                format!(
+                    "Invite to {}",
+                    hearken_rooms::clean_text(&invite.to.name, 64)
+                )
             } else {
-                format!("Invite from {}", hearken_rooms::clean_text(&invite.from.name, 64))
+                format!(
+                    "Invite from {}",
+                    hearken_rooms::clean_text(&invite.from.name, 64)
+                )
             }),
             invite,
             asking: Asking::Nothing,
@@ -700,9 +723,10 @@ impl<G: Game> Menu for InviteScreen<G> {
 
     fn build_items(&mut self, _ctx: &mut Ctx<G>) -> Vec<MenuItem<Self, G>> {
         if self.invite.mine {
-            return vec![MenuItem::new("Take back", |s: &mut Self, ctx: &mut Ctx<G>| {
-                s.answer(ctx, InviteAnswer::Withdraw)
-            })];
+            return vec![MenuItem::new(
+                "Take back",
+                |s: &mut Self, ctx: &mut Ctx<G>| s.answer(ctx, InviteAnswer::Withdraw),
+            )];
         }
         vec![
             MenuItem::new("Accept", |s: &mut Self, ctx: &mut Ctx<G>| {
@@ -831,7 +855,8 @@ impl<G: Game> NoticeScreen<G> {
         match to {
             Destination::Accept(id, kind) => {
                 let sent = ctx.rooms.answer_invite(&id, InviteAnswer::Accept);
-                if let Some(a) = send(ctx, sent, |t| Asking::Answer(t, InviteAnswer::Accept, kind)) {
+                if let Some(a) = send(ctx, sent, |t| Asking::Answer(t, InviteAnswer::Accept, kind))
+                {
                     self.asking = a;
                 }
             }
@@ -904,7 +929,9 @@ impl<G: Game> Menu for NoticeScreen<G> {
         };
         self.menu.title = notice.line.clone();
         self.to = Some(match &notice.notice {
-            LobbyNotice::Invited(invite) => Destination::Accept(invite.id.clone(), invite.kind.clone()),
+            LobbyNotice::Invited(invite) => {
+                Destination::Accept(invite.id.clone(), invite.kind.clone())
+            }
             LobbyNotice::SatDown { room, kind, .. } | LobbyNotice::YourMove { room, kind, .. } => {
                 Destination::Room(kind.clone(), room.clone())
             }
@@ -912,7 +939,9 @@ impl<G: Game> Menu for NoticeScreen<G> {
                 Some(room) => Destination::Room(invite.kind.clone(), room.clone()),
                 None => Destination::Lobby,
             },
-            LobbyNotice::OpenTable(table) => Destination::Join(table.code.clone(), table.kind.clone()),
+            LobbyNotice::OpenTable(table) => {
+                Destination::Join(table.code.clone(), table.kind.clone())
+            }
             LobbyNotice::FriendHere(player) => Destination::Player(player.clone()),
             LobbyNotice::Arrived { .. } => Destination::Lobby,
         });

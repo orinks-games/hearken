@@ -8,8 +8,6 @@ pub mod app;
 pub mod bindings;
 #[cfg(feature = "online")]
 pub mod chat;
-#[cfg(feature = "online")]
-pub mod lobby;
 pub mod clock;
 pub mod commentary;
 pub mod controller;
@@ -19,6 +17,8 @@ pub mod game;
 pub mod held_keys;
 pub mod input;
 pub mod language;
+#[cfg(feature = "online")]
+pub mod lobby;
 pub mod logging;
 pub mod menu;
 #[cfg(feature = "online")]
@@ -52,8 +52,6 @@ pub use app::App;
 pub use bindings::{Action, Chord, KeyBindings, NoAction, PadChord};
 #[cfg(feature = "online")]
 pub use chat::{ChatConfig, ChatLevel};
-#[cfg(feature = "online")]
-pub use lobby::{LobbyConfig, NoticeLevel, NoticeState};
 pub use clock::LocalTime;
 pub use commentary::{Commentary, Line};
 pub use controller::{ControllerManager, InputDevice};
@@ -85,6 +83,8 @@ pub use hearken_synth as synth;
 pub use hearken_update as update;
 pub use held_keys::HeldKeys;
 pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent, Key, Mods};
+#[cfg(feature = "online")]
+pub use lobby::{LobbyConfig, NoticeLevel, NoticeState};
 #[cfg(feature = "online")]
 pub use online::{Connect, Online, OnlineConfig, OnlineError, Plan, Ticket};
 pub use paths::Paths;
