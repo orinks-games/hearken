@@ -30,7 +30,7 @@ use project::Project;
 
 const USAGE: &str = "Usage: hearken new <name> [--template=menu|blank] [--title=TITLE]
        hearken play [game] [--download | --source]
-       hearken release [game] [--channel=NAME] [--notes=FILE]
+       hearken release [game] [--channel=NAME] [--notes=FILE] [--label=NAME]
        hearken seal-key [game] [--print]
        hearken update-key [game] [--print]
        hearken doctor
@@ -46,6 +46,9 @@ release    builds the zip players get, without the agent server, into dist/,
            and the rules module for verified runs when the game names one.
            A game with update = true also gets a signed update manifest
            for --channel (stable unless named), with --notes as its notes.
+           --label adds NAME to the file names, after the platform, so
+           copies of one version built for several channels can share a
+           GitHub release.
 seal-key   shows where a game's seal key is kept and its ID; --print shows
            the key itself, for a CI secret.
 update-key shows where a game's update key is kept and its public half;
@@ -181,15 +184,16 @@ fn play(game: Option<Game>, flags: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-/// `--channel=NAME` and `--notes=FILE`, each at most once; `None` for
+/// `--channel=NAME`, `--notes=FILE` and `--label=NAME`, each at most once; `None` for
 /// anything else.
 fn release_options(flags: &[&str]) -> Option<release::Options> {
     let mut options = release::Options::default();
-    let (mut channel, mut notes) = (None, None);
+    let (mut channel, mut notes, mut label) = (None, None, None);
     for flag in flags {
         let (slot, value) = match flag.split_once('=') {
             Some(("--channel", value)) => (&mut channel, value),
             Some(("--notes", value)) => (&mut notes, value),
+            Some(("--label", value)) => (&mut label, value),
             _ => return None,
         };
         if slot.is_some() || value.is_empty() {
@@ -201,6 +205,7 @@ fn release_options(flags: &[&str]) -> Option<release::Options> {
         options.channel = channel;
     }
     options.notes = notes.map(PathBuf::from);
+    options.label = label;
     Some(options)
 }
 
@@ -389,9 +394,12 @@ fn pick_asset(names: &[&str], os: &str, arch: &str) -> Option<usize> {
     names
         .iter()
         .enumerate()
-        .filter_map(|(i, n)| Some((rank(n)?, i)))
+        // At the same rank the shortest name wins: a release can hold
+        // labeled copies for other channels beside its own
+        // (`hearken release --label`), and the plain one is for everyone.
+        .filter_map(|(i, n)| Some((rank(n)?, n.len(), i)))
         .min()
-        .map(|(_, i)| i)
+        .map(|(_, _, i)| i)
 }
 
 /// The programs in an unpacked release, from the shallowest folder that
@@ -512,6 +520,17 @@ mod tests {
     }
 
     #[test]
+    fn picks_the_plain_copy_over_labeled_ones() {
+        // Listed in name order, so the labeled copies come first.
+        let names = &[
+            "wickets-1.9.0-windows-x64-for-alpha.zip",
+            "wickets-1.9.0-windows-x64-for-beta.zip",
+            "wickets-1.9.0-windows-x64.zip",
+        ];
+        assert_eq!(pick_asset(names, "windows", "x86_64"), Some(2));
+    }
+
+    #[test]
     fn picks_this_processor_before_another() {
         // Listed in name order, so arm64 comes first.
         let names = &[
@@ -578,6 +597,9 @@ mod tests {
         assert_eq!(release_options(&["--channel=a", "--channel=b"]), None);
         assert_eq!(release_options(&["--notes="]), None);
         assert_eq!(release_options(&["--print"]), None);
+        let labeled = release_options(&["--channel=alpha", "--label=for-alpha"]).unwrap();
+        assert_eq!(labeled.label.as_deref(), Some("for-alpha"));
+        assert_eq!(release_options(&["--label="]), None);
     }
 
     #[test]
