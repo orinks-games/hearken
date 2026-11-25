@@ -30,6 +30,10 @@ pub struct Options {
     pub channel: String,
     /// A Markdown file of release notes for the update manifest.
     pub notes: Option<PathBuf>,
+    /// Added to the package's file names, after the platform, so copies of
+    /// one version built for different channels can be published side by
+    /// side in one GitHub release: `my-game-1.2.0-windows-x64-for-beta.zip`.
+    pub label: Option<String>,
 }
 
 impl Default for Options {
@@ -37,6 +41,7 @@ impl Default for Options {
         Options {
             channel: hearken_update::DEFAULT_CHANNEL.to_string(),
             notes: None,
+            label: None,
         }
     }
 }
@@ -49,6 +54,13 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
             "The channel {:?} may hold only lowercase letters, digits and hyphens, like beta.",
             options.channel
         ));
+    }
+    if let Some(label) = &options.label {
+        if !hearken_update::manifest::is_channel(label) {
+            return Err(format!(
+                "The label {label:?} may hold only lowercase letters, digits and hyphens, like for-beta."
+            ));
+        }
     }
     let notes = match &options.notes {
         Some(path) => read_notes(path)?,
@@ -95,7 +107,12 @@ pub fn release(project: &Project, options: &Options) -> Result<PathBuf, String> 
     // The platform part of the name, the one `hearken play --download`
     // looks for and the update manifest names.
     let platform = hearken_update::platform::current();
-    let stem = format!("{}-{}-{platform}", project.package, project.version);
+    let stem = archive_stem(
+        &project.package,
+        &project.version,
+        &platform,
+        options.label.as_deref(),
+    );
     let dist = project.dir.join("dist");
     // An earlier release's module is not this one's.
     let stale = format!("{}-{}-rules-", project.package, project.version);
@@ -413,6 +430,16 @@ fn key_env<'a>(
 
 /// The rules module's name in `dist`: the game, its version, and the
 /// start of its ID, since each platform's release may build its own.
+/// The package's file name without its extension:
+/// `my-game-1.2.0-windows-x64`, or with a label
+/// `my-game-1.2.0-windows-x64-for-beta`.
+fn archive_stem(package: &str, version: &str, platform: &str, label: Option<&str>) -> String {
+    match label {
+        Some(label) => format!("{package}-{version}-{platform}-{label}"),
+        None => format!("{package}-{version}-{platform}"),
+    }
+}
+
 fn rules_file_name(package: &str, version: &str, id: &str) -> String {
     format!("{package}-{version}-rules-{}.wasm", &id[..id.len().min(12)])
 }
@@ -596,8 +623,8 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        directml_notices, engine_reads_packs, key_env, read_notes, require_sdl2, rfc3339,
-        rules_file_name, vc_arch, write_manifest, ManifestFor, UpdateIdentity,
+        archive_stem, directml_notices, engine_reads_packs, key_env, read_notes, require_sdl2,
+        rfc3339, rules_file_name, vc_arch, write_manifest, ManifestFor, UpdateIdentity,
     };
 
     #[test]
@@ -764,6 +791,22 @@ mod tests {
         assert!(engine_reads_packs(dir.path()).is_err());
         std::fs::write(&lock, "[[package]]\nname = \"hearken-pack\"\n").unwrap();
         assert!(engine_reads_packs(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn a_label_follows_the_platform() {
+        assert_eq!(
+            archive_stem("my-game", "1.2.0", "windows-x64", None),
+            "my-game-1.2.0-windows-x64"
+        );
+        assert_eq!(
+            archive_stem("my-game", "1.2.0", "windows-x64", Some("for-beta")),
+            "my-game-1.2.0-windows-x64-for-beta"
+        );
+        assert_eq!(
+            hearken_update::index::index_name("my-game-1.2.0-windows-x64-for-beta.zip").as_deref(),
+            Some("my-game-1.2.0-windows-x64-for-beta.index.json")
+        );
     }
 
     #[test]
