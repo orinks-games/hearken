@@ -142,6 +142,14 @@ fn players_line(info: &RoomInfo) -> String {
     }
 }
 
+/// The question before leaving a match: who wins it.
+fn leave_question(info: &RoomInfo) -> String {
+    match info.others().as_slice() {
+        [name] => format!("Leave the match? {name} wins it."),
+        _ => "Leave the match? The other players win it.".to_string(),
+    }
+}
+
 /// One line for a room in a list: whose game it is and where it stands.
 fn room_line<G: Game>(kind: &RoomKind<G>, info: &RoomInfo) -> String {
     let label = kind.label_of(&info.kind);
@@ -628,11 +636,14 @@ impl<G: Game> Menu for RoomScreen<G> {
             };
             items.push(
                 MenuItem::new(label, |s: &mut Self, ctx: &mut Ctx<G>| {
-                    let playing = s.info(ctx).is_some_and(|i| i.phase == Phase::Playing);
-                    if playing {
+                    let question = s
+                        .info(ctx)
+                        .filter(|i| i.phase == Phase::Playing)
+                        .map(leave_question);
+                    if let Some(question) = question {
                         let id = s.id.clone();
                         ctx.push(ConfirmScreen::<G>::new(
-                            "Leave the match? The other players win it.",
+                            question,
                             move |ctx| {
                                 // The answer goes unread: the seat is given
                                 // up either way, and the room is forgotten.
@@ -983,6 +994,32 @@ mod tests {
                     .with_rooms(),
             )
         }
+    }
+
+    fn playing_with(names: &[&str]) -> RoomInfo {
+        let members: Vec<_> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| json!({ "seat": i, "name": n }))
+            .collect();
+        serde_json::from_value(json!({
+            "id": "0123456789abcdef01234567", "kind": "demo", "code": "ABCDEF", "phase": "playing",
+            "seats": { "min": names.len(), "max": names.len() },
+            "members": members, "you": 0,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_leave_question_names_a_lone_other_player() {
+        assert_eq!(
+            leave_question(&playing_with(&["Ann", "Copper Fox 12"])),
+            "Leave the match? Copper Fox 12 wins it."
+        );
+        assert_eq!(
+            leave_question(&playing_with(&["Ann", "Bo", "Cy"])),
+            "Leave the match? The other players win it."
+        );
     }
 
     /// The screen under the ones tested.
