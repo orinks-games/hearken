@@ -1000,7 +1000,10 @@ mod tests {
     #[test]
     fn the_leave_question_names_a_lone_other_player() {
         assert_eq!(
-            leave_question(&playing_with(&["Ann", "Copper Fox 12"]), WhenLeft::OthersWin),
+            leave_question(
+                &playing_with(&["Ann", "Copper Fox 12"]),
+                WhenLeft::OthersWin
+            ),
             "Leave the match? Copper Fox 12 wins it."
         );
         assert_eq!(
