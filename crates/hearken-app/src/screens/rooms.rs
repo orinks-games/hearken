@@ -178,11 +178,11 @@ fn room_line<G: Game>(kind: &RoomKind<G>, info: &RoomInfo) -> String {
         info.unread
     };
     // Each shape whole, so a catalog has the line as one template.
-    match (names.is_empty(), new) {
+    match (names.is_empty(), count) {
         (true, 0) => format!("{label}: {standing}"),
-        (true, new) => format!("{label}: {standing}, {new} new"),
+        (true, count) => format!("{label}: {standing}, {count} new"),
         (false, 0) => format!("{label} with {names}: {standing}"),
-        (false, new) => format!("{label} with {names}: {standing}, {new} new"),
+        (false, count) => format!("{label} with {names}: {standing}, {count} new"),
     }
 }
 
