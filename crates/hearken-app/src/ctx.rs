@@ -297,6 +297,7 @@ impl<G: Game> Ctx<G> {
             self.settings.online.notices = kept.notices;
             self.settings.online.show = kept.show;
             self.settings.online.shown_told = kept.shown_told;
+            self.settings.online.chat_rules = kept.chat_rules;
             self.save_settings();
         }
         self.rooms
@@ -305,8 +306,8 @@ impl<G: Game> Ctx<G> {
         if self.rooms.was_signed_out() {
             self.online.signed_out_elsewhere();
         }
-        if let Some(chat) = G::chat() {
-            self.update_chat(&notices, chat.spoken);
+        if let Some(chat) = self.chat_config() {
+            self.update_chat(&notices, &chat);
         }
         self.room_notices.extend(notices);
         if self.room_notices.len() > MAX_ROOM_NOTICES {

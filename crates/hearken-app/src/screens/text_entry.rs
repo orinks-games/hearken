@@ -30,6 +30,28 @@ pub const INSTRUCTIONS: &str = "Type, then press Enter. Left and Right review wh
 /// unless this closes it, so a game can refuse a text and say why.
 pub type OnConfirm<G> = Box<dyn FnMut(&mut Ctx<G>, &str)>;
 
+/// What the screen does with a ready line chosen on Enter: its index.
+pub type OnReady<G> = Box<dyn FnMut(&mut Ctx<G>, usize)>;
+
+/// Ready lines a field offers on Up and Down while it is empty: a chat
+/// field's "Good game.", say. The field is an explicit state machine:
+///
+/// | State | Means | Leaves when |
+/// |---|---|---|
+/// | Empty | Nothing typed, no ready line | A character: Typing. Up or Down: Ready |
+/// | Typing | Text in the field | Backspace to nothing: Empty |
+/// | Ready | A ready line chosen | Up or Down: another. A character: Typing (when typing is allowed) |
+///
+/// Enter sends what the state holds; Escape closes from any state.
+struct Ready<G: Game> {
+    lines: Vec<String>,
+    /// The line chosen, while the field is in Ready.
+    at: Option<usize>,
+    /// Whether characters may be typed; `Some(line)` says why not.
+    no_typing: Option<String>,
+    on_ready: OnReady<G>,
+}
+
 pub struct TextEntryScreen<G: Game> {
     heading: String,
     label: String,
@@ -41,6 +63,7 @@ pub struct TextEntryScreen<G: Game> {
     /// How the field works, spoken on arrival and on F1.
     instructions: String,
     on_confirm: OnConfirm<G>,
+    ready: Option<Ready<G>>,
 }
 
 impl<G: Game> TextEntryScreen<G> {
@@ -57,7 +80,57 @@ impl<G: Game> TextEntryScreen<G> {
             max_len: MAX_LEN,
             instructions: INSTRUCTIONS.to_string(),
             on_confirm: Box::new(on_confirm),
+            ready: None,
         }
+    }
+
+    /// Offers `lines` on Up and Down while the field is empty; Enter on
+    /// one calls `on_ready` with its index. With `no_typing` set, typed
+    /// characters are refused with that line, and only the ready lines go.
+    pub fn ready_lines(
+        mut self,
+        lines: Vec<String>,
+        no_typing: Option<String>,
+        on_ready: impl FnMut(&mut Ctx<G>, usize) + 'static,
+    ) -> Self {
+        if !lines.is_empty() || no_typing.is_some() {
+            self.ready = Some(Ready {
+                lines,
+                at: None,
+                no_typing,
+                on_ready: Box::new(on_ready),
+            });
+        }
+        self
+    }
+
+    /// The ready line chosen, if the field is in Ready.
+    pub fn ready_line(&self) -> Option<&str> {
+        let ready = self.ready.as_ref()?;
+        ready.lines.get(ready.at?).map(String::as_str)
+    }
+
+    /// Up or Down in an empty field steps through the ready lines.
+    fn step_ready(&mut self, ctx: &mut Ctx<G>, delta: i64) -> bool {
+        if !self.chars.is_empty() {
+            return false;
+        }
+        let Some(ready) = self.ready.as_mut() else {
+            return false;
+        };
+        let n = ready.lines.len() as i64;
+        if n == 0 {
+            return false;
+        }
+        let next = match ready.at {
+            None if delta > 0 => 0,
+            None => n - 1,
+            Some(at) => (at as i64 + delta).rem_euclid(n),
+        };
+        ready.at = Some(next as usize);
+        ctx.play_ui(UiSound::Move);
+        ctx.say(ready.lines[next as usize].clone());
+        true
     }
 
     /// A field with no label of its own, for a heading that already says
@@ -107,6 +180,15 @@ impl<G: Game> TextEntryScreen<G> {
     }
 
     fn insert(&mut self, ctx: &mut Ctx<G>, ch: char) {
+        if let Some(ready) = self.ready.as_mut() {
+            if let Some(why) = ready.no_typing.clone() {
+                ctx.play_ui(UiSound::Error);
+                ctx.say(why);
+                return;
+            }
+            // Typing leaves the ready line behind.
+            ready.at = None;
+        }
         if self.chars.len() >= self.max_len {
             ctx.play_ui(UiSound::Error);
             ctx.say("The field is full.");
@@ -204,6 +286,14 @@ impl<G: Game> State<G> for TextEntryScreen<G> {
                 ctx.pop();
             }
             Key::Return | Key::KpEnter => {
+                if self.chars.is_empty() {
+                    if let Some(ready) = self.ready.as_mut() {
+                        if let Some(at) = ready.at {
+                            (ready.on_ready)(ctx, at);
+                            return;
+                        }
+                    }
+                }
                 let text = self.text();
                 (self.on_confirm)(ctx, &text);
             }
@@ -216,6 +306,10 @@ impl<G: Game> State<G> for TextEntryScreen<G> {
                 self.jump_cursor(ctx, end, "End");
             }
             Key::Up | Key::Down => {
+                let delta = if key == Key::Up { -1 } else { 1 };
+                if self.step_ready(ctx, delta) {
+                    return;
+                }
                 let whole = self.whole();
                 ctx.say(whole);
             }

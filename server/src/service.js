@@ -116,13 +116,21 @@ function isSeed(seed) {
  * @param {object} [options.saves]  Synced files: `{ store, files, guests?,
  *   onSave? }` (see `saveRoutes` in saves.js). Without it the saves routes
  *   answer 404.
- * @param {({ text, tag, player, room }) => Promise<boolean | string | { code, message } | undefined>} [options.screen]
+ * @param {({ text, tag, quick, player, room }) => Promise<boolean | string | { code, message } | undefined>} [options.screen]
  *   Looks at each chat line before it is stored: `false` or a string (a
  *   line for the player) refuses it as `screened`; `{ code, message }`
- *   refuses it with the game's own code (`muted`, say).
- * @param {({ reporter, about, room, lines, note }) => Promise<void>} [options.report]
- *   Takes a player's report of another: who, where, and the reported
- *   player's last lines in that room. Without it reports are only logged.
+ *   refuses it with the game's own code (`muted`, say). A ready line comes
+ *   with `quick` set to its id, so a word list can pass it while a chat
+ *   ban still holds.
+ * @param {({ reporter, about, room, lines, context, marked, note }) => Promise<void>} [options.report]
+ *   Takes a player's report of another: who, where (null for a name met
+ *   outside a room), the reported player's last lines there, the lines
+ *   from anyone around the marked one, and that line. Without it reports
+ *   are only logged.
+ * @param {(player) => Promise<{ chat?: string, until?: number, message?: string } | null>} [options.standing]
+ *   The player's chat standing, carried on each pulse as `standing`: for
+ *   a host that keeps warnings and chat bans. A `message` is for the
+ *   player to hear once; the host clears it when it has been carried.
  * @param {string} [options.handleKey]  A secret mixed into every player's
  *   handle, so a handle cannot be worked out from an account id seen
  *   elsewhere. Set it once and keep it: changing it changes every handle,
@@ -150,6 +158,7 @@ export function createService(options) {
     saves = null,
     screen,
     report,
+    standing,
     handleKey = "",
     now = () => Date.now(),
   } = options;
@@ -184,7 +193,7 @@ export function createService(options) {
   }
   const base = basePath.replace(/\/+$/, "");
   const rooms = roomStore
-    ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, report, handleKey, limits: options.limits, presence: options.presence, lobbyLimits: options.lobbyLimits })
+    ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, report, standing, handleKey, limits: options.limits, presence: options.presence, lobbyLimits: options.lobbyLimits })
     : null;
   const savesRoute = saves
     ? saveRoutes({ saves, accounts, limiter, bearer, readBody, json, error, log, now, limits: options.limits })

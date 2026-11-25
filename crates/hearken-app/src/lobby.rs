@@ -32,6 +32,21 @@ use crate::sound::UiSound;
 /// Takes the player to a match: see [`LobbyConfig::go`].
 pub type GoToRoom<G> = fn(&mut Ctx<G>, &RoomKind<G>, &RoomId);
 
+/// A named chat channel for everyone in the game, as the server's
+/// channel kind: listed first in Play online, opened by the chat list
+/// key away from a table, and told once in a while when someone speaks
+/// there ([`LobbyNotice::ChannelLine`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Channel {
+    pub kind: &'static str,
+    pub name: &'static str,
+    /// What the player calls it: "Parlor".
+    pub label: &'static str,
+}
+
+/// The soonest one channel notice follows another.
+const CHANNEL_NOTICE_GAP: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 /// What the engine needs from a game for the lobby.
 pub struct LobbyConfig<G: Game> {
     /// The one key that reaches the newest notice, from any screen not
@@ -50,6 +65,8 @@ pub struct LobbyConfig<G: Game> {
     /// that must leave where the player is first (asking, if a run is on)
     /// does that here.
     pub go: Option<GoToRoom<G>>,
+    /// The game's chat channel, if it has one.
+    pub channel: Option<Channel>,
 }
 
 impl<G: Game> LobbyConfig<G> {
@@ -61,7 +78,13 @@ impl<G: Game> LobbyConfig<G> {
             whereabouts: |_, _| Whereabouts::here(),
             hold: |_, _| false,
             go: None,
+            channel: None,
         }
+    }
+
+    pub fn channel(mut self, channel: Channel) -> Self {
+        self.channel = Some(channel);
+        self
     }
 
     pub fn key(mut self, key: Chord) -> Self {
@@ -175,6 +198,10 @@ pub(crate) struct LobbyState {
     /// The room the player was last sent to, and when: its moves need no
     /// notice while the table opens.
     going: Option<(RoomId, std::time::Instant)>,
+    /// When a channel notice was last taken, to keep them rare.
+    channel_told: Option<std::time::Instant>,
+    /// The last channel line the player has heard of or read.
+    pub(crate) channel_seen: u64,
 }
 
 /// How long a room the player was sent to counts as theirs before its
@@ -194,6 +221,8 @@ pub(crate) const LOBBY_SCREENS: &[&str] = &[
     "friends",
     "notices",
     "notice",
+    "chat",
+    "mutes",
 ];
 
 /// The kind's name as the player hears it, from the game's kinds.
@@ -258,6 +287,10 @@ pub fn notice_line(notice: &LobbyNotice, label: impl Fn(&str) -> String) -> Stri
             Some(host) => format!("Open table. {}, {}.", label(&table.kind), clean(host)),
             None => format!("Open table. {}.", label(&table.kind)),
         },
+        LobbyNotice::ChannelLine { kind, line, .. } => {
+            format!("{} spoke in the {}.", clean(&line.name), label(kind))
+        }
+        LobbyNotice::Standing(message) => hearken_rooms::clean_text(message, 200),
     }
 }
 
@@ -276,7 +309,9 @@ fn still_true(notice: &LobbyNotice, lobby: &Lobby) -> bool {
             .iter()
             .any(|f| f.handle == player.handle && f.state != hearken_rooms::Presence::Away),
         LobbyNotice::OpenTable(table) => lobby.open.iter().any(|t| t.room == table.room),
-        LobbyNotice::Arrived { .. } => true,
+        LobbyNotice::Arrived { .. }
+        | LobbyNotice::ChannelLine { .. }
+        | LobbyNotice::Standing(_) => true,
     }
 }
 
@@ -379,13 +414,17 @@ impl<G: Game> Ctx<G> {
         self.rooms.set_whereabouts(whereabouts);
         self.rooms.set_visibility(self.settings.online.show);
         self.rooms.set_pulse_fast(LOBBY_SCREENS.contains(&top));
+        match config.channel {
+            Some(channel) => self.rooms.set_channels(&[(channel.kind, channel.name)]),
+            None => self.rooms.set_channels(&[]),
+        }
 
         let fresh = self.rooms.take_lobby_notices();
         if !fresh.is_empty() {
             let kinds = (config.kinds)(self);
             let level = self.settings.online.notices;
             for notice in fresh {
-                self.take_notice(notice, &kinds, level);
+                self.take_notice(notice, &kinds, level, config.channel);
             }
             // What the server no longer says is over.
             if let Some(lobby) = self.rooms.lobby().cloned() {
@@ -403,7 +442,7 @@ impl<G: Game> Ctx<G> {
             }
         }
 
-        let held = (config.hold)(self, top);
+        let held = self.quiet() == crate::chat::Quiet::Held;
         let ready: Vec<(u64, NoticeState, bool)> = self
             .lobby
             .notices
@@ -459,11 +498,37 @@ impl<G: Game> Ctx<G> {
         ) && (going || self.rooms.room(room).is_some_and(|r| r.is_watched()))
     }
 
-    fn take_notice(&mut self, notice: LobbyNotice, kinds: &[RoomKind<G>], level: NoticeLevel) {
+    fn take_notice(
+        &mut self,
+        notice: LobbyNotice,
+        kinds: &[RoomKind<G>],
+        level: NoticeLevel,
+        channel: Option<Channel>,
+    ) {
         if self.at_its_table(&notice) {
             return;
         }
-        let mut line = notice_line(&notice, |k| kind_label(kinds, k));
+        if let LobbyNotice::ChannelLine { kind, name, line } = &notice {
+            // The channel's own screen says its lines; elsewhere one notice
+            // in a while is enough, and none for a line already seen.
+            let open = self.rooms.rooms().any(|r| {
+                r.is_watched() && r.info.kind == *kind && r.info.name.as_deref() == Some(name)
+            });
+            let seen = line.seq <= self.lobby.channel_seen;
+            let soon = self
+                .lobby
+                .channel_told
+                .is_some_and(|at| at.elapsed() < CHANNEL_NOTICE_GAP);
+            if open || seen || soon {
+                return;
+            }
+            self.lobby.channel_told = Some(std::time::Instant::now());
+        }
+        let label = |k: &str| match channel {
+            Some(c) if c.kind == k => c.label.to_string(),
+            _ => kind_label(kinds, k),
+        };
+        let mut line = notice_line(&notice, label);
         if let LobbyNotice::Arrived { .. } = notice {
             // The first time online, once ever: the player is listed.
             if !self.settings.online.shown_told
@@ -477,14 +542,16 @@ impl<G: Game> Ctx<G> {
                 line.push_str("Other players can see you are here. Settings, Online changes it.");
             }
         }
-        let wanted = match level {
-            NoticeLevel::All => true,
-            NoticeLevel::Mine => self
-                .rooms
-                .lobby()
-                .is_none_or(|lobby| notice.is_mine_or_friends(lobby)),
-            NoticeLevel::Off => false,
-        };
+        // A line from the host about the player's chat always reaches them.
+        let wanted = matches!(notice, LobbyNotice::Standing(_))
+            || match level {
+                NoticeLevel::All => true,
+                NoticeLevel::Mine => self
+                    .rooms
+                    .lobby()
+                    .is_none_or(|lobby| notice.is_mine_or_friends(lobby)),
+                NoticeLevel::Off => false,
+            };
         if line.is_empty() || !wanted {
             // Still heard, so the server stops counting it as new.
             if let LobbyNotice::Invited(invite) = &notice {
@@ -537,6 +604,7 @@ impl<G: Game> Ctx<G> {
         let nowhere = match &n.notice {
             LobbyNotice::Arrived { waiting, .. } => *waiting == 0,
             LobbyNotice::Answered(invite) => invite.room.is_none(),
+            LobbyNotice::Standing(_) => true,
             _ => false,
         };
         if nowhere {

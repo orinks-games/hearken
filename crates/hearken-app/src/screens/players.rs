@@ -36,9 +36,9 @@ impl Step {
 
 /// One of the other players, as the list shows them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Other {
-    name: String,
-    handle: String,
+pub(crate) struct Other {
+    pub(crate) name: String,
+    pub(crate) handle: String,
 }
 
 /// The other players in a room.
@@ -146,7 +146,7 @@ impl<G: Game> Menu for PlayersScreen<G> {
                 };
                 let room = self.room.clone();
                 MenuItem::new(label, move |_: &mut Self, ctx: &mut Ctx<G>| {
-                    ctx.push(PlayerScreen::new(room.clone(), other.clone(), mode));
+                    ctx.push(PlayerScreen::new(room.clone(), other.clone(), mode, None));
                 })
                 .help("Mute, block or report this player.")
             })
@@ -195,19 +195,46 @@ pub struct PlayerScreen<G: Game> {
     room: RoomId,
     other: Other,
     mode: MuteMode,
+    /// The line the player came from, in the chat list: a report marks it.
+    line: Option<u64>,
     menu: MenuCore<Self, G>,
     step: Step,
 }
 
 impl<G: Game> PlayerScreen<G> {
-    fn new(room: RoomId, other: Other, mode: MuteMode) -> Self {
+    pub(crate) fn new(room: RoomId, other: Other, mode: MuteMode, line: Option<u64>) -> Self {
         PlayerScreen {
             menu: MenuCore::new(other.name.clone()),
             room,
             other,
             mode,
+            line,
             step: Step::Idle,
         }
+    }
+
+    /// The speaker of the chat line at `seq` in `room`, from the chat list.
+    pub fn for_line(room: RoomId, name: &str, handle: &str, seq: u64) -> Self {
+        let other = Other {
+            name: hearken_rooms::clean_text(name, 64),
+            handle: handle.to_string(),
+        };
+        let mut screen = PlayerScreen::new(room, other, MuteMode::None, Some(seq));
+        screen.step = Step::Idle;
+        screen
+    }
+
+    fn load(&mut self, ctx: &mut Ctx<G>) {
+        if let Ok(ticket) = ctx.rooms.mutes() {
+            self.step = Step::Loading(ticket);
+        }
+    }
+
+    /// Whether the room is a match still in play, which a block leaves going.
+    fn in_a_match(&self, ctx: &Ctx<G>) -> bool {
+        ctx.rooms
+            .room(&self.room)
+            .is_some_and(|r| !r.info.is_channel() && r.info.phase == hearken_rooms::Phase::Playing)
     }
 
     fn set(&mut self, ctx: &mut Ctx<G>, mode: MuteMode) {
@@ -241,6 +268,14 @@ impl<G: Game> Menu for PlayerScreen<G> {
         &mut self.menu
     }
 
+    fn enter(&mut self, ctx: &mut Ctx<G>) {
+        // Opened from a chat line, the standing is not known yet.
+        if self.line.is_some() {
+            self.load(ctx);
+        }
+        crate::menu::menu_enter(self, ctx);
+    }
+
     fn build_items(&mut self, _ctx: &mut Ctx<G>) -> Vec<MenuItem<Self, G>> {
         let name = self.other.name.clone();
         let mut items = Vec::new();
@@ -269,29 +304,32 @@ impl<G: Game> Menu for PlayerScreen<G> {
             ),
             _ => items.push(
                 MenuItem::new("Block", |s: &mut Self, ctx: &mut Ctx<G>| {
-                    s.set(ctx, MuteMode::Block)
+                    let name = s.other.name.clone();
+                    ctx.push(ConfirmScreen::<G>::new(format!("Block {name}?"), |ctx| {
+                        ctx.pop_with("block");
+                    }));
                 })
                 .help(format!(
-                    "Neither of you hears the other, and Play with anyone never seats you \
-                     with {name}. They are not told."
+                    "You stop seeing each other, and you are never seated together. {name} is \
+                     not told. Settings, Online has the list of blocked players."
                 )),
             ),
         }
+        let site_help = _ctx.online.site().to_string();
         items.push(
             MenuItem::new("Report", |s: &mut Self, ctx: &mut Ctx<G>| {
                 let site = ctx.online.site().to_string();
                 let name = s.other.name.clone();
                 let room = s.room.clone();
                 let handle = s.other.handle.clone();
+                let line = s.line;
                 ctx.push(ConfirmScreen::<G>::new(
-                    format!(
-                        "Report {name} to {site}? What they said in this game goes with the report."
-                    ),
+                    format!("Report {name}? Their lines here go to {site}."),
                     move |ctx| {
-                        let sent = ctx.rooms.report(&room, &handle, "");
+                        let sent = ctx.rooms.report_line(&room, &handle, line, "");
                         ctx.pop();
                         match sent {
-                            Ok(_) => ctx.pop_with(format!("Reported {name}.")),
+                            Ok(_) => ctx.pop_with(format!("{name} reported and muted.")),
                             Err(e) => {
                                 ctx.play_ui(UiSound::Error);
                                 ctx.pop_with(e.spoken(&site));
@@ -300,9 +338,23 @@ impl<G: Game> Menu for PlayerScreen<G> {
                     },
                 ));
             })
-            .help("Send what this player said here to the people who run the server."),
+            .help(format!(
+                "Sends what {name} said here to {site_help} and mutes {name} for you."
+            )),
         );
         items
+    }
+
+    fn resume_with(&mut self, ctx: &mut Ctx<G>, result: &str) {
+        // The Block question said yes.
+        if result == "block" {
+            self.set(ctx, MuteMode::Block);
+            return;
+        }
+        if !result.is_empty() {
+            ctx.say(result.to_string());
+        }
+        self.refresh(ctx, true);
     }
 
     fn update(&mut self, ctx: &mut Ctx<G>, _dt: f64) {
@@ -315,13 +367,27 @@ impl<G: Game> Menu for PlayerScreen<G> {
         let step = self.step;
         self.step = Step::Idle;
         match (step, answer) {
+            (Step::Loading(_), Ok(Answer::Mutes(mutes))) => {
+                let mode = PlayersScreen::<G>::mode_of(&mutes, &self.other.handle);
+                if mode != self.mode {
+                    self.mode = mode;
+                    self.refresh(ctx, true);
+                }
+            }
             (Step::Setting(_, mode), Ok(_)) => {
+                let was = self.mode;
                 self.mode = mode;
                 ctx.play_ui(UiSound::Select);
                 let line = match mode {
                     MuteMode::Mute => format!("{} muted.", self.other.name),
+                    MuteMode::Block if self.in_a_match(ctx) => {
+                        format!("{} blocked. This match goes on.", self.other.name)
+                    }
                     MuteMode::Block => format!("{} blocked.", self.other.name),
-                    MuteMode::None => format!("{} heard again.", self.other.name),
+                    MuteMode::None if was == MuteMode::Block => {
+                        format!("{} unblocked.", self.other.name)
+                    }
+                    MuteMode::None => format!("{} unmuted.", self.other.name),
                 };
                 ctx.pop_with(line);
             }

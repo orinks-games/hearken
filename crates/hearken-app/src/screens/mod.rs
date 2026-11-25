@@ -1,6 +1,8 @@
 //! Screens every game gets.
 
 pub mod bindings;
+#[cfg(feature = "online")]
+pub mod chat;
 pub mod confirm;
 pub mod help;
 #[cfg(feature = "online")]
@@ -23,6 +25,8 @@ pub mod timed_message;
 pub mod update;
 
 pub use bindings::{BindingDevice, BindingsScreen};
+#[cfg(feature = "online")]
+pub use chat::{ChatListScreen, MutesScreen};
 pub use confirm::{ConfirmOption, ConfirmScreen};
 pub use help::HelpScreen;
 #[cfg(feature = "online")]

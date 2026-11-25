@@ -24,7 +24,9 @@
 //   POST rooms/<id>/start         the host starts with enough seats filled
 //   POST rooms/<id>/events        { type: "turn" | "chat" | "leave" | "finish", ... }
 //                                 (leave on a room that is over drops it from my rooms)
-//   POST rooms/<id>/report        { handle, note? }: hand a member's recent lines to the host
+//   POST rooms/<id>/report        { handle, seq?, note? }: hand a member's recent lines to the host
+//                                 (seq marks the line reported; it mutes them for the reporter)
+//   POST rooms/report             { handle, note? }: report a player met outside a room (a name)
 //   GET  rooms/mutes              who I have muted or blocked
 //   POST rooms/mutes              { handle, mode: "mute" | "block" | "none" }
 //   POST rooms/pulse              { state, game?, place?, show?, heard? }: I am here;
@@ -38,7 +40,16 @@
 // the account, never the account id itself. Mutes and blocks are kept per
 // handle pair and never shown to the other side: a muted player's lines
 // are left out of what the muter reads; a block does that both ways and
-// keeps the two out of each other's direct rooms and Play-with-anyone games.
+// keeps the two out of each other's direct rooms, Play-with-anyone games,
+// open tables and (in a channel) joins, leaves and member lists. A block is
+// never told: an invite across one is kept as sent and never delivered,
+// and a code to a table with someone who blocked you is "no such game".
+// Blocking also removes the friend and withdraws the blocker's invites.
+//
+// A kind may offer ready lines (`quick: { id: "fallback text" }`): sent as
+// `{ type: "chat", quick: id }`, each client says them in its own words.
+// `guest_chat` says what a guest may send: "all" (default), "quick" or
+// "none". `chat_limit` takes `per_minute`, `gap` (seconds) and `max_chars`.
 //
 // The room's phase is an explicit state machine (`PHASES`, `transition`):
 //   waiting   -> playing   start, or the last seat filled
@@ -126,6 +137,9 @@ export const PAGE = 500;
 export const MAX_HISTORY = 100;
 /** The lines a report carries: the reported member's most recent ones. */
 export const REPORT_LINES = 20;
+/** Lines from anyone kept either side of a reported line. */
+export const REPORT_CONTEXT = 10;
+export const GUEST_CHAT = ["all", "quick", "none"];
 export const HANDLE_LENGTH = 16;
 export const MUTE_MODES = ["mute", "block", "none"];
 
@@ -368,8 +382,10 @@ function error(status, code, message, extra) {
 }
 
 /** A room as a client sees it: no player ids, seats and handles instead. */
-function publicRoom(room, player, now, presentMs) {
+function publicRoom(room, player, now, presentMs, hidden = null) {
   const mine = room.members.find((m) => m.id === player.id);
+  // In a channel, a blocked player (either way) is left out of the list.
+  const listed = hidden ? room.members.filter((m) => m.id === player.id || !hidden.has(m.handle)) : room.members;
   return {
     id: room.id,
     kind: room.kind,
@@ -380,7 +396,7 @@ function publicRoom(room, player, now, presentMs) {
     open: room.open,
     seats: room.seats,
     host: room.members.find((m) => m.host)?.seat ?? 0,
-    members: room.members.map((m) => ({
+    members: listed.map((m) => ({
       seat: m.seat,
       name: m.name,
       handle: m.handle ?? null,
@@ -420,6 +436,8 @@ export function roomRoutes(deps) {
     // A channel keeps its lines this long.
     historyMs: 7 * 86_400_000,
     mutesPerPlayer: 500,
+    // Reports one player may make in an hour.
+    reportsPerHour: 5,
     // A channel member not seen this long has gone: their seat is freed,
     // so a busy channel does not fill with players who stopped listening.
     channelAwayMs: 15 * 60_000,
@@ -606,6 +624,11 @@ export function roomRoutes(deps) {
     return relationsA.blocked.has(memberB.handle) || relationsA.blockedBy.has(memberB.handle);
   }
 
+  /** Every handle on either side of a block with the player whose `relations` these are. */
+  function blockedEither(relations) {
+    return new Set([...relations.blocked, ...relations.blockedBy]);
+  }
+
   /** A new room of `kind` for `player`, hosted by them; a channel is open at once. */
   async function makeRoom(kind, handler, player, { open = false, context = null, name = null, direct = false, members = [] } = {}) {
     const seats = seatsOf(handler);
@@ -666,6 +689,15 @@ export function roomRoutes(deps) {
     }
     const room = await rooms.byCode(code);
     if (!room) return error(404, "unknown-code");
+    if (!room.members.some((m) => m.id === player.id)) {
+      // A table with someone on either side of a block: the blocked player
+      // hears there is no such game; the one who blocked is told why.
+      const relations = await rooms.relations(player.id);
+      if (room.members.some((m) => relations.blockedBy.has(m.handle))) return error(404, "unknown-code");
+      if (room.members.some((m) => relations.blocked.has(m.handle))) {
+        return error(403, "blocked-at-table", "A player you blocked is at that table.");
+      }
+    }
     return joinRoom(room, player);
   }
 
@@ -777,12 +809,6 @@ export function roomRoutes(deps) {
     return json({ ok: true, rooms: out });
   }
 
-  /** The handles whose chat `player` does not hear in `room`: muted, blocked, or blocking them. */
-  async function silenced(player) {
-    const relations = await rooms.relations(player.id);
-    return new Set([...relations.muted, ...relations.blocked, ...relations.blockedBy]);
-  }
-
   async function get(request, url, id) {
     const player = await who(request);
     if (!player) return error(401, "signed-out");
@@ -795,8 +821,17 @@ export function roomRoutes(deps) {
     me.lastSeen = now();
     await sweep(room, handler);
     const t = now();
-    const quiet = await silenced(player);
-    const audible = (e) => !(e.type === "chat" && e.handle && quiet.has(e.handle));
+    const relations = await rooms.relations(player.id);
+    const quiet = new Set([...relations.muted, ...relations.blocked, ...relations.blockedBy]);
+    const walled = blockedEither(relations);
+    const channel = room.phase === "open";
+    const audible = (e) => {
+      if (e.type === "chat" && e.handle && quiet.has(e.handle)) return false;
+      // A channel's comings and goings leave out a blocked player.
+      if (channel && (e.type === "join" || e.type === "leave") && e.handle && walled.has(e.handle)) return false;
+      return true;
+    };
+    const shown = (r) => publicRoom(r, player, t, limits.presentMs, channel ? walled : null);
     const lastParam = url.searchParams.get("last");
     if (lastParam !== null) {
       // History: the last events the reader hears, or the ones before a
@@ -833,7 +868,7 @@ export function roomRoutes(deps) {
       await rooms.save(room);
       return json({
         ok: true,
-        room: publicRoom(room, player, t, limits.presentMs),
+        room: shown(room),
         events: events.map(publicEvent),
         first_seq: cursor,
         // Where the reader now stands: the latest line, read or left out.
@@ -848,7 +883,7 @@ export function roomRoutes(deps) {
     await rooms.save(room);
     return json({
       ok: true,
-      room: publicRoom(room, player, t, limits.presentMs),
+      room: shown(room),
       events: events.filter(audible).map(publicEvent),
       // The last seq this page covered, lines left out included, so a
       // client whose last line was one it does not hear is not behind.
@@ -930,11 +965,28 @@ export function roomRoutes(deps) {
       const relations = await rooms.relations(player.id);
       if (room.members.some((m) => m.id !== player.id && blockedPair(relations, m))) return error(403, "blocked");
     }
-    const text = cleanText(body.text);
+    // A ready line is one the kind offers, sent by id; anything else is typed.
+    let quick = null;
+    let text;
+    if (body.quick !== undefined && body.quick !== null) {
+      const offered = handler.quick && typeof handler.quick === "object" ? handler.quick : null;
+      if (typeof body.quick !== "string" || !offered || !Object.hasOwn(offered, body.quick)) return error(400, "bad-request");
+      quick = body.quick;
+      text = cleanText(offered[quick]) || quick;
+    } else {
+      const maxChars = Math.min(MAX_CHAT_CHARS, Math.max(1, Number(handler.chat_limit?.max_chars ?? MAX_CHAT_CHARS)));
+      text = cleanText(body.text, maxChars).trimEnd();
+    }
     if (!text) return error(400, "bad-request");
+    if (player.guest) {
+      const guests = GUEST_CHAT.includes(handler.guest_chat) ? handler.guest_chat : "all";
+      if (guests === "none" || (guests === "quick" && !quick)) {
+        return error(403, "guests-quick", "A typed line needs an account.");
+      }
+    }
     const tag = body.tag === undefined || body.tag === null ? null : cleanText(body.tag, MAX_TAG_CHARS) || null;
     if (typeof deps.screen === "function") {
-      const verdict = await deps.screen({ text, tag, player, room: publicRoom(room, player, t, limits.presentMs) });
+      const verdict = await deps.screen({ text, tag, quick, player, room: publicRoom(room, player, t, limits.presentMs) });
       if (verdict === false) return error(422, "screened", "That line was not sent.");
       if (typeof verdict === "string") return error(422, "screened", verdict);
       if (verdict && typeof verdict === "object" && typeof verdict.code === "string") {
@@ -949,6 +1001,7 @@ export function roomRoutes(deps) {
       handle: me.handle,
       player: player.id,
       text,
+      ...(quick ? { quick } : {}),
       ...(tag ? { tag } : {}),
       at: t,
       phase: room.phase,
@@ -1022,7 +1075,66 @@ export function roomRoutes(deps) {
     }
   }
 
-  /** A member's recent lines, handed to the host's `report` hook. */
+  /**
+   * A report of one player by another, handed to the host's `report` hook:
+   * the reported player's recent lines in the room, and, when a line is
+   * marked, the lines from anyone around it. A report also mutes the
+   * reported player for the reporter, unless they are blocked already.
+   * `room` is null for a player met outside a room (a name in a list).
+   */
+  async function reportPlayer(player, about, room, body) {
+    const lines = [];
+    const context = [];
+    let marked = null;
+    if (room) {
+      let before = null;
+      const markSeq = Number.isInteger(body.seq) && body.seq > 0 ? body.seq : null;
+      while (lines.length < REPORT_LINES || (markSeq !== null && marked === null)) {
+        const page = await rooms.eventsBefore(room.id, before, PAGE);
+        if (page.length === 0) break;
+        for (let i = page.length - 1; i >= 0; i -= 1) {
+          const e = page[i];
+          if (e.type !== "chat") continue;
+          if (e.handle === about.handle && lines.length < REPORT_LINES) lines.unshift(publicEvent(e));
+          if (markSeq !== null && e.seq === markSeq && e.handle === about.handle) marked = publicEvent(e);
+        }
+        before = page[0].seq;
+        if (page.length < PAGE) break;
+      }
+      if (marked) {
+        // Up to REPORT_CONTEXT lines either side of the marked one, from anyone.
+        const earlier = (await rooms.eventsBefore(room.id, marked.seq, PAGE)).filter((e) => e.type === "chat").slice(-REPORT_CONTEXT);
+        const later = (await rooms.eventsAfter(room.id, marked.seq, PAGE)).filter((e) => e.type === "chat").slice(0, REPORT_CONTEXT);
+        for (const e of [...earlier, marked, ...later]) context.push(publicEvent(e));
+      }
+    }
+    const note = cleanText(body.note, MAX_CHAT_CHARS) || null;
+    const relations = await rooms.relations(player.id);
+    const muted = !relations.blocked.has(about.handle);
+    if (muted && !relations.muted.has(about.handle)) await rooms.setMute(player, about.handle, "mute", await rooms.playerByHandle(about.handle));
+    const t = now();
+    const shared = {
+      reporter: { id: player.id, name: player.name, handle: player.handle, guest: Boolean(player.guest) },
+      about: { id: about.id, name: about.name, handle: about.handle, guest: Boolean(about.guest) },
+      room: room ? publicRoom(room, player, t, limits.presentMs) : null,
+      lines,
+      context,
+      marked,
+      note,
+      at: t,
+    };
+    if (typeof deps.report === "function") {
+      try {
+        await deps.report(shared);
+      } catch (e) {
+        log({ error: String(e?.stack ?? e), note: "a report was made but its handler failed" });
+      }
+    } else {
+      log({ note: "a player was reported, and the service has no report hook", room: room?.id ?? null, about: about.handle, lines, reporter: player.handle });
+    }
+    return json({ ok: true, lines: lines.length, marked: Boolean(marked), muted });
+  }
+
   async function report(request, id) {
     const player = await who(request);
     if (!player) return error(401, "signed-out");
@@ -1030,40 +1142,24 @@ export function roomRoutes(deps) {
     if (!room) return error(404, "not-found");
     const me = room.members.find((m) => m.id === player.id);
     if (!me) return error(403, "not-a-member");
-    if (!(await limiter.allow(`report:${player.id}`, limits.roomEventsPerMinute, 60_000))) return error(429, "rate-limited");
+    if (!(await limiter.allow(`report:${player.id}`, limits.reportsPerHour, 3_600_000))) return error(429, "rate-limited");
     const body = (await readJson(request)) ?? {};
-    if (!isHandle(body.handle)) return error(400, "bad-request");
+    if (!isHandle(body.handle) || body.handle === player.handle) return error(400, "bad-request");
     const about = room.members.find((m) => m.handle === body.handle) ?? (await rooms.playerByHandle(body.handle));
     if (!about) return error(404, "unknown-player", "No player by that handle.");
-    const lines = [];
-    let before = null;
-    while (lines.length < REPORT_LINES) {
-      const page = await rooms.eventsBefore(room.id, before, PAGE);
-      if (page.length === 0) break;
-      for (let i = page.length - 1; i >= 0 && lines.length < REPORT_LINES; i -= 1) {
-        const e = page[i];
-        if (e.type === "chat" && e.handle === body.handle) lines.unshift(publicEvent(e));
-      }
-      before = page[0].seq;
-      if (page.length < PAGE) break;
-    }
-    const note = cleanText(body.note, MAX_CHAT_CHARS) || null;
-    if (typeof deps.report === "function") {
-      try {
-        await deps.report({
-          reporter: { id: player.id, name: player.name, handle: player.handle },
-          about: { id: about.id, name: about.name, handle: about.handle },
-          room: publicRoom(room, player, now(), limits.presentMs),
-          lines,
-          note,
-        });
-      } catch (e) {
-        log({ error: String(e?.stack ?? e), note: "a report was made but its handler failed" });
-      }
-    } else {
-      log({ note: "a player was reported, and the service has no report hook", room: room.id, about: about.handle, lines, reporter: player.handle });
-    }
-    return json({ ok: true, lines: lines.length });
+    return reportPlayer(player, about, room, body);
+  }
+
+  /** POST rooms/report { handle, note? }: a player met outside a room, by name. */
+  async function reportName(request) {
+    const player = await who(request);
+    if (!player) return error(401, "signed-out");
+    if (!(await limiter.allow(`report:${player.id}`, limits.reportsPerHour, 3_600_000))) return error(429, "rate-limited");
+    const body = (await readJson(request)) ?? {};
+    if (!isHandle(body.handle) || body.handle === player.handle) return error(400, "bad-request");
+    const about = await rooms.playerByHandle(body.handle);
+    if (!about) return error(404, "unknown-player", "No player by that handle.");
+    return reportPlayer(player, about, null, body);
   }
 
   async function mutes(request, method) {
@@ -1093,8 +1189,18 @@ export function roomRoutes(deps) {
     }
     await rooms.setMute(player, body.handle, body.mode, them);
     if (body.mode === "block" && them) {
-      // A block ends any direct room between the two.
       const t = now();
+      // A block takes them off the blocker's friends, and takes back the
+      // blocker's invites to them. Theirs to the blocker stay, unheard.
+      await rooms.setFriend(player.id, body.handle, false);
+      presence.get(player.id)?.friends.delete(body.handle);
+      for (const invite of await rooms.invitesFor(player.id)) {
+        if (invite.from.id !== player.id || invite.to.id !== them.id) continue;
+        if (invite.state !== "sent" && invite.state !== "heard") continue;
+        inviteTransition(invite, "withdrawn", t);
+        await rooms.saveInvite(invite);
+      }
+      // A block ends any direct room between the two.
       for (const [kind, handler] of Object.entries(handlers)) {
         if (!handler?.seats || !isChannel(handler) || seatsOf(handler).max !== 2) continue;
         const room = await rooms.directBetween(kind, player.id, them.id);
@@ -1156,7 +1262,7 @@ export function roomRoutes(deps) {
     const present = presence.present(t, lobbyLimits.awayMs);
     const here = present
       .filter((p) => visibleTo(p, player, relations))
-      .map((p) => publicPresence(p, friendSet.has(p.handle)))
+      .map((p) => publicPresence(p, friendSet.has(p.handle), relations.muted.has(p.handle)))
       .sort((a, b) => Number(b.friend) - Number(a.friend) || a.name.localeCompare(b.name))
       .slice(0, lobbyLimits.hereListed);
     const byHandle = new Map(present.map((p) => [p.handle, p]));
@@ -1168,8 +1274,8 @@ export function roomRoutes(deps) {
       const seen = live && visibleTo(live, player, relations);
       friendList.push(
         seen
-          ? publicPresence(live, true)
-          : { handle, name: known.name, guest: Boolean(known.guest), state: "away", game: null, place: null, friend: true },
+          ? publicPresence(live, true, relations.muted.has(handle))
+          : { handle, name: known.name, guest: Boolean(known.guest), state: "away", game: null, place: null, friend: true, muted: relations.muted.has(handle) },
       );
     }
     friendList.sort((a, b) => Number(b.state !== "away") - Number(a.state !== "away") || a.name.localeCompare(b.name));
@@ -1230,6 +1336,44 @@ export function roomRoutes(deps) {
     }
     open.sort((a, b) => a.since - b.since);
 
+    // Named channels the client asked after: how many are in, and the last
+    // line someone else said there that this player hears.
+    const quiet = new Set([...relations.muted, ...relations.blocked, ...relations.blockedBy]);
+    const walled = blockedEither(relations);
+    const channels = [];
+    for (const asked of Array.isArray(body.channels) ? body.channels.slice(0, 4) : []) {
+      const kind = String(asked?.kind ?? "");
+      const handler = roomHandler(kind);
+      const name = normalizeChannelName(String(asked?.name ?? ""));
+      if (!handler || !isChannel(handler) || !name) continue;
+      const room = await rooms.byName(kind, name);
+      if (!room || room.phase !== "open") {
+        channels.push({ kind, name, here: 0, last: null });
+        continue;
+      }
+      const here = room.members.filter(
+        (m) => m.id !== player.id && m.state === "taken" && t - m.lastSeen < limits.presentMs && !walled.has(m.handle),
+      ).length;
+      let last = null;
+      const page = await rooms.eventsBefore(room.id, null, 50);
+      for (let i = page.length - 1; i >= 0; i -= 1) {
+        const e = page[i];
+        if (e.type !== "chat" || e.player === player.id || (e.handle && quiet.has(e.handle))) continue;
+        last = { seq: e.seq, name: e.name, handle: e.handle ?? null, at: e.at };
+        break;
+      }
+      channels.push({ kind, name, here, last });
+    }
+
+    let standingNow = null;
+    if (typeof deps.standing === "function") {
+      try {
+        standingNow = (await deps.standing(player)) ?? null;
+      } catch (e) {
+        log({ error: String(e?.stack ?? e), note: "the standing hook failed" });
+      }
+    }
+
     return json({
       ok: true,
       you: { handle: player.handle, name: player.name, guest: Boolean(player.guest) },
@@ -1239,6 +1383,8 @@ export function roomRoutes(deps) {
       invites,
       rooms: mine,
       open,
+      channels,
+      standing: standingNow,
       every: lobbyLimits.pulseEvery,
     });
   }
@@ -1256,8 +1402,8 @@ export function roomRoutes(deps) {
     if (body.handle === player.handle) return error(422, "not-allowed", "That is you.");
     const them = await rooms.playerByHandle(body.handle);
     if (!them) return error(404, "unknown-player", "No player by that handle.");
-    const relations = await rooms.relations(player.id);
-    if (blockedPair(relations, them)) return error(403, "blocked");
+    // Across a block the invite is kept as sent and never delivered: the
+    // receiver's pulse leaves it out, and the sender is not told.
     const t = now();
     const mine = await rooms.invitesFor(player.id);
     let outstanding = 0;
@@ -1378,6 +1524,7 @@ export function roomRoutes(deps) {
     if (method === "POST" && parts.length === 2 && parts[1] === "direct") return direct(request, url);
     if ((method === "GET" || method === "POST") && parts.length === 2 && parts[1] === "mutes") return mutes(request, method);
     if (method === "POST" && parts.length === 2 && parts[1] === "pulse") return pulse(request);
+    if (method === "POST" && parts.length === 2 && parts[1] === "report") return reportName(request);
     if (method === "POST" && parts.length === 2 && parts[1] === "invites") return sendInvite(request);
     if (method === "POST" && parts.length === 3 && parts[1] === "invites" && /^[0-9a-f]{24}$/.test(parts[2])) return answerInvite(request, parts[2]);
     if (method === "POST" && parts.length === 2 && parts[1] === "friends") return setFriend(request);

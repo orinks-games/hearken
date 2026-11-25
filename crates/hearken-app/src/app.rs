@@ -70,9 +70,11 @@ impl<G: Game> App<G> {
         self.ctx.update_commentary(dt);
         #[cfg(feature = "online")]
         {
-            self.ctx.update_online();
             let top = self.states.last().map_or("none", |s| s.name());
+            self.ctx.update_quiet(top);
+            self.ctx.update_online();
             self.ctx.update_lobby(top);
+            self.ctx.flush_chat();
         }
         #[cfg(feature = "update")]
         self.ctx
@@ -184,7 +186,7 @@ impl<G: Game> App<G> {
         // The chat keys act on the room in focus from any screen that is
         // not taking typed text; with no room they are the game's.
         #[cfg(feature = "online")]
-        if let Some(chat) = G::chat() {
+        if let Some(chat) = self.ctx.chat_config() {
             let typing = self.states.last().is_some_and(|s| s.takes_text());
             if !typing && self.ctx.chat_key(&chat, event) {
                 return;

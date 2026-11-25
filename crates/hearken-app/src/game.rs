@@ -112,6 +112,14 @@ pub trait Game: Sized + 'static {
         Some(crate::chat::ChatConfig::default())
     }
 
+    /// Chat for the screen named `top`: by default [`Game::chat`] for
+    /// every screen. A collection whose games use different keys moves
+    /// them here for the screens of one game.
+    #[cfg(feature = "online")]
+    fn chat_for(_ctx: &crate::ctx::Ctx<Self>, _top: &str) -> Option<crate::chat::ChatConfig> {
+        Self::chat()
+    }
+
     /// The lobby across the whole game: a pulse that shows the player as
     /// here, notices of invites, moves and friends wherever they are, the
     /// notice key, and the Play online screens (`screens::lobby`). `None`

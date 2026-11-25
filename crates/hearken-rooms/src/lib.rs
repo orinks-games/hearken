@@ -31,8 +31,8 @@ pub use client::{
 };
 pub use error::RoomsError;
 pub use lobby::{
-    Invite, InviteAnswer, InviteState, Lobby, LobbyNotice, OpenTable, Player, Presence, Side,
-    Visibility, Whereabouts,
+    ChannelLine, ChannelSummary, Invite, InviteAnswer, InviteState, Lobby, LobbyNotice, OpenTable,
+    Player, Presence, Side, Standing, Visibility, Whereabouts,
 };
 pub use matches::{Applied, Match, MatchError, Sync};
 pub use protocol::{
