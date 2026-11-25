@@ -29,7 +29,7 @@ pub use report::{ReportPreviewScreen, ReportScreen};
 #[cfg(feature = "report")]
 pub use report_link::ReportLinkScreen;
 #[cfg(feature = "online")]
-pub use rooms::{MyGamesScreen, OnlinePlayScreen, RoomKind, RoomScreen};
+pub use rooms::{MyGamesScreen, OnlinePlayScreen, RoomKind, RoomScreen, WhenLeft};
 pub use settings::{SettingsRow, SettingsScreen};
 pub use text_entry::TextEntryScreen;
 pub use timed_message::TimedMessage;
