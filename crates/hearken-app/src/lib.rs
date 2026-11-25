@@ -17,6 +17,8 @@ pub mod game;
 pub mod held_keys;
 pub mod input;
 pub mod language;
+#[cfg(feature = "online")]
+pub mod lobby;
 pub mod logging;
 pub mod menu;
 #[cfg(feature = "online")]
@@ -81,6 +83,8 @@ pub use hearken_synth as synth;
 pub use hearken_update as update;
 pub use held_keys::HeldKeys;
 pub use input::{controller_key_map, ControllerAxis, ControllerButton, InputEvent, Key, Mods};
+#[cfg(feature = "online")]
+pub use lobby::{LobbyConfig, NoticeLevel, NoticeState};
 #[cfg(feature = "online")]
 pub use online::{Connect, Online, OnlineConfig, OnlineError, Plan, Ticket};
 pub use paths::Paths;

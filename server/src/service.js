@@ -184,7 +184,7 @@ export function createService(options) {
   }
   const base = basePath.replace(/\/+$/, "");
   const rooms = roomStore
-    ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, report, handleKey, limits: options.limits })
+    ? roomRoutes({ rooms: roomStore, accounts, limiter, rules, handlers, log, bearer, readJson, now, screen, report, handleKey, limits: options.limits, presence: options.presence, lobbyLimits: options.lobbyLimits })
     : null;
   const savesRoute = saves
     ? saveRoutes({ saves, accounts, limiter, bearer, readBody, json, error, log, now, limits: options.limits })

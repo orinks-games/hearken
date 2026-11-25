@@ -206,7 +206,7 @@ fn builtin_category(id: &str) -> Option<&'static str> {
         _ if id.starts_with("volume.") => SOUND,
         "display" | "display_text" | "display_motion" | "display_contrast" => DISPLAY,
         "keyboard" | "controller_buttons" | "controller" => CONTROLS,
-        "discord" | "online" | "chat" => ONLINE,
+        "discord" | "online" | "chat" | "online_notices" | "show_me" => ONLINE,
         "updates" | "update_channel" | "update_at_start" => UPDATES,
         _ => return None,
     })
@@ -718,6 +718,47 @@ impl<G: Game> Menu for SettingsScreen<G> {
                      changes it.",
                 )
                 .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_chat(ctx, delta)),
+            ));
+        }
+
+        #[cfg(feature = "online")]
+        if ctx.rooms.is_offered() && G::lobby().is_some() {
+            fn step_notices<G: Game>(ctx: &mut Ctx<G>, delta: i32) {
+                ctx.settings.online.notices = ctx.settings.online.notices.stepped(delta);
+                ctx.save_settings();
+            }
+            fn step_show<G: Game>(ctx: &mut Ctx<G>, delta: i32) {
+                ctx.settings.online.show = ctx.settings.online.show.stepped(delta);
+                ctx.save_settings();
+            }
+            rows.push(SettingsRow::new(
+                "online_notices",
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        format!("Online notices: {}", ctx.settings.online.notices.spoken())
+                    }),
+                    |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, |ctx| step_notices(ctx, 1)),
+                )
+                .help(
+                    "Which online news reaches you in a game: all of it, only your games and \
+                     friends, or none. Play online lists everything either way. Enter, Left or \
+                     Right changes it.",
+                )
+                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_notices(ctx, delta)),
+            ));
+            rows.push(SettingsRow::new(
+                "show_me",
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx: &Ctx<G>| {
+                        format!("Show me as here: {}", ctx.settings.online.show.spoken())
+                    }),
+                    |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, |ctx| step_show(ctx, 1)),
+                )
+                .help(
+                    "Who sees you in Who's here: everyone, only the players you added as friends, \
+                     or nobody. Invites still reach you. Enter, Left or Right changes it.",
+                )
+                .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_show(ctx, delta)),
             ));
         }
 

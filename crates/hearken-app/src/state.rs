@@ -91,6 +91,9 @@ pub trait State<G: Game> {
 /// running on.
 pub enum StackOp<G: Game> {
     Push(Box<dyn State<G>>),
+    /// Push a screen the player passes through on the way to another
+    /// pushed after it: it enters saying nothing.
+    PushQuiet(Box<dyn State<G>>),
     /// Close the top screen; the one revealed announces itself (`resume`).
     Pop,
     /// Close the top screen; the one revealed hears `Reveal`.

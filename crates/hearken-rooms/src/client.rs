@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::error::RoomsError;
+use crate::lobby::{self, Invite, InviteAnswer, Lobby, LobbyNotice, Visibility, Whereabouts};
 use crate::protocol::{Event, EventKind, Mute, MuteMode, Phase, RoomId, RoomInfo};
 #[cfg(not(feature = "http"))]
 use crate::transport::Reply;
@@ -67,8 +68,10 @@ pub enum Answer {
     Seq(u64),
     /// The players the player has muted or blocked (mutes).
     Mutes(Vec<Mute>),
-    /// Done, with nothing more to say (set_mute, report).
+    /// Done, with nothing more to say (set_mute, report, set_friend).
     Done,
+    /// An invite as it now stands (invite, answer_invite but accept).
+    Invite(Invite),
 }
 
 /// What changed in `update`, for a screen to speak.
@@ -100,6 +103,37 @@ pub const MAX_KEPT_EVENTS: usize = 4096;
 pub const HISTORY_LINES: usize = 20;
 /// Finished answers kept until the game takes them.
 const MAX_KEPT_ANSWERS: usize = 64;
+/// The pulse's pace when the server names none: once a minute.
+pub const PULSE_EVERY: Duration = Duration::from_secs(60);
+/// The pulse's pace while a lobby screen is open.
+pub const PULSE_FAST: Duration = Duration::from_secs(10);
+/// The soonest one pulse follows another, however often one is asked for.
+const PULSE_GAP: Duration = Duration::from_secs(3);
+/// Lobby notices kept until the game takes them.
+const MAX_LOBBY_NOTICES: usize = 32;
+
+/// The pulse: on or off, where the player is, and what came back last.
+#[derive(Debug, Default)]
+struct Pulse {
+    on: bool,
+    whereabouts: Whereabouts,
+    show: Visibility,
+    /// The server's pace, from its last answer.
+    every: Option<Duration>,
+    fast: bool,
+    ticket: Option<Ticket>,
+    /// When to pulse next; `None` is at the next `update`.
+    next: Option<Instant>,
+    last_sent: Option<Instant>,
+    lobby: Option<Lobby>,
+    /// Counts the answers taken, so a screen can tell the lobby changed.
+    generation: u64,
+    notices: VecDeque<LobbyNotice>,
+    /// Invites whose notice was given, to tell the server on the next pulse.
+    heard: Vec<String>,
+    /// Sent with the pulse on its way, cleared once it is answered.
+    heard_sent: Vec<String>,
+}
 
 /// What the client knows about one room the player is in.
 #[derive(Debug)]
@@ -204,6 +238,10 @@ enum Request {
     Mutes,
     SetMute,
     Report,
+    Pulse,
+    Invite,
+    AnswerInvite,
+    Friend,
 }
 
 enum Msg {
@@ -229,6 +267,7 @@ pub struct Rooms {
     connection: Connection,
     poll_failures: u32,
     signed_out: bool,
+    pulse: Pulse,
 }
 
 impl Rooms {
@@ -253,6 +292,7 @@ impl Rooms {
             connection: Connection::Polling,
             poll_failures: 0,
             signed_out: false,
+            pulse: Pulse::default(),
         }
     }
 
@@ -273,6 +313,13 @@ impl Rooms {
         self.rooms.clear();
         self.focus = None;
         self.in_flight.clear();
+        // A new player: their lobby starts afresh, with an arrival.
+        self.pulse.lobby = None;
+        self.pulse.ticket = None;
+        self.pulse.next = None;
+        self.pulse.notices.clear();
+        self.pulse.heard.clear();
+        self.pulse.heard_sent.clear();
     }
 
     /// Whether the game has a rooms server.
@@ -466,6 +513,254 @@ impl Rooms {
             Method::Post(json!({ "handle": handle, "note": note })),
             url,
         ))
+    }
+
+    // -- The lobby: the pulse, invites and friends (see `lobby`) ---------------
+
+    /// Turns the pulse on or off. On, the client tells the server where the
+    /// player is about once a minute and keeps the [`Lobby`] it answers;
+    /// the first pulse goes at once. Off, the server stops listing the
+    /// player within two minutes.
+    pub fn set_pulse(&mut self, on: bool) {
+        if self.pulse.on == on {
+            return;
+        }
+        self.pulse.on = on;
+        self.pulse.next = None;
+        if !on {
+            self.pulse.lobby = None;
+            self.pulse.notices.clear();
+        }
+    }
+
+    /// Whether the pulse is on.
+    pub fn pulse_is_on(&self) -> bool {
+        self.pulse.on
+    }
+
+    /// Where the player is now, for the next pulse. A change of presence
+    /// (into a run, to a table, back to the menus) is sent soon after.
+    pub fn set_whereabouts(&mut self, whereabouts: Whereabouts) {
+        if self.pulse.whereabouts == whereabouts {
+            return;
+        }
+        let moved = self.pulse.whereabouts.presence != whereabouts.presence;
+        self.pulse.whereabouts = whereabouts;
+        if moved && self.pulse.lobby.is_some() {
+            self.pulse_soon();
+        }
+    }
+
+    /// Who may see the player as here, for the next pulse.
+    pub fn set_visibility(&mut self, show: Visibility) {
+        if self.pulse.show != show {
+            self.pulse.show = show;
+            self.pulse_soon();
+        }
+    }
+
+    /// Pulses every few seconds while `fast` (a lobby screen is open), else
+    /// at the server's pace.
+    pub fn set_pulse_fast(&mut self, fast: bool) {
+        if self.pulse.fast != fast {
+            self.pulse.fast = fast;
+            if fast {
+                self.pulse_soon();
+            }
+        }
+    }
+
+    /// Pulses again as soon as the last one allows: after an invite or an
+    /// answer, so the lobby shows it.
+    pub fn pulse_soon(&mut self) {
+        self.pulse.next = None;
+    }
+
+    /// What the last pulse brought back; `None` before the first answer.
+    pub fn lobby(&self) -> Option<&Lobby> {
+        self.pulse.lobby.as_ref()
+    }
+
+    /// Goes up by one with each pulse answered, so a screen listing the
+    /// lobby knows to read it again.
+    pub fn lobby_generation(&self) -> u64 {
+        self.pulse.generation
+    }
+
+    /// What changed in the lobby since the last call, oldest first.
+    pub fn take_lobby_notices(&mut self) -> Vec<LobbyNotice> {
+        self.pulse.notices.drain(..).collect()
+    }
+
+    /// The invite's notice was given: the server hears so with the next
+    /// pulse, and moves it from sent to heard.
+    pub fn mark_heard(&mut self, invite: &str) {
+        if !self.pulse.heard.iter().any(|h| h == invite) {
+            self.pulse.heard.push(invite.to_string());
+        }
+    }
+
+    /// Tells the server the player is leaving, so they are away at once.
+    /// Sent and not waited for.
+    pub fn say_away(&mut self) {
+        if !self.pulse.on {
+            return;
+        }
+        if let Ok(config) = self.ready(None) {
+            let url = config.endpoint("rooms/pulse");
+            self.send(
+                Request::Pulse,
+                Method::Post(json!({ "state": "away" })),
+                url,
+            );
+            self.pulse.lobby = None;
+        }
+    }
+
+    /// Invites the player with `handle` to a match of `kind`, with
+    /// `context` for the handler as Create sends. Answers [`Answer::Invite`].
+    pub fn invite(
+        &mut self,
+        handle: &str,
+        kind: &str,
+        context: &impl serde::Serialize,
+    ) -> Result<Ticket, RoomsError> {
+        let config = self.ready(Some(kind))?;
+        if !crate::valid_handle(handle) {
+            return Err(RoomsError::UnknownPlayer);
+        }
+        let context = serde_json::to_value(context).map_err(|_| RoomsError::BadKind)?;
+        let url = config.endpoint("rooms/invites");
+        Ok(self.send(
+            Request::Invite,
+            Method::Post(json!({ "handle": handle, "kind": kind, "context": context })),
+            url,
+        ))
+    }
+
+    /// Answers invite `id`: accept (the match starts; answers
+    /// [`Answer::Room`]), decline, or withdraw one of the player's own
+    /// (answers [`Answer::Invite`]).
+    pub fn answer_invite(&mut self, id: &str, answer: InviteAnswer) -> Result<Ticket, RoomsError> {
+        let config = self.ready(None)?;
+        if id.len() != 24 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(RoomsError::Refused {
+                code: "unknown-invite".into(),
+                message: Some("No such invite.".into()),
+            });
+        }
+        let url = config.endpoint(&format!("rooms/invites/{id}"));
+        Ok(self.send(
+            Request::AnswerInvite,
+            Method::Post(json!({ "answer": answer })),
+            url,
+        ))
+    }
+
+    /// Adds the player with `handle` as a friend, or removes them. Friends
+    /// are one-sided: they are not asked. Answers [`Answer::Done`].
+    pub fn set_friend(&mut self, handle: &str, friend: bool) -> Result<Ticket, RoomsError> {
+        let config = self.ready(None)?;
+        if !crate::valid_handle(handle) {
+            return Err(RoomsError::UnknownPlayer);
+        }
+        let url = config.endpoint("rooms/friends");
+        Ok(self.send(
+            Request::Friend,
+            Method::Post(json!({ "handle": handle, "friend": friend })),
+            url,
+        ))
+    }
+
+    fn schedule_pulse(&mut self, now: Instant) {
+        if !self.pulse.on || self.pulse.ticket.is_some() || self.token.is_none() {
+            return;
+        }
+        if self.pulse.next.is_some_and(|t| t > now) {
+            return;
+        }
+        if self
+            .pulse
+            .last_sent
+            .is_some_and(|t| now.duration_since(t) < PULSE_GAP)
+        {
+            return;
+        }
+        let Ok(config) = self.ready(None) else {
+            return;
+        };
+        let w = &self.pulse.whereabouts;
+        self.pulse.heard_sent = std::mem::take(&mut self.pulse.heard);
+        let body = json!({
+            "state": w.presence.name(),
+            "game": w.game,
+            "place": w.place,
+            "show": self.pulse.show.name(),
+            "heard": self.pulse.heard_sent,
+        });
+        let url = config.endpoint("rooms/pulse");
+        let ticket = self.send(Request::Pulse, Method::Post(body), url);
+        self.pulse.ticket = Some(ticket);
+        self.pulse.last_sent = Some(now);
+        let pace = if self.pulse.fast {
+            PULSE_FAST
+        } else {
+            self.pulse.every.unwrap_or(PULSE_EVERY)
+        };
+        self.pulse.next = Some(now + pace);
+    }
+
+    fn finish_pulse(
+        &mut self,
+        ticket: Ticket,
+        answer: Result<Value, RoomsError>,
+        now: Instant,
+        notices: &mut Vec<Notice>,
+    ) {
+        if self.pulse.ticket != Some(ticket) {
+            // A leaving pulse, or one from before the player changed.
+            return;
+        }
+        self.pulse.ticket = None;
+        let heard = std::mem::take(&mut self.pulse.heard_sent);
+        let lobby = answer.and_then(|body| {
+            serde_json::from_value::<Lobby>(body).map_err(|e| {
+                log::warn!("rooms: a pulse answer did not read: {e}");
+                RoomsError::Unavailable
+            })
+        });
+        match lobby {
+            Ok(lobby) => {
+                if lobby.every > 0 {
+                    self.pulse.every = Some(Duration::from_secs(lobby.every.clamp(10, 600)));
+                }
+                // The player's known rooms take what the pulse said of them.
+                for info in &lobby.rooms {
+                    if self.rooms.contains_key(&info.id) {
+                        self.take_info(info.clone(), now, notices);
+                    }
+                }
+                let changes = lobby::changes(self.pulse.lobby.as_ref(), &lobby);
+                for change in changes {
+                    log::info!("[lobby] {}", change.name());
+                    self.pulse.notices.push_back(change);
+                }
+                while self.pulse.notices.len() > MAX_LOBBY_NOTICES {
+                    self.pulse.notices.pop_front();
+                }
+                self.pulse.lobby = Some(lobby);
+                self.pulse.generation += 1;
+            }
+            Err(e) => {
+                // Heard invites go again with the next pulse.
+                let mut again = heard;
+                again.append(&mut self.pulse.heard);
+                self.pulse.heard = again;
+                if e == RoomsError::Offline {
+                    log::info!("rooms: no answer to the pulse");
+                }
+            }
+        }
     }
 
     /// The player's rooms, newest first. Answers [`Answer::List`], and
@@ -673,6 +968,28 @@ impl Rooms {
                     });
                     self.keep(ticket, result);
                 }
+                Request::Pulse => self.finish_pulse(ticket, answer, now, &mut notices),
+                Request::Invite | Request::AnswerInvite => {
+                    let result = answer.and_then(|body| {
+                        if let Ok(info) = read_room(&body) {
+                            let id = info.id.clone();
+                            self.take_info(info, now, &mut notices);
+                            return Ok(Answer::Room(id));
+                        }
+                        body.get("invite")
+                            .cloned()
+                            .and_then(|v| serde_json::from_value(v).ok())
+                            .map(Answer::Invite)
+                            .ok_or(RoomsError::Unavailable)
+                    });
+                    self.pulse.next = None;
+                    self.keep(ticket, result);
+                }
+                Request::Friend => {
+                    let result = answer.map(|_| Answer::Done);
+                    self.pulse.next = None;
+                    self.keep(ticket, result);
+                }
                 Request::SetMute | Request::Report => {
                     let result = answer.map(|_| Answer::Done);
                     if matches!(request, Request::SetMute) && result.is_ok() {
@@ -702,6 +1019,7 @@ impl Rooms {
             }
         }
         self.schedule_polls(now);
+        self.schedule_pulse(now);
         notices
     }
 
@@ -853,6 +1171,27 @@ impl Rooms {
                 format!(", {} in flight", self.in_flight.len())
             }
         )];
+        if self.pulse.on {
+            let w = &self.pulse.whereabouts;
+            out.push(match &self.pulse.lobby {
+                Some(l) => format!(
+                    "lobby: {} {}, show {}, {} here, {} friends, {} invites, {} waiting, {} open",
+                    w.presence.name(),
+                    w.game.as_deref().unwrap_or("-"),
+                    self.pulse.show.name(),
+                    l.here.len(),
+                    l.friends.len(),
+                    l.invites.len(),
+                    l.waiting(),
+                    l.open.len()
+                ),
+                None => format!(
+                    "lobby: {} {}, no pulse answered yet",
+                    w.presence.name(),
+                    w.game.as_deref().unwrap_or("-")
+                ),
+            });
+        }
         for room in self.rooms.values() {
             out.push(format!(
                 "room {} {}: {:?}, seq {} read {}{}{}",

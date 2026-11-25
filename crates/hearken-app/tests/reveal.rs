@@ -86,6 +86,25 @@ fn a_quiet_pop_reveals_the_screen_below_without_a_word() {
 }
 
 #[test]
+fn a_screen_passed_through_enters_without_a_word_and_speaks_when_revealed() {
+    let mut h = list_under(closer("b", |ctx| {
+        ctx.passing_through(|ctx| ctx.push(Speaker));
+        ctx.push(Probe::new("table"));
+    }));
+    h.press(Key::Return);
+    assert_eq!(h.app.top_name(), "table");
+    assert!(
+        !h.spoken().iter().any(|l| l == "Speaker screen."),
+        "{:?}",
+        h.spoken()
+    );
+    // Below the table, it is an ordinary screen again.
+    h.app.ctx.pop();
+    h.frame(0.0);
+    assert_eq!(h.app.top_name(), "speaker");
+}
+
+#[test]
 fn a_quiet_pop_does_not_resume_a_plain_screen() {
     let mut h = Headless::new(TestData::default(), Probe::new("root"));
     h.app.ctx.push(closer("b", |ctx| ctx.pop_quiet()));

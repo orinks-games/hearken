@@ -180,12 +180,28 @@ pub struct OnlineSettings {
     #[cfg(feature = "online")]
     #[serde(default, skip_serializing_if = "crate::chat::ChatLevel::is_default")]
     pub chat: crate::chat::ChatLevel,
+    /// Which lobby notices reach the player in a game.
+    #[cfg(feature = "online")]
+    #[serde(default, skip_serializing_if = "crate::lobby::NoticeLevel::is_default")]
+    pub notices: crate::lobby::NoticeLevel,
+    /// Who may see the player as here.
+    #[cfg(feature = "online")]
+    #[serde(default, skip_serializing_if = "hearken_rooms::Visibility::is_default")]
+    pub show: hearken_rooms::Visibility,
+    /// Whether the player has been told, once, that others see them here.
+    #[cfg(feature = "online")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shown_told: bool,
 }
 
 impl OnlineSettings {
     pub fn is_empty(&self) -> bool {
         #[cfg(feature = "online")]
-        if !self.chat.is_default() {
+        if !self.chat.is_default()
+            || !self.notices.is_default()
+            || !self.show.is_default()
+            || self.shown_told
+        {
             return false;
         }
         self.token.is_none() && self.name.is_none()

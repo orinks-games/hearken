@@ -179,7 +179,7 @@ fn room_line<G: Game>(kind: &RoomKind<G>, info: &RoomInfo) -> String {
 
 /// Where a room the player just entered goes: a waiting room to its screen,
 /// a match in play to the game.
-fn enter_room<G: Game>(ctx: &mut Ctx<G>, kind: &RoomKind<G>, id: &RoomId) {
+pub fn enter_room<G: Game>(ctx: &mut Ctx<G>, kind: &RoomKind<G>, id: &RoomId) {
     let phase = ctx.rooms.room(id).map(|r| r.info.phase);
     match phase {
         Some(Phase::Playing) => {
