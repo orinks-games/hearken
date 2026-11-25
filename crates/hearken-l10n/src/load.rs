@@ -61,28 +61,92 @@ pub fn override_folders(game_root: Option<&Path>, data_dir: Option<&Path>) -> Ve
         .collect()
 }
 
-/// Catalog text for `code`: the first `{code}.po` in `folders`, else a
-/// built-in entry from `built_in`.
+/// Catalog text for `code`: the first `{code}.po` in `folders` laid over
+/// the built-in entry from `built_in`, or either one alone.
+///
+/// A dropped-in file only replaces the lines it translates: every line it
+/// leaves empty, marks fuzzy or does not have keeps its built-in
+/// translation, so a translator can test a file that covers part of the
+/// game, or one from an older release.
 pub fn catalog_text<'a>(
     folders: &[PathBuf],
     code: &str,
     built_in: &[(&str, &'a str)],
 ) -> Option<Cow<'a, str>> {
+    let base = built_in
+        .iter()
+        .find(|(known, _)| *known == code)
+        .map(|(_, text)| *text);
     for folder in folders {
         let path = folder.join(format!("{code}.po"));
         match std::fs::read_to_string(&path) {
             Ok(text) => {
                 log::info!("Using the translation file {}", path.display());
-                return Some(Cow::Owned(text));
+                return Some(match base {
+                    Some(base) => Cow::Owned(layer(base, &text)),
+                    None => Cow::Owned(text),
+                });
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => log::warn!("Could not read {}: {err}", path.display()),
         }
     }
-    built_in
+    base.map(Cow::Borrowed)
+}
+
+/// `over`'s translations laid over `base`'s, as PO text: `base`'s lines in
+/// their order, each replaced by `over`'s translation where it has one,
+/// then the lines only `over` has. The header is `over`'s when it has one.
+/// When `over` does not parse, it is returned as it is, so loading reports
+/// the broken line the translator needs to fix.
+fn layer(base: &str, over: &str) -> String {
+    let Ok(over_entries) = po::parse(over) else {
+        return over.to_string();
+    };
+    let Ok(base_entries) = po::parse(base) else {
+        return over.to_string();
+    };
+    let usable = |entry: &po::PoEntry| {
+        !entry.msgid.is_empty()
+            && !entry.msgstr.is_empty()
+            && !entry.is_fuzzy()
+            && entry.msgctxt.is_none()
+    };
+    let header = |entries: &[po::PoEntry]| {
+        entries
+            .iter()
+            .find(|entry| entry.msgid.is_empty() && entry.msgctxt.is_none())
+            .map(|entry| entry.msgstr.clone())
+            .filter(|header| !header.trim().is_empty())
+    };
+    let mut replaced: std::collections::HashMap<&str, &str> = over_entries
         .iter()
-        .find(|(known, _)| *known == code)
-        .map(|(_, text)| Cow::Borrowed(*text))
+        .filter(|entry| usable(entry))
+        .map(|entry| (entry.msgid.as_str(), entry.msgstr.as_str()))
+        .collect();
+    let mut out = String::new();
+    let mut push = |msgid: &str, msgstr: &str| {
+        out.push_str("msgid ");
+        out.push_str(&po::quote(msgid));
+        out.push_str("\nmsgstr ");
+        out.push_str(&po::quote(msgstr));
+        out.push_str("\n\n");
+    };
+    if let Some(head) = header(&over_entries).or_else(|| header(&base_entries)) {
+        push("", &head);
+    }
+    for entry in base_entries.iter().filter(|entry| usable(entry)) {
+        let msgstr = replaced
+            .remove(entry.msgid.as_str())
+            .unwrap_or(entry.msgstr.as_str());
+        push(&entry.msgid, msgstr);
+    }
+    for entry in over_entries.iter().filter(|entry| usable(entry)) {
+        if let Some(msgstr) = replaced.remove(entry.msgid.as_str()) {
+            push(&entry.msgid, msgstr);
+        }
+    }
+    out
 }
 
 /// A translator for `code`, falling back to English when there is no usable
@@ -325,6 +389,45 @@ mod tests {
         let folders = override_folders(Some(game.path()), None);
         write_catalog(&game.path().join("lang"), "fr", "Nouvel écran.");
         assert!(offered_codes_built_in(&folders, BUILT_IN).contains(&"fr"));
+    }
+
+    #[test]
+    fn dropped_file_only_replaces_lines_it_translates() {
+        static BUILT_IN: &[(&str, &str)] = &[(
+            "es",
+            "msgid \"\"\nmsgstr \"Language: es\\n\"\n\n\
+             msgid \"New screen.\"\nmsgstr \"Pantalla nueva.\"\n\n\
+             msgid \"Old door.\"\nmsgstr \"Puerta vieja.\"\n\n\
+             msgid \"Score {n}.\"\nmsgstr \"Puntos: {n}.\"\n\n\
+             msgid \"Quiet room.\"\nmsgstr \"Sala tranquila.\"\n",
+        )];
+        let game = tempfile::tempdir().expect("game");
+        let folder = game.path().join("lang");
+        std::fs::create_dir_all(&folder).expect("lang folder");
+        std::fs::write(
+            folder.join("es.po"),
+            "msgid \"\"\nmsgstr \"X-Language-Name: Spanish\\n\"\n\n\
+             msgid \"New screen.\"\nmsgstr \"Otra pantalla.\"\n\n\
+             msgid \"Old door.\"\nmsgstr \"\"\n\n\
+             #, fuzzy\nmsgid \"Quiet room.\"\nmsgstr \"Cuarto mudo.\"\n\n\
+             msgid \"Score {n}.\"\nmsgstr \"{n} puntos.\"\n\n\
+             msgid \"Brand new line.\"\nmsgstr \"Línea nueva.\"\n",
+        )
+        .expect("catalog written");
+        let folders = override_folders(Some(game.path()), None);
+        let tr = load_translator("es", &folders, BUILT_IN, None);
+        // Its own lines win, line and template alike.
+        assert_eq!(tr.translate("New screen."), "Otra pantalla.");
+        assert_eq!(tr.translate("Score 5."), "5 puntos.");
+        assert_eq!(tr.translate("Brand new line."), "Línea nueva.");
+        // Empty, fuzzy and missing lines keep the built-in translation.
+        assert_eq!(tr.translate("Old door."), "Puerta vieja.");
+        assert_eq!(tr.translate("Quiet room."), "Sala tranquila.");
+        let text = catalog_text(&folders, "es", BUILT_IN).expect("catalog");
+        assert_eq!(
+            po::header_field(&text, "X-Language-Name").as_deref(),
+            Some("Spanish")
+        );
     }
 
     #[test]
