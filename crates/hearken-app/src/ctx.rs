@@ -60,6 +60,9 @@ pub struct Ctx<G: Game> {
     /// Chat: lines sent and not yet answered, and the read-back place.
     #[cfg(feature = "online")]
     pub(crate) chat: crate::chat::ChatState,
+    /// The lobby's notices this session (see [`crate::lobby`]).
+    #[cfg(feature = "online")]
+    pub(crate) lobby: crate::lobby::LobbyState,
     /// The game's updates (see [`crate::updates`]): what the check at start
     /// found, and the way to check and install.
     #[cfg(feature = "update")]
@@ -166,6 +169,8 @@ impl<G: Game> Ctx<G> {
             room_notices: Vec::new(),
             #[cfg(feature = "online")]
             chat: Default::default(),
+            #[cfg(feature = "online")]
+            lobby: Default::default(),
             #[cfg(feature = "update")]
             updates: crate::updates::Updates::new(G::updates()),
             #[cfg(feature = "report")]
@@ -280,10 +285,14 @@ impl<G: Game> Ctx<G> {
     #[cfg(feature = "online")]
     pub(crate) fn update_online(&mut self) {
         if self.online.update() {
-            // The account changed; the chat setting is the player's.
-            let chat = self.settings.online.chat;
+            // The account changed; the chat, notice and shown settings are
+            // the player's.
+            let kept = self.settings.online.clone();
             self.settings.online = self.online.saved();
-            self.settings.online.chat = chat;
+            self.settings.online.chat = kept.chat;
+            self.settings.online.notices = kept.notices;
+            self.settings.online.show = kept.show;
+            self.settings.online.shown_told = kept.shown_told;
             self.save_settings();
         }
         self.rooms
@@ -519,7 +528,7 @@ impl<G: Game> Ctx<G> {
         self.note_change(format!("[take] {} -> {}", from.name(), to.name()));
     }
 
-    fn note_change(&mut self, line: String) {
+    pub(crate) fn note_change(&mut self, line: String) {
         self.changes.push(line);
         self.changed += 1;
         if self.changes.len() > CHANGES_CAP {

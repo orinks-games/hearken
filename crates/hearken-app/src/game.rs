@@ -112,6 +112,15 @@ pub trait Game: Sized + 'static {
         Some(crate::chat::ChatConfig::default())
     }
 
+    /// The lobby across the whole game: a pulse that shows the player as
+    /// here, notices of invites, moves and friends wherever they are, the
+    /// notice key, and the Play online screens (`screens::lobby`). `None`
+    /// (the default) keeps all of it off. See [`crate::lobby`].
+    #[cfg(feature = "online")]
+    fn lobby() -> Option<crate::lobby::LobbyConfig<Self>> {
+        None
+    }
+
     /// Where the game's updates are published, for a released copy to
     /// update itself: GitHub releases, a manifest URL on any HTTPS host, or
     /// a source of the game's own. `None` (the default) offers no updates.

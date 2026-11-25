@@ -27,6 +27,12 @@
 //   POST rooms/<id>/report        { handle, note? }: hand a member's recent lines to the host
 //   GET  rooms/mutes              who I have muted or blocked
 //   POST rooms/mutes              { handle, mode: "mute" | "block" | "none" }
+//   POST rooms/pulse              { state, game?, place?, show?, heard? }: I am here;
+//                                 answers who is here, my friends, invites, rooms
+//                                 and open tables (lobby.js)
+//   POST rooms/invites            { handle, kind, context? }: invite a player to a match
+//   POST rooms/invites/<id>       { answer: "accept" | "decline" | "withdraw" }
+//   POST rooms/friends            { handle, friend: true | false }
 //
 // Players are known to each other by handle: a short stable id made from
 // the account, never the account id itself. Mutes and blocks are kept per
@@ -48,6 +54,18 @@
 
 import { Refusal, refuse } from "./refusal.js";
 import { sha256Hex } from "./rules.js";
+import {
+  FINAL_INVITE_STATES,
+  INVITE_ANSWERS,
+  LOBBY_LIMITS,
+  inviteTransition,
+  memoryPresence,
+  presenceOf,
+  publicInvite,
+  publicPresence,
+  visibilityOf,
+  visibleTo,
+} from "./lobby.js";
 
 export const PHASES = ["waiting", "playing", "finished", "closed", "abandoned", "open"];
 export const FINAL_PHASES = ["finished", "closed", "abandoned"];
@@ -178,6 +196,9 @@ function randomId() {
  *   so a direct room can seat someone who is not in the room yet, and
  *   `relations` answers who a player has muted or blocked, and who has
  *   blocked them, in one read.
+ * - The lobby keeps invites (`saveInvite`, `getInvite`, `invitesFor`,
+ *   `dropInvite`) and one-sided friends (`setFriend`, `friendsOf`). Presence
+ *   is not stored: it lives in memory (lobby.js `memoryPresence`).
  */
 export function memoryRooms() {
   const rooms = new Map(); // id -> room
@@ -185,6 +206,8 @@ export function memoryRooms() {
   const players = new Map(); // handle -> { id, name, guest, handle }
   const mutes = new Map(); // player id -> Map(handle -> "mute" | "block")
   const blockedBy = new Map(); // player id -> Set(handle of who blocked them)
+  const invites = new Map(); // id -> invite
+  const friends = new Map(); // player id -> Set(handle)
   return {
     async create(room) {
       const id = randomId();
@@ -299,6 +322,36 @@ export function memoryRooms() {
         if (mode === "block") set.add(player.handle);
         else set.delete(player.handle);
       }
+    },
+    // The lobby (lobby.js): invites and friends.
+    /** Writes an invite as a whole, new or changed. */
+    async saveInvite(invite) {
+      invites.set(invite.id, structuredClone(invite));
+    },
+    async getInvite(id) {
+      const invite = invites.get(id);
+      return invite ? structuredClone(invite) : null;
+    },
+    /** Every invite `playerId` sent or was sent, newest first. */
+    async invitesFor(playerId) {
+      return [...invites.values()]
+        .filter((i) => i.from.id === playerId || i.to.id === playerId)
+        .sort((a, b) => b.at - a.at)
+        .map((i) => structuredClone(i));
+    },
+    async dropInvite(id) {
+      invites.delete(id);
+    },
+    /** Adds (`on`) or removes the player with `handle` from `playerId`'s friends. */
+    async setFriend(playerId, handle, on) {
+      const set = friends.get(playerId) ?? new Set();
+      friends.set(playerId, set);
+      if (on) set.add(handle);
+      else set.delete(handle);
+    },
+    /** The handles `playerId` has added as friends. */
+    async friendsOf(playerId) {
+      return [...(friends.get(playerId) ?? [])];
     },
   };
 }
@@ -1054,6 +1107,267 @@ export function roomRoutes(deps) {
     return json({ ok: true, handle: body.handle, mode: body.mode, name: them?.name ?? null });
   }
 
+  // -- The lobby (lobby.js): presence, invites, friends ----------------------
+
+  const presence = deps.presence ?? memoryPresence();
+  const lobbyLimits = { ...LOBBY_LIMITS, ...deps.lobbyLimits };
+
+  /** Whether `invite` is past its time, moved to lapsed if so. Says whether it changed. */
+  function lapse(invite, t) {
+    if ((invite.state === "sent" || invite.state === "heard") && t - invite.at > lobbyLimits.inviteMs) {
+      inviteTransition(invite, "lapsed", t);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * POST rooms/pulse { state, game?, place?, show?, heard? }: the player is
+   * here (or `state: "away"`, leaving). Answers everything the lobby shows:
+   * who is here, the player's friends, invites to and from them, their
+   * rooms in play or waiting, and open tables anyone may take.
+   */
+  async function pulse(request) {
+    const player = await who(request);
+    if (!player) return error(401, "signed-out");
+    if (!(await limiter.allow(`pulse:${player.id}`, lobbyLimits.pulsesPerMinute, 60_000))) return error(429, "rate-limited");
+    const body = (await readJson(request, 8 * 1024)) ?? {};
+    const t = now();
+    if (body.state === "away") {
+      presence.drop(player.id);
+      return json({ ok: true, state: "away" });
+    }
+    const friends = await rooms.friendsOf(player.id);
+    const friendSet = new Set(friends);
+    const entry = {
+      id: player.id,
+      handle: player.handle,
+      name: player.name,
+      guest: Boolean(player.guest),
+      state: presenceOf(body.state),
+      game: cleanText(body.game, MAX_NAME_CHARS) || null,
+      place: cleanText(body.place, MAX_TAG_CHARS) || null,
+      show: visibilityOf(body.show),
+      friends: friendSet,
+      at: t,
+    };
+    presence.set(entry);
+    const relations = await rooms.relations(player.id);
+    const present = presence.present(t, lobbyLimits.awayMs);
+    const here = present
+      .filter((p) => visibleTo(p, player, relations))
+      .map((p) => publicPresence(p, friendSet.has(p.handle)))
+      .sort((a, b) => Number(b.friend) - Number(a.friend) || a.name.localeCompare(b.name))
+      .slice(0, lobbyLimits.hereListed);
+    const byHandle = new Map(present.map((p) => [p.handle, p]));
+    const friendList = [];
+    for (const handle of friends) {
+      const known = await rooms.playerByHandle(handle);
+      if (!known) continue;
+      const live = byHandle.get(handle);
+      const seen = live && visibleTo(live, player, relations);
+      friendList.push(
+        seen
+          ? publicPresence(live, true)
+          : { handle, name: known.name, guest: Boolean(known.guest), state: "away", game: null, place: null, friend: true },
+      );
+    }
+    friendList.sort((a, b) => Number(b.state !== "away") - Number(a.state !== "away") || a.name.localeCompare(b.name));
+
+    // Invites: take the ones the client heard, lapse the old, hand out the rest.
+    const heard = new Set(Array.isArray(body.heard) ? body.heard.slice(0, 50).map(String) : []);
+    const invites = [];
+    for (const invite of await rooms.invitesFor(player.id)) {
+      let changed = lapse(invite, t);
+      const toMe = invite.to.id === player.id;
+      if (toMe && invite.state === "sent" && heard.has(invite.id)) {
+        inviteTransition(invite, "heard", t);
+        changed = true;
+      }
+      if (FINAL_INVITE_STATES.includes(invite.state) && t - (invite.changedAt ?? invite.at) > lobbyLimits.keepInviteMs) {
+        await rooms.dropInvite(invite.id);
+        continue;
+      }
+      let show = false;
+      if (toMe) {
+        // A muted or blocked sender's invites are never heard; they are not told.
+        const quiet = relations.muted.has(invite.from.handle) || relations.blocked.has(invite.from.handle) || relations.blockedBy.has(invite.from.handle);
+        show = !quiet && (invite.state === "sent" || invite.state === "heard");
+      } else if (invite.state === "sent" || invite.state === "heard") {
+        show = true;
+      } else if (!invite.toldFrom && invite.state !== "withdrawn") {
+        // The sender hears how it ended, once.
+        show = true;
+        invite.toldFrom = true;
+        changed = true;
+      }
+      if (changed) await rooms.saveInvite(invite);
+      if (show) invites.push(publicInvite(invite, player));
+    }
+
+    // The player's own matches, waiting or in play: whose move, who sat down.
+    const mine = [];
+    for (const room of await rooms.listFor(player.id)) {
+      if (room.phase !== "waiting" && room.phase !== "playing") continue;
+      const member = room.members.find((m) => m.id === player.id);
+      if (!member || member.state === "left") continue;
+      mine.push(publicRoom(room, player, t, limits.presentMs));
+    }
+
+    // Tables anyone may take, oldest first, across every kind with rules.
+    const open = [];
+    for (const kind of Object.keys(handlers)) {
+      const handler = roomHandler(kind);
+      if (!handler || isChannel(handler)) continue;
+      for (const room of await rooms.openRooms(kind)) {
+        if (open.length >= lobbyLimits.openListed) break;
+        if (room.members.some((m) => m.id === player.id)) continue;
+        if (taken(room) >= room.seats.max) continue;
+        if (room.members.some((m) => blockedPair(relations, m))) continue;
+        const host = room.members.find((m) => m.host) ?? room.members[0];
+        open.push({ room: room.id, kind, code: room.code, host: host?.name ?? null, since: room.createdAt });
+      }
+    }
+    open.sort((a, b) => a.since - b.since);
+
+    return json({
+      ok: true,
+      you: { handle: player.handle, name: player.name, guest: Boolean(player.guest) },
+      state: entry.state,
+      here,
+      friends: friendList,
+      invites,
+      rooms: mine,
+      open,
+      every: lobbyLimits.pulseEvery,
+    });
+  }
+
+  /** POST rooms/invites { handle, kind, context? }: invite a player to a match. */
+  async function sendInvite(request) {
+    const player = await who(request);
+    if (!player) return error(401, "signed-out");
+    const body = (await readJson(request, 16 * 1024)) ?? {};
+    const kind = String(body.kind ?? "");
+    const handler = roomHandler(kind);
+    if (!handler) return error(404, "unknown-kind");
+    if (isChannel(handler)) return error(422, "not-a-match", "That kind is joined, not played.");
+    if (!isHandle(body.handle)) return error(400, "bad-request");
+    if (body.handle === player.handle) return error(422, "not-allowed", "That is you.");
+    const them = await rooms.playerByHandle(body.handle);
+    if (!them) return error(404, "unknown-player", "No player by that handle.");
+    const relations = await rooms.relations(player.id);
+    if (blockedPair(relations, them)) return error(403, "blocked");
+    const t = now();
+    const mine = await rooms.invitesFor(player.id);
+    let outstanding = 0;
+    for (const invite of mine) {
+      if (lapse(invite, t)) await rooms.saveInvite(invite);
+      if (invite.from.id !== player.id || FINAL_INVITE_STATES.includes(invite.state)) continue;
+      // The same invite again is the one already waiting.
+      if (invite.to.id === them.id && invite.kind === kind) return json({ ok: true, invite: publicInvite(invite, player) });
+      outstanding += 1;
+    }
+    if (outstanding >= lobbyLimits.outstandingInvites) return error(422, "too-many", "You have too many invites waiting.");
+    if (!(await limiter.allow(`invites:${player.id}`, lobbyLimits.invitesPerHour, 3_600_000))) return error(429, "rate-limited");
+    const side = (p) => ({ id: p.id, handle: p.handle, name: p.name, guest: Boolean(p.guest) });
+    const invite = {
+      id: randomId(),
+      kind,
+      from: side(player),
+      to: side(them),
+      state: "sent",
+      at: t,
+      changedAt: t,
+      room: null,
+      toldFrom: false,
+      context: body.context ?? null,
+    };
+    await rooms.saveInvite(invite);
+    return json({ ok: true, invite: publicInvite(invite, player) });
+  }
+
+  /** POST rooms/invites/<id> { answer: accept | decline | withdraw }. */
+  async function answerInvite(request, id) {
+    const player = await who(request);
+    if (!player) return error(401, "signed-out");
+    const body = (await readJson(request)) ?? {};
+    if (!INVITE_ANSWERS.includes(body.answer)) return error(400, "bad-request");
+    const invite = await rooms.getInvite(id);
+    const party = invite && (invite.from.id === player.id || invite.to.id === player.id);
+    if (!party) return error(404, "unknown-invite", "No such invite.");
+    const t = now();
+    if (lapse(invite, t)) await rooms.saveInvite(invite);
+    if (FINAL_INVITE_STATES.includes(invite.state)) {
+      return error(409, "invite-over", "That invite is over.", { state: invite.state, invite: publicInvite(invite, player) });
+    }
+    const toMe = invite.to.id === player.id;
+    if (body.answer === "withdraw") {
+      if (toMe) return error(403, "not-yours", "Only the sender takes an invite back.");
+      inviteTransition(invite, "withdrawn", t);
+      await rooms.saveInvite(invite);
+      return json({ ok: true, invite: publicInvite(invite, player) });
+    }
+    if (!toMe) return error(403, "not-yours", "Only the invited player answers.");
+    if (body.answer === "decline") {
+      inviteTransition(invite, "declined", t);
+      await rooms.saveInvite(invite);
+      return json({ ok: true, invite: publicInvite(invite, player) });
+    }
+    const handler = roomHandler(invite.kind);
+    if (!handler || isChannel(handler)) return error(404, "unknown-kind");
+    const relations = await rooms.relations(player.id);
+    if (blockedPair(relations, invite.from)) return error(403, "blocked");
+    const refused = await allowedToMake(player);
+    if (refused) return refused;
+    const sender = (await rooms.playerByHandle(invite.from.handle)) ?? invite.from;
+    const { room } = await makeRoom(invite.kind, handler, { ...invite.from, name: sender.name ?? invite.from.name }, {
+      context: invite.context ?? null,
+      members: [player],
+    });
+    if (taken(room) >= room.seats.max) {
+      try {
+        await begin(room, handler);
+      } catch (e) {
+        if (e instanceof Refusal) {
+          await rooms.save(room);
+          return error(422, e.code, e.message);
+        }
+        throw e;
+      }
+      await rooms.save(room);
+    }
+    invite.room = room.id;
+    inviteTransition(invite, "accepted", t);
+    await rooms.saveInvite(invite);
+    return json({ ok: true, invite: publicInvite(invite, player), room: publicRoom(room, player, now(), limits.presentMs) });
+  }
+
+  /** POST rooms/friends { handle, friend }: add or remove a friend. */
+  async function setFriend(request) {
+    const player = await who(request);
+    if (!player) return error(401, "signed-out");
+    if (!(await limiter.allow(`friends:${player.id}`, limits.roomEventsPerMinute, 60_000))) return error(429, "rate-limited");
+    const body = (await readJson(request)) ?? {};
+    if (!isHandle(body.handle) || typeof body.friend !== "boolean") return error(400, "bad-request");
+    if (body.handle === player.handle) return error(422, "not-allowed", "That is you.");
+    const them = await rooms.playerByHandle(body.handle);
+    if (!them) return error(404, "unknown-player", "No player by that handle.");
+    if (body.friend) {
+      const friends = await rooms.friendsOf(player.id);
+      if (!friends.includes(body.handle) && friends.length >= lobbyLimits.friendsPerPlayer) {
+        return error(422, "too-many", "You have too many friends listed.");
+      }
+    }
+    await rooms.setFriend(player.id, body.handle, body.friend);
+    const entry = presence.get(player.id);
+    if (entry) {
+      if (body.friend) entry.friends.add(body.handle);
+      else entry.friends.delete(body.handle);
+    }
+    return json({ ok: true, handle: body.handle, friend: body.friend, name: them.name });
+  }
+
   /** Answers a rooms request, or null when `parts` is not a rooms route. */
   return async function route(request, method, parts, url) {
     if (parts[0] !== "rooms") return null;
@@ -1063,6 +1377,10 @@ export function roomRoutes(deps) {
     if (method === "POST" && parts.length === 2 && parts[1] === "find") return find(request, url);
     if (method === "POST" && parts.length === 2 && parts[1] === "direct") return direct(request, url);
     if ((method === "GET" || method === "POST") && parts.length === 2 && parts[1] === "mutes") return mutes(request, method);
+    if (method === "POST" && parts.length === 2 && parts[1] === "pulse") return pulse(request);
+    if (method === "POST" && parts.length === 2 && parts[1] === "invites") return sendInvite(request);
+    if (method === "POST" && parts.length === 3 && parts[1] === "invites" && /^[0-9a-f]{24}$/.test(parts[2])) return answerInvite(request, parts[2]);
+    if (method === "POST" && parts.length === 2 && parts[1] === "friends") return setFriend(request);
     if (parts.length >= 2 && /^[0-9a-f]{24}$/.test(parts[1])) {
       if (method === "GET" && parts.length === 2) return get(request, url, parts[1]);
       if (method === "POST" && parts.length === 3 && parts[2] === "start") return start(request, parts[1]);

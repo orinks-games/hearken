@@ -30,6 +30,17 @@ export {
   MUTE_MODES,
 } from "./rooms.js";
 export {
+  memoryPresence,
+  inviteTransition,
+  presenceOf,
+  visibilityOf,
+  PRESENCE,
+  VISIBILITY,
+  INVITE_STATES,
+  FINAL_INVITE_STATES,
+  LOBBY_LIMITS,
+} from "./lobby.js";
+export {
   memoryAccounts,
   memoryLimiter,
   memoryRuns,

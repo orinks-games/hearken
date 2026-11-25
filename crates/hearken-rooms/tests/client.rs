@@ -739,3 +739,75 @@ fn a_channel_starts_from_its_recent_lines_and_hidden_lines_do_not_leave_it_behin
     rooms.watch(&room_id(), false);
     assert_eq!(rooms.focus(), None);
 }
+
+fn pulse_answer(here: &[&str], invites: Value) -> Result<hearken_rooms::Reply, String> {
+    reply(
+        200,
+        json!({
+            "ok": true,
+            "you": { "handle": "aaaaaaaaaaaaaaaa", "name": "Ada", "guest": false },
+            "state": "playing",
+            "here": here.iter().map(|n| json!({ "handle": "bbbbbbbbbbbbbbbb", "name": n, "state": "here" })).collect::<Vec<_>>(),
+            "friends": [],
+            "invites": invites,
+            "rooms": [],
+            "open": [],
+            "every": 60,
+        }),
+    )
+}
+
+#[test]
+fn the_pulse_goes_once_a_minute_and_tells_what_changed() {
+    let (mut rooms, script) = client();
+    let t0 = Instant::now();
+    // Off by default: nothing is sent.
+    settle(&mut rooms, t0);
+    assert!(script.paths().is_empty());
+    rooms.set_pulse(true);
+    rooms.set_whereabouts(hearken_rooms::Whereabouts::at(
+        hearken_rooms::Presence::Playing,
+        "larkfield",
+        "Larkfield",
+    ));
+    script.push_for("rooms/pulse", pulse_answer(&["Bo"], json!([])));
+    settle(&mut rooms, t0);
+    let sent = script.bodies();
+    let body = sent.last().unwrap();
+    assert_eq!(body["state"], "playing");
+    assert_eq!(body["place"], "Larkfield");
+    assert_eq!(body["show"], "everyone");
+    let notices = rooms.take_lobby_notices();
+    assert_eq!(
+        notices,
+        vec![hearken_rooms::LobbyNotice::Arrived { waiting: 0, here: 1 }]
+    );
+    assert_eq!(rooms.lobby().unwrap().here[0].line(), "Bo");
+
+    // Not again until the minute is up.
+    settle(&mut rooms, t0 + Duration::from_secs(30));
+    assert_eq!(script.paths().len(), 1);
+    let invite = json!([{
+        "id": "0123456789abcdef01234567", "kind": "pebbles", "state": "sent", "mine": false,
+        "from": { "handle": "bbbbbbbbbbbbbbbb", "name": "Bo" },
+        "to": { "handle": "aaaaaaaaaaaaaaaa", "name": "Ada" },
+    }]);
+    script.push_for("rooms/pulse", pulse_answer(&["Bo"], invite.clone()));
+    settle(&mut rooms, t0 + Duration::from_secs(61));
+    assert_eq!(script.paths().len(), 2);
+    let notices = rooms.take_lobby_notices();
+    assert!(matches!(&notices[..], [hearken_rooms::LobbyNotice::Invited(i)] if i.from.name == "Bo"));
+    assert_eq!(rooms.lobby().unwrap().waiting(), 1);
+
+    // Its notice given: the next pulse says heard, and comes sooner while
+    // a lobby screen is open.
+    rooms.mark_heard("0123456789abcdef01234567");
+    rooms.set_pulse_fast(true);
+    script.push_for("rooms/pulse", pulse_answer(&["Bo"], invite));
+    settle(&mut rooms, t0 + Duration::from_secs(70));
+    let sent = script.bodies();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent.last().unwrap()["heard"], json!(["0123456789abcdef01234567"]));
+    assert!(rooms.take_lobby_notices().is_empty());
+    assert!(rooms.describe().iter().any(|l| l.starts_with("lobby: playing larkfield")));
+}

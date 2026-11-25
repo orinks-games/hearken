@@ -69,7 +69,11 @@ impl<G: Game> App<G> {
         }
         self.ctx.update_commentary(dt);
         #[cfg(feature = "online")]
-        self.ctx.update_online();
+        {
+            self.ctx.update_online();
+            let top = self.states.last().map_or("none", |s| s.name());
+            self.ctx.update_lobby(top);
+        }
         #[cfg(feature = "update")]
         self.ctx
             .update_updates(self.states.last().is_some_and(|s| s.allows_update_prompt()));
@@ -186,6 +190,15 @@ impl<G: Game> App<G> {
                 return;
             }
         }
+        // The notice key opens the newest notice from any screen not
+        // taking typed text; with none it is the game's.
+        #[cfg(feature = "online")]
+        if let Some(lobby) = G::lobby() {
+            let typing = self.states.last().is_some_and(|s| s.takes_text());
+            if !typing && self.ctx.notice_key(lobby.key, event) {
+                return;
+            }
+        }
         if let Some(top) = self.states.last_mut() {
             top.handle_input(&mut self.ctx, event);
         }
@@ -228,6 +241,9 @@ impl<G: Game> App<G> {
             shell.render_scene(&self.visual_scene());
         }
         G::on_exit(&mut self.ctx);
+        // Away at once, rather than after the pulse's two minutes.
+        #[cfg(feature = "online")]
+        self.ctx.rooms.say_away();
         // A clean exit, so the next start does not offer to report a crash.
         #[cfg(feature = "report")]
         self.ctx.reports.end_session();

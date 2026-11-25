@@ -569,6 +569,55 @@ note)` hands that player's recent lines in the room to the server's
 the sender spoken with their name ("Ada, Lake Road: ..."), for a game that
 wants a place or a role on each line.
 
+### The lobby
+
+Beyond one room, a game can show who is online, let players invite each
+other to a match, keep a list of friends, and tell the player what
+happened wherever they are. The client sends a pulse once a minute (every
+10 s while a lobby screen is open): where the player is, and who may see
+them. The answer lists who is here, the player's friends, invites, their
+own matches waiting or in play, and open tables, and the client turns
+what changed since the last pulse into `LobbyNotice`s: `Arrived` (the
+first pulse: "2 games wait on you. 4 players here."), `Invited`,
+`Answered`, `SatDown`, `YourMove`, `FriendHere` and `OpenTable`.
+
+A game opts in with `Game::lobby`:
+
+```rust
+fn lobby() -> Option<LobbyConfig<Self>> {
+    Some(
+        LobbyConfig::new(|ctx| vec![pebbles::room_kind()])
+            .key(Chord::plain(Key::F3))
+            .whereabouts(|ctx, top| Whereabouts::here())
+            .hold(|ctx, top| top == "my_game_run"),
+    )
+}
+```
+
+The engine then keeps the pulse going while the player is online, speaks
+each notice once with a cue behind what is being said, and lets the key
+reach the newest (Go there, Later, No). `hold` keeps notices back while
+it is true, so nothing talks over a timed run; they are said once it is
+false. A notice is an explicit state (`NoticeState`: waiting, held, said,
+kept, done), logged as `[notice] 3 invited: waiting -> said`. Moves and
+seats at the table the player is at are never notices. `go` takes the
+player to a match when they need to leave where they are first. The
+screens are in `screens::lobby`: `PlayOnlineScreen` (Who's here,
+Invites, Friends, Notices, then each kind's Online play menu), the player
+lists, one player (Invite, Add or Remove friend, Mute or Unmute, Block or
+Unblock), invites and notices. Settings, Online gains Online notices
+(all, friends and my games, off) and Show me as here (everyone, friends
+only, nobody); the first time a player is listed they hear so once.
+
+Presence is kept in the server's memory, never stored: a player is away
+once no pulse has come for 2 minutes, and a pulse with `state: "away"`
+(sent on quitting) drops them at once. Friends are one-sided: adding
+someone does not ask or tell them, and "friends only" shows the player to
+the players they added. Guests are listed like accounts. An invite lapses
+after three days unanswered; the sender hears the answer once. Mutes and
+blocks apply: a muted player's invites do not reach the player, and a
+blocked pair never sees each other.
+
 ### The rooms protocol
 
 Relative to the game's base URL, with the bearer token on every request.
@@ -588,6 +637,10 @@ ids are not sent).
 | `POST rooms/<id>/start` | The host starts with at least `seats.min` filled. `403 not-the-host`, `422 not-enough-players`. |
 | `POST rooms/<id>/events` | One event: `turn {inputs:[[code,value],...]}`, `chat {text, tag?}`, `leave`, or `finish`. Answers `{seq}`. `leave` frees a waiting seat, forfeits a match in play, leaves a channel, closes a direct room, and drops a room that is over from the player's list. |
 | `POST rooms/<id>/report` `{handle, note?}` | Hands that member's last 20 lines in the room, with the note, to the service's `report` hook. |
+| `POST rooms/pulse` `{state, game?, place?, show, heard?}` | The lobby's pulse. `state` is `here`, `playing`, `table` or `away`; `show` is `everyone`, `friends` or `nobody`; `heard` lists invite ids the player has had. Answers `{you, state, here, friends, invites, rooms, open, every}`: players `{handle, name, guest, state, game, place, friend}`, invites `{id, kind, from, to, state, at, changed_at, mine, room}`, the player's matches as `GET rooms` gives them, open tables `{room, kind, code, host, since}`, and `every`, the seconds to the next pulse. |
+| `POST rooms/invites` `{kind, handle}` | Invites that player to a match of that kind. `404 unknown-player`, `403 blocked`, `422 too-many` (20 waiting at once), 30 an hour. |
+| `POST rooms/invites/<id>` `{answer}` | `accept` (the invited player: makes the match with both seated and starts it, answering `{room}`), `decline`, or `withdraw` (the sender). `409 invite-over`, `403 not-yours`. |
+| `POST rooms/friends` `{handle, friend}` | Adds or removes a friend. The other player is not told. |
 | `GET rooms/mutes` | Who the player has muted or blocked: `{mutes:[{handle, mode, name}]}`. |
 | `POST rooms/mutes` `{handle, mode}` | `mode` is `mute`, `block` or `none`. The other player is not told. A block closes any direct room between the two, and a line posted to a direct room across a block is `403 blocked`. |
 

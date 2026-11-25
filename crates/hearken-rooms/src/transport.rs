@@ -147,6 +147,16 @@ impl Scripted {
             .unwrap_or_else(|| Err("nothing scripted".into()))
     }
 
+    /// The bodies sent so far, in order (`null` for a GET).
+    pub fn bodies(&self) -> Vec<Value> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, _, b)| b.clone())
+            .collect()
+    }
+
     /// The URLs requested so far, without the base.
     pub fn paths(&self) -> Vec<String> {
         self.requests

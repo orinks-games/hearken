@@ -20,13 +20,18 @@
 
 mod client;
 mod error;
+pub mod lobby;
 mod matches;
 pub mod protocol;
 pub mod transport;
 
 pub use client::{
     Answer, Connection, Notice, Room, Rooms, RoomsConfig, Ticket, HISTORY_LINES, MAX_IN_FLIGHT,
-    POLL_ACTIVE, POLL_QUIET, QUIET_AFTER,
+    POLL_ACTIVE, POLL_QUIET, PULSE_EVERY, PULSE_FAST, QUIET_AFTER,
+};
+pub use lobby::{
+    Invite, InviteAnswer, InviteState, Lobby, LobbyNotice, OpenTable, Player, Presence, Side,
+    Visibility, Whereabouts,
 };
 pub use error::RoomsError;
 pub use matches::{Applied, Match, MatchError, Sync};
