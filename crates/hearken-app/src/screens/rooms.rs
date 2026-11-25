@@ -152,12 +152,7 @@ fn leave_question(info: &RoomInfo) -> String {
 /// One line for a room in a list: whose game it is and where it stands.
 fn room_line<G: Game>(kind: &RoomKind<G>, info: &RoomInfo) -> String {
     let label = kind.label_of(&info.kind);
-    let others = info.others();
-    let with = if others.is_empty() {
-        String::new()
-    } else {
-        format!(" with {}", others.join(" and "))
-    };
+    let names = info.others().join(" and ");
     let standing = match info.phase {
         Phase::Waiting => format!("waiting for {} more", info.missing()),
         Phase::Playing => info
@@ -176,12 +171,18 @@ fn room_line<G: Game>(kind: &RoomKind<G>, info: &RoomInfo) -> String {
             .map_or_else(|| "over".to_string(), |s| format!("over, {s}")),
         other => other.spoken().to_string(),
     };
-    let unread = if info.unread > 0 && info.phase != Phase::Waiting {
-        format!(", {} new", info.unread)
+    let new = if info.phase == Phase::Waiting {
+        0
     } else {
-        String::new()
+        info.unread
     };
-    format!("{label}{with}: {standing}{unread}")
+    // Each shape whole, so a catalog has the line as one template.
+    match (names.is_empty(), new) {
+        (true, 0) => format!("{label}: {standing}"),
+        (true, new) => format!("{label}: {standing}, {new} new"),
+        (false, 0) => format!("{label} with {names}: {standing}"),
+        (false, new) => format!("{label} with {names}: {standing}, {new} new"),
+    }
 }
 
 /// Where a room the player just entered goes: a waiting room to its screen,
