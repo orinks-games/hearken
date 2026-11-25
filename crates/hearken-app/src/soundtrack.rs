@@ -1752,6 +1752,13 @@ impl<G: Game> SoundtrackScreen<G> {
         false
     }
 
+    /// Whether every listed track is open from the start, so the album has
+    /// nothing to unlock.
+    fn all_open(&self, ctx: &Ctx<G>) -> bool {
+        let listed = ctx.soundtrack.listed(self.album.as_deref());
+        !listed.is_empty() && listed.iter().all(|t| t.open)
+    }
+
     fn counts(&self, ctx: &Ctx<G>) -> (usize, usize) {
         let listed = ctx.soundtrack.listed(self.album.as_deref());
         let unlocked = listed
@@ -2245,7 +2252,12 @@ impl<G: Game> Menu for SoundtrackScreen<G> {
         let (unlocked, listed) = self.counts(ctx);
         let title = crate::text::end_sentence(&self.core.title);
         let tracks = if listed == 1 { "track" } else { "tracks" };
-        ctx.say(format!("{title} {unlocked} of {listed} {tracks} unlocked."));
+        if self.all_open(ctx) {
+            // Nothing here was ever locked, such as the player's own songs.
+            ctx.say(format!("{title} {listed} {tracks}."));
+        } else {
+            ctx.say(format!("{title} {unlocked} of {listed} {tracks} unlocked."));
+        }
         let current = self.current_text(ctx);
         ctx.say_queued(current);
     }

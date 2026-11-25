@@ -486,10 +486,7 @@ fn a_title_ending_in_a_question_mark_is_read_cleanly() {
     let intro = h.spoken();
     h.clear();
     h.press(Key::Return);
-    assert!(
-        intro.iter().any(|l| l.contains("1 of 1 track unlocked.")),
-        "{intro:?}"
-    );
+    assert!(intro.iter().any(|l| l.ends_with(" 1 track.")), "{intro:?}");
     assert_eq!(h.spoken(), vec!["Playing Who goes there?"]);
 }
 
