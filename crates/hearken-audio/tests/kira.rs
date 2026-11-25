@@ -1049,3 +1049,51 @@ fn a_cab_speaker_insert_plays_clean_untouched_and_voiced_changed() {
     };
     assert!(side(|f| f.right) < side(|f| f.left));
 }
+
+#[test]
+fn scheduled_starts_land_on_their_samples_and_the_clock_counts_mixed_sound() {
+    let mut r = rig();
+    r.render(RATE as usize / 10);
+    let now = r.b.clock_s().expect("Kira keeps a clock");
+    assert!(now > 0.05 && now < 0.2, "clock at {now}");
+    // Two clicks handed over together, a little ahead, at times between
+    // buffers: the gap between them holds to within one of Kira's internal
+    // buffers (128 frames, under 3 ms), whenever the game asked.
+    let at = now + 0.1234;
+    let gap = 0.2501;
+    let mut click = vec![0.0f32; RATE as usize / 20];
+    click[0] = 1.0;
+    for t in [at, at + gap] {
+        r.b.play_scheduled(
+            "click",
+            clip(&click),
+            false,
+            mix(1.0, 0.0, 1.0, None),
+            0.0,
+            None,
+            t,
+        )
+        .expect("plays");
+    }
+    let heard = r.render(RATE as usize);
+    let loud = |f: &Frame| f.left.abs() > 0.1 || f.right.abs() > 0.1;
+    let first = heard.iter().position(loud).expect("the first click");
+    let second = first
+        + 10
+        + heard[first + 10..]
+            .iter()
+            .position(loud)
+            .expect("the second click");
+    let heard_gap = (second - first) as f64 / RATE as f64;
+    assert!(
+        (heard_gap - gap).abs() < 129.0 / RATE as f64,
+        "gap {heard_gap}, wanted {gap}"
+    );
+    // And the first lands near its time: the clock is read between
+    // buffers, so it may be up to one of Kira's buffers behind the mix.
+    let heard_at = now + first as f64 / RATE as f64;
+    assert!(
+        (heard_at - at).abs() < 0.01,
+        "heard at {heard_at}, wanted {at}"
+    );
+}

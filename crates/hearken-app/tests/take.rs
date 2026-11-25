@@ -521,3 +521,115 @@ fn a_screen_opened_to_save_a_track_starts_saving_on_arrival() {
         h.spoken()
     );
 }
+
+#[test]
+fn a_note_handed_over_ahead_is_kept_at_its_time_and_replayed_ahead_of_it() {
+    let mut h = game();
+    h.app.ctx.begin_take(&[Bus::MUSIC]);
+    h.frame(1.0);
+    // A note for 0.3 s from now, on the audio clock.
+    let at = h.app.ctx.audio.clock_s() + 0.3;
+    h.app
+        .ctx
+        .audio
+        .start_with("music/bell", Bus::MUSIC, Start::ONCE.at(at));
+    h.frame(1.0);
+    let take = h.app.ctx.end_take().expect("a take");
+    let start = take
+        .events
+        .iter()
+        .find(|e| matches!(e, TakeEvent::Start { .. }))
+        .expect("the note");
+    assert!((start.t() - 1.3).abs() < 0.01, "kept at {}", start.t());
+
+    // Replayed, the note is handed over before its time, not on it.
+    let mut h2 = game();
+    let mut performer = TakePerformer::new(Rc::new(take));
+    performer.start(&mut h2.app.ctx.audio);
+    let mut clock = 0.0;
+    while h2.sounds.channel_of("music/bell").is_none() {
+        assert!(performer.update(&mut h2.app.ctx.audio, 0.05));
+        h2.frame(0.05);
+        clock += 0.05;
+        assert!(clock < 2.0, "never handed over");
+    }
+    assert!((1.1..1.3).contains(&clock), "handed over at {clock}");
+}
+
+#[test]
+fn a_lent_take_waits_through_screens_between_rounds_and_records_the_whole_run() {
+    let mut h = game();
+    h.app.ctx.push(Probe::new("play"));
+    h.frame(0.0);
+    h.app.ctx.begin_take(&[Bus::MUSIC]);
+    let first = h.app.ctx.audio.play("music/round-1", Bus::MUSIC);
+    h.frame(1.0);
+    h.app.ctx.audio.stop(first, 0);
+    h.app.ctx.lend_take(&["between"]);
+    h.app.ctx.replace(Probe::new("between"));
+    h.frame(0.0);
+    assert_eq!(h.app.ctx.take_state(), TakeState::Held);
+    // A pause over the screen between rounds holds it too.
+    h.app.ctx.push(Probe::new("pause"));
+    h.frame(3.0);
+    h.app.ctx.pop();
+    h.frame(2.0);
+    assert_eq!(h.app.ctx.take_state(), TakeState::Held);
+    h.app.ctx.replace(Probe::new("play"));
+    h.frame(0.0);
+    assert_eq!(h.app.ctx.take_state(), TakeState::Recording);
+    let second = h.app.ctx.audio.play("music/round-2", Bus::MUSIC);
+    h.frame(0.5);
+    h.app.ctx.audio.stop(second, 0);
+    let take = h.app.ctx.end_take().expect("one take for the run");
+    assert_eq!(take.starts(), 2);
+    assert!((take.length_s - 1.5).abs() < 0.01, "{}", take.length_s);
+}
+
+#[test]
+fn a_lent_take_is_dropped_when_another_screen_takes_its_place() {
+    for leave in ["pop", "other"] {
+        let mut h = game();
+        h.app.ctx.push(Probe::new("play"));
+        h.frame(0.0);
+        h.app.ctx.begin_take(&[Bus::MUSIC]);
+        h.app.ctx.audio.play("music/bed", Bus::MUSIC);
+        h.frame(1.0);
+        h.app.ctx.lend_take(&["between"]);
+        h.app.ctx.replace(Probe::new("between"));
+        h.frame(0.0);
+        assert_eq!(h.app.ctx.take_state(), TakeState::Held);
+        if leave == "pop" {
+            h.app.ctx.pop();
+        } else {
+            h.app.ctx.replace(Probe::new("other"));
+        }
+        h.frame(0.0);
+        assert_eq!(h.app.ctx.take_state(), TakeState::Idle, "{leave}");
+        // Lending is spent with the take: a new owner starts plain.
+        h.app.ctx.replace(Probe::new("play"));
+        h.frame(0.0);
+        assert!(h.app.ctx.end_take().is_none(), "{leave}");
+    }
+}
+
+#[test]
+fn a_second_save_of_the_same_name_keeps_the_first_file() {
+    use hearken_app::soundtrack::export::unused_path;
+    let dir = tempfile::tempdir().unwrap();
+    let name = "01 Morning, 22 November 2026.ogg";
+    let first = unused_path(dir.path(), name);
+    assert_eq!(first, dir.path().join(name));
+    std::fs::write(&first, b"first").unwrap();
+    let second = unused_path(dir.path(), name);
+    assert_eq!(
+        second,
+        dir.path().join("01 Morning, 22 November 2026 (2).ogg")
+    );
+    std::fs::write(&second, b"second").unwrap();
+    assert_eq!(
+        unused_path(dir.path(), name),
+        dir.path().join("01 Morning, 22 November 2026 (3).ogg")
+    );
+    assert_eq!(std::fs::read(&first).unwrap(), b"first");
+}

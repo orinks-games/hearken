@@ -76,6 +76,35 @@ pub trait Backend: Send {
         self.play_from(key, source, looping, mix, from_s)
     }
 
+    /// Starts `source` as [`Backend::play_inserted`] (with `insert`) or
+    /// [`Backend::play_from`] (without) would, but silent until `at_s` on
+    /// the backend's clock ([`Backend::clock_s`]), then from that sample
+    /// on. A backend with no clock starts it at once, which is the default.
+    #[allow(clippy::too_many_arguments)]
+    fn play_scheduled(
+        &mut self,
+        key: &str,
+        source: Source,
+        looping: bool,
+        mix: Mix,
+        from_s: f64,
+        insert: Option<&Insert>,
+        at_s: f64,
+    ) -> Result<Channel, BackendError> {
+        let _ = at_s;
+        match insert {
+            Some(insert) => self.play_inserted(key, source, looping, mix, from_s, insert),
+            None => self.play_from(key, source, looping, mix, from_s),
+        }
+    }
+
+    /// Seconds of sound the backend has mixed since it opened, to the
+    /// sample, as [`Backend::play_scheduled`] counts them. `None` for a
+    /// backend with no clock, which is the default.
+    fn clock_s(&self) -> Option<f64> {
+        None
+    }
+
     /// Changes a playing channel's mix, ramping over `ramp_ms`.
     fn set_mix(&mut self, channel: Channel, mix: Mix, ramp_ms: u32);
 

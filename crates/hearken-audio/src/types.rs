@@ -177,6 +177,13 @@ pub struct Start {
     pub region: Option<LoopRegion>,
     /// Seconds into the clip to start from; `0` is the top.
     pub from_s: f64,
+    /// When to start, on the pool's audio clock
+    /// ([`Audio::clock_s`](crate::Audio::clock_s)): a time a little ahead
+    /// starts the sound on that sample, not on the next frame, so notes a
+    /// game hands over early land on the beat (Kira places a start on the
+    /// first of its 128-frame buffers at or after the time, under 3 ms
+    /// late). `None`, or a time already past, starts at once.
+    pub at_s: Option<f64>,
 }
 
 impl Start {
@@ -188,6 +195,7 @@ impl Start {
         looping: false,
         region: None,
         from_s: 0.0,
+        at_s: None,
     };
 
     /// Looping, at unity, centred, from the top.
@@ -217,6 +225,14 @@ impl Start {
 
     pub const fn from_s(self, from_s: f64) -> Start {
         Start { from_s, ..self }
+    }
+
+    /// Starts at `at_s` on the pool's audio clock (see [`Start::at_s`]).
+    pub const fn at(self, at_s: f64) -> Start {
+        Start {
+            at_s: Some(at_s),
+            ..self
+        }
     }
 }
 

@@ -257,6 +257,9 @@ pub struct Audio {
     seen: Vec<String>,
     /// A take being recorded (`begin_take`).
     take: Option<Recorder>,
+    /// Seconds of frames the app has run, for [`Audio::clock_s`] on a
+    /// backend with no clock of its own.
+    frame_clock_s: f64,
 }
 
 /// A sound that started, as an agent listening to the game hears of it.
@@ -291,6 +294,7 @@ impl Audio {
             watched: BTreeSet::new(),
             seen: Vec::new(),
             take: None,
+            frame_clock_s: 0.0,
         }
     }
 
@@ -452,6 +456,7 @@ impl Audio {
     /// missing. A feed is the same: it has no clip either. Shared by
     /// `launch` and, for the replay after a deferred backend opens, `open`'s
     /// `swap_backend`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn play_with_fallback(
         &mut self,
         key: &str,
@@ -460,9 +465,10 @@ impl Audio {
         mix: Mix,
         from_s: f64,
         bus: Bus,
+        at_s: Option<f64>,
     ) -> Option<Channel> {
         let is_live = matches!(source, Source::Voice(_) | Source::Feed(_));
-        match self.play_on_backend(key, source, looping, mix, from_s, bus) {
+        match self.play_on_backend(key, source, looping, mix, from_s, bus, at_s) {
             Ok(channel) => Some(channel),
             Err(err) => {
                 if is_live {
@@ -482,6 +488,7 @@ impl Audio {
                     mix,
                     0.0,
                     bus,
+                    at_s,
                 ) {
                     Ok(channel) => Some(channel),
                     Err(err) => {
@@ -496,7 +503,9 @@ impl Audio {
     /// A sound on a bus with an insert goes through
     /// [`Backend::play_inserted`]; otherwise `from_s` past the top goes
     /// through [`Backend::play_from`], and from the top through
-    /// [`Backend::play`], as it always has.
+    /// [`Backend::play`], as it always has. A start at a time on the audio
+    /// clock goes through [`Backend::play_scheduled`].
+    #[allow(clippy::too_many_arguments)]
     fn play_on_backend(
         &mut self,
         key: &str,
@@ -505,7 +514,20 @@ impl Audio {
         mix: Mix,
         from_s: f64,
         bus: Bus,
+        at_s: Option<f64>,
     ) -> Result<Channel, BackendError> {
+        if let Some(at_s) = at_s {
+            let insert = self.mixing.inserts.get(&bus);
+            return self.backend.play_scheduled(
+                key,
+                source,
+                looping,
+                mix,
+                from_s.max(0.0),
+                insert,
+                at_s,
+            );
+        }
         if let Some(insert) = self.mixing.inserts.get(&bus) {
             self.backend
                 .play_inserted(key, source, looping, mix, from_s.max(0.0), insert)
@@ -596,7 +618,16 @@ impl Audio {
         let live = self.live_for(key, Some(bytes.clone()), bus, start);
         let mix = self.mix_of(&live);
         let from_s = offset(start);
-        match self.play_on_backend(key, Source::Clip(bytes), live.looping, mix, from_s, bus) {
+        let at_s = self.scheduled(start);
+        match self.play_on_backend(
+            key,
+            Source::Clip(bytes),
+            live.looping,
+            mix,
+            from_s,
+            bus,
+            at_s,
+        ) {
             Ok(channel) => Ok(self.adopt(live, channel, mix, start)),
             Err(err) => {
                 if self.note_missing(key) {
@@ -641,7 +672,8 @@ impl Audio {
         live.channel = channel;
         live.sent = mix;
         let sound = self.alloc(live);
-        self.note_started(sound, offset(start));
+        let delay_s = self.scheduled(start).map_or(0.0, |at| at - self.clock_s());
+        self.note_started(sound, offset(start), delay_s);
         if let (true, Some(region)) = (start.looping, start.region) {
             self.apply_region(sound, region);
         }
@@ -661,7 +693,16 @@ impl Audio {
         live.pos = pos.filter(|p| p.is_finite());
         let mix = self.mix_of(&live);
         let from_s = offset(start);
-        match self.play_with_fallback(key, Source::Clip(bytes), live.looping, mix, from_s, bus) {
+        let at_s = self.scheduled(start);
+        match self.play_with_fallback(
+            key,
+            Source::Clip(bytes),
+            live.looping,
+            mix,
+            from_s,
+            bus,
+            at_s,
+        ) {
             Some(channel) => self.adopt(live, channel, mix, start),
             None => Sound::NONE,
         }
@@ -672,12 +713,12 @@ impl Audio {
     fn launch(&mut self, source: Source, mut live: Live) -> Sound {
         let mix = self.mix_of(&live);
 
-        match self.play_with_fallback(&live.key, source, live.looping, mix, 0.0, live.bus) {
+        match self.play_with_fallback(&live.key, source, live.looping, mix, 0.0, live.bus, None) {
             Some(channel) => {
                 live.channel = channel;
                 live.sent = mix;
                 let sound = self.alloc(live);
-                self.note_started(sound, 0.0);
+                self.note_started(sound, 0.0, 0.0);
                 sound
             }
             None => Sound::NONE,
@@ -1135,9 +1176,30 @@ impl Audio {
     /// Moves the take's clock on by `dt` seconds of play. The app calls it
     /// once a frame; a pool with no take ignores it.
     pub fn advance_take(&mut self, dt: f64) {
+        if dt.is_finite() && dt > 0.0 {
+            self.frame_clock_s += dt;
+        }
         if let Some(take) = self.take.as_mut() {
             take.advance(dt);
         }
+    }
+
+    /// Seconds on the audio clock: how much sound the backend has mixed
+    /// since it opened, read to the sample, for [`Start::at_s`]. A game
+    /// that wants notes on the beat reads it, adds where each note falls,
+    /// and hands the notes over a little ahead. A backend with no clock of
+    /// its own (the silent one, a test double) counts the frames the app
+    /// has run instead ([`Audio::advance_take`]), and starts a scheduled
+    /// sound at once.
+    pub fn clock_s(&self) -> f64 {
+        self.backend.clock_s().unwrap_or(self.frame_clock_s)
+    }
+
+    /// `start`'s time on the audio clock, when it is ahead of now; a time
+    /// already past (or not a number) starts at once.
+    fn scheduled(&self, start: Start) -> Option<f64> {
+        let at = start.at_s.filter(|t| t.is_finite())?;
+        (at > self.clock_s()).then_some(at)
     }
 
     /// Ends the take and hands it back, or `None` when nothing was
@@ -1163,7 +1225,7 @@ impl Audio {
 
     /// Tells the take about a clip that just took `sound`'s slot. A live
     /// voice or a feed has no clip to perform again, so it is not followed.
-    fn note_started(&mut self, sound: Sound, from_s: f64) {
+    fn note_started(&mut self, sound: Sound, from_s: f64, delay_s: f64) {
         let Some(take) = self.take.as_mut() else {
             return;
         };
@@ -1184,6 +1246,7 @@ impl Audio {
             live.region,
             from_s,
             live.pos,
+            delay_s,
         );
     }
 

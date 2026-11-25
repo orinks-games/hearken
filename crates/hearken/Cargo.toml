@@ -51,6 +51,8 @@ report = ["hearken-app/report"]
 hearken-app.workspace = true
 # `hearken::replay`: recording runs, and the rules a server replays them with.
 hearken-replay.workspace = true
+# `hearken::band`: a new song every run, played note by note.
+hearken-band.workspace = true
 hearken-radio = { workspace = true, optional = true }
 hearken-voice = { workspace = true, optional = true }
 # A direct dependency, so build.rs sees Prism's link arguments.

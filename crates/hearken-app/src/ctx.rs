@@ -99,6 +99,11 @@ pub struct Ctx<G: Game> {
     pub(crate) screen: &'static str,
     /// The screen whose take is recording (`begin_take`), if any.
     pub(crate) take_owner: Option<&'static str>,
+    /// Where on the stack the take's owner last stood.
+    take_slot: Option<usize>,
+    /// Screens that may stand in the owner's place without dropping its
+    /// take ([`Ctx::lend_take`]); empty unless lent.
+    take_lent: &'static [&'static str],
     pub frame: u64,
     /// Seconds since the run started, the sum of every frame's `dt`.
     pub clock: f64,
@@ -188,6 +193,8 @@ impl<G: Game> Ctx<G> {
             changed: 0,
             screen: "none",
             take_owner: None,
+            take_slot: None,
+            take_lent: &[],
             frame: 0,
             clock: 0.0,
             audio: Audio::silent(),
@@ -473,6 +480,8 @@ impl<G: Game> Ctx<G> {
         let from = self.audio.take_state();
         self.audio.begin_take(buses);
         self.take_owner = Some(self.screen);
+        self.take_slot = None;
+        self.take_lent = &[];
         self.note_take(from, TakeState::Recording);
     }
 
@@ -481,10 +490,25 @@ impl<G: Game> Ctx<G> {
         let from = self.audio.take_state();
         let take = self.audio.end_take();
         self.take_owner = None;
+        self.take_lent = &[];
         if take.is_some() {
             self.note_take(from, TakeState::Ended);
         }
         take
+    }
+
+    /// Lets the take outlive its owner leaving the stack, for a game whose
+    /// run screen hands over to screens of its own between rounds (an
+    /// upgrade menu, a route menu) and comes back as a new screen of the
+    /// same name. While one of `screens` stands where the owner stood, the
+    /// take is held, as under a pause menu; when a screen with the owner's
+    /// name is back on top it records again, so the whole run is one take.
+    /// Anything else in that place drops it, as before. Call it before the
+    /// owner leaves; it lasts until the owner is back or the take ends.
+    pub fn lend_take(&mut self, screens: &'static [&'static str]) {
+        if self.take_owner.is_some() {
+            self.take_lent = screens;
+        }
     }
 
     /// Where the take recorder is: idle with no take.
@@ -501,6 +525,21 @@ impl<G: Game> Ctx<G> {
             return;
         };
         let from = self.audio.take_state();
+        if let Some(at) = stack.iter().rposition(|s| *s == owner) {
+            self.take_slot = Some(at);
+            self.take_lent = &[];
+        } else if self
+            .take_slot
+            .and_then(|at| stack.get(at))
+            .is_some_and(|s| self.take_lent.contains(s))
+        {
+            self.audio.hold_take(true);
+            let to = self.audio.take_state();
+            if from != to {
+                self.note_take(from, to);
+            }
+            return;
+        }
         if !stack.contains(&owner) {
             log::warn!(target: hearken_audio::take::TARGET, "{owner} left without ending its take; dropped");
             self.audio.end_take();

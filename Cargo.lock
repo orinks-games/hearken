@@ -1170,6 +1170,7 @@ name = "hearken"
 version = "0.1.0"
 dependencies = [
  "hearken-app",
+ "hearken-band",
  "hearken-radio",
  "hearken-replay",
  "hearken-speech",
@@ -1230,6 +1231,16 @@ name = "hearken-bake"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+]
+
+[[package]]
+name = "hearken-band"
+version = "0.1.0"
+dependencies = [
+ "hearken-audio",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -165,6 +165,36 @@ fn is_zero(v: &f64) -> bool {
 }
 
 impl TakeEvent {
+    /// The recorded sound the event is about; `None` for a listener move.
+    pub fn id(&self) -> Option<u32> {
+        match self {
+            TakeEvent::Start { id, .. }
+            | TakeEvent::Stop { id, .. }
+            | TakeEvent::Release { id, .. }
+            | TakeEvent::Pause { id, .. }
+            | TakeEvent::Volume { id, .. }
+            | TakeEvent::Pitch { id, .. }
+            | TakeEvent::Pan { id, .. }
+            | TakeEvent::Position { id, .. } => Some(*id),
+            TakeEvent::Listener { .. } => None,
+        }
+    }
+
+    /// Moves the event to `t` if it is earlier.
+    fn not_before(&mut self, at: f64) {
+        match self {
+            TakeEvent::Start { t, .. }
+            | TakeEvent::Stop { t, .. }
+            | TakeEvent::Release { t, .. }
+            | TakeEvent::Pause { t, .. }
+            | TakeEvent::Volume { t, .. }
+            | TakeEvent::Pitch { t, .. }
+            | TakeEvent::Pan { t, .. }
+            | TakeEvent::Position { t, .. }
+            | TakeEvent::Listener { t, .. } => *t = t.max(at),
+        }
+    }
+
     /// Seconds into the take.
     pub fn t(&self) -> f64 {
         match self {
@@ -273,6 +303,11 @@ pub(crate) struct Recorder {
     /// `resume_all` after the take was held) is nothing.
     paused: HashSet<u32>,
     cut: bool,
+    /// When each sound handed over ahead of its time starts, by id.
+    starts_at: HashMap<u32, f64>,
+    /// Whether any sound was handed over ahead, so the events need putting
+    /// in time order when the take ends.
+    ahead: bool,
 }
 
 impl Recorder {
@@ -293,6 +328,8 @@ impl Recorder {
             listener_pending: None,
             paused: HashSet::new(),
             cut: false,
+            starts_at: HashMap::new(),
+            ahead: false,
         };
         r.set_state(TakeState::Recording);
         if pos.is_finite() {
@@ -356,6 +393,9 @@ impl Recorder {
         self.flush_all();
         self.set_state(TakeState::Ended);
         self.set_state(TakeState::Idle);
+        if self.ahead {
+            self.in_time_order();
+        }
         let mut buses: Vec<String> = self.buses.iter().map(|b| b.0.to_string()).collect();
         buses.sort();
         Take {
@@ -365,6 +405,20 @@ impl Recorder {
             cut: self.cut,
             events: std::mem::take(&mut self.events),
         }
+    }
+
+    /// Puts the events in time order, once sounds were handed over ahead of
+    /// their time: a sound's own events move to no earlier than its start
+    /// (a stop that came before the note sounded stops it as it starts),
+    /// then everything sorts by time, keeping the order of events at the
+    /// same moment.
+    fn in_time_order(&mut self) {
+        for event in &mut self.events {
+            if let Some(&start) = event.id().and_then(|id| self.starts_at.get(&id)) {
+                event.not_before(start);
+            }
+        }
+        self.events.sort_by(|a, b| a.t().total_cmp(&b.t()));
     }
 
     /// Whether the recorder follows sounds on `bus` right now: recording,
@@ -407,6 +461,7 @@ impl Recorder {
         region: Option<LoopRegion>,
         from_s: f64,
         pos: Option<Vec3>,
+        delay_s: f64,
     ) {
         if !self.follows(bus) || sound == Sound::NONE {
             return;
@@ -423,7 +478,18 @@ impl Recorder {
         self.last.insert((id, Part::Volume), volume);
         self.last.insert((id, Part::Pitch), pitch);
         self.last.insert((id, Part::Pan), pan);
-        let t = self.clock;
+        // A sound handed over ahead of its time starts at that time in the
+        // take too; anything done to it lands no earlier than its start.
+        let delay_s = if delay_s.is_finite() {
+            delay_s.max(0.0)
+        } else {
+            0.0
+        };
+        let t = self.clock + delay_s;
+        if delay_s > 0.0 {
+            self.starts_at.insert(id, t);
+            self.ahead = true;
+        }
         self.push(TakeEvent::Start {
             t,
             id,
@@ -676,6 +742,7 @@ mod tests {
             None,
             0.0,
             None,
+            0.0,
         );
     }
 
@@ -770,6 +837,7 @@ mod tests {
             Some(LoopRegion::new(1.0, 2.0)),
             0.25,
             Some(Vec3::new(1.0, 2.0, 0.0)),
+            0.0,
         );
         r.listener_moved(Vec3::new(0.0, 1.0, 0.0), 90.0);
         r.advance(0.1);
@@ -813,5 +881,38 @@ mod tests {
         r.end();
         assert_eq!(r.state(), TakeState::Idle);
         assert_eq!(TakeState::Ended.name(), "ended");
+    }
+    #[test]
+    fn a_sound_handed_over_ahead_starts_at_its_time_and_the_take_stays_in_order() {
+        let mut r = Recorder::new(&[Bus::MUSIC], Vec3::ZERO, 0.0);
+        r.advance(1.0);
+        // A note handed over 0.25 s ahead, then stopped before it sounds,
+        // and a sound started at once after it.
+        r.started(
+            sound(1),
+            Bus::MUSIC,
+            "band/note",
+            1.0,
+            0.0,
+            1.0,
+            false,
+            None,
+            0.0,
+            None,
+            0.25,
+        );
+        r.stopped(sound(1), 10);
+        start(&mut r, 2, Bus::MUSIC);
+        r.advance(0.5);
+        let take = r.end();
+        let times: Vec<f64> = take.events.iter().map(TakeEvent::t).collect();
+        assert!(times.windows(2).all(|w| w[0] <= w[1]), "{times:?}");
+        let note: Vec<&TakeEvent> = take.events.iter().filter(|e| e.id() == Some(0)).collect();
+        assert!(matches!(note[0], TakeEvent::Start { t, .. } if (*t - 1.25).abs() < 1e-9));
+        assert!(matches!(note[1], TakeEvent::Stop { t, .. } if (*t - 1.25).abs() < 1e-9));
+        assert!(matches!(
+            take.events.iter().find(|e| e.id() == Some(1)),
+            Some(TakeEvent::Start { t, .. }) if (*t - 1.0).abs() < 1e-9
+        ));
     }
 }
