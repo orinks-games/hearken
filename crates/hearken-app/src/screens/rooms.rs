@@ -141,15 +141,18 @@ fn players_line(info: &RoomInfo) -> String {
     }
 }
 
+/// The question before leaving a match: who wins it.
+fn leave_question(info: &RoomInfo) -> String {
+    match info.others().as_slice() {
+        [name] => format!("Leave the match? {name} wins it."),
+        _ => "Leave the match? The other players win it.".to_string(),
+    }
+}
+
 /// One line for a room in a list: whose game it is and where it stands.
 fn room_line<G: Game>(kind: &RoomKind<G>, info: &RoomInfo) -> String {
     let label = kind.label_of(&info.kind);
-    let others = info.others();
-    let with = if others.is_empty() {
-        String::new()
-    } else {
-        format!(" with {}", others.join(" and "))
-    };
+    let names = info.others().join(" and ");
     let standing = match info.phase {
         Phase::Waiting => format!("waiting for {} more", info.missing()),
         Phase::Playing => info
@@ -168,12 +171,24 @@ fn room_line<G: Game>(kind: &RoomKind<G>, info: &RoomInfo) -> String {
             .map_or_else(|| "over".to_string(), |s| format!("over, {s}")),
         other => other.spoken().to_string(),
     };
-    let unread = if info.unread > 0 && info.phase != Phase::Waiting {
-        format!(", {} new", info.unread)
+    let line = if names.is_empty() {
+        format!("{label}: {standing}")
     } else {
-        String::new()
+        format!("{label} with {names}: {standing}")
     };
-    format!("{label}{with}: {standing}{unread}")
+    // The unread count is a sentence of its own: a standing has clauses of
+    // its own, and a catalog line around both would not know where one
+    // ends. `count` is a count hole, so it is never filled with words.
+    let count = if info.phase == Phase::Waiting {
+        0
+    } else {
+        info.unread
+    };
+    if count == 0 {
+        line
+    } else {
+        format!("{line}. {count} new")
+    }
 }
 
 /// Where a room the player just entered goes: a waiting room to its screen,
@@ -585,11 +600,14 @@ impl<G: Game> Menu for RoomScreen<G> {
             };
             items.push(
                 MenuItem::new(label, |s: &mut Self, ctx: &mut Ctx<G>| {
-                    let playing = s.info(ctx).is_some_and(|i| i.phase == Phase::Playing);
-                    if playing {
+                    let question = s
+                        .info(ctx)
+                        .filter(|i| i.phase == Phase::Playing)
+                        .map(leave_question);
+                    if let Some(question) = question {
                         let id = s.id.clone();
                         ctx.push(ConfirmScreen::<G>::new(
-                            "Leave the match? The other players win it.",
+                            question,
                             move |ctx| {
                                 // The answer goes unread: the seat is given
                                 // up either way, and the room is forgotten.
@@ -942,6 +960,32 @@ mod tests {
         }
     }
 
+    fn playing_with(names: &[&str]) -> RoomInfo {
+        let members: Vec<_> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| json!({ "seat": i, "name": n }))
+            .collect();
+        serde_json::from_value(json!({
+            "id": "0123456789abcdef01234567", "kind": "demo", "code": "ABCDEF", "phase": "playing",
+            "seats": { "min": names.len(), "max": names.len() },
+            "members": members, "you": 0,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_leave_question_names_a_lone_other_player() {
+        assert_eq!(
+            leave_question(&playing_with(&["Ann", "Copper Fox 12"])),
+            "Leave the match? Copper Fox 12 wins it."
+        );
+        assert_eq!(
+            leave_question(&playing_with(&["Ann", "Bo", "Cy"])),
+            "Leave the match? The other players win it."
+        );
+    }
+
     /// The screen under the ones tested.
     struct Blank;
 
@@ -1148,7 +1192,7 @@ mod tests {
               "members": [{ "seat": 1, "name": "Ada" }], "context": {} },
         ] })));
         h.frame(0.0);
-        wait_for(&mut h, "Pebbles with Bo: Your move, 6 left, 2 new");
+        wait_for(&mut h, "Pebbles with Bo: Your move, 6 left. 2 new");
         let lines = h.app.top_lines();
         assert!(
             lines
