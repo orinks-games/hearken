@@ -171,17 +171,23 @@ fn room_line<G: Game>(kind: &RoomKind<G>, info: &RoomInfo) -> String {
             .map_or_else(|| "over".to_string(), |s| format!("over, {s}")),
         other => other.spoken().to_string(),
     };
-    let new = if info.phase == Phase::Waiting {
+    let line = if names.is_empty() {
+        format!("{label}: {standing}")
+    } else {
+        format!("{label} with {names}: {standing}")
+    };
+    // The unread count is a sentence of its own: a standing has clauses of
+    // its own, and a catalog line around both would not know where one
+    // ends. `count` is a count hole, so it is never filled with words.
+    let count = if info.phase == Phase::Waiting {
         0
     } else {
         info.unread
     };
-    // Each shape whole, so a catalog has the line as one template.
-    match (names.is_empty(), count) {
-        (true, 0) => format!("{label}: {standing}"),
-        (true, count) => format!("{label}: {standing}, {count} new"),
-        (false, 0) => format!("{label} with {names}: {standing}"),
-        (false, count) => format!("{label} with {names}: {standing}, {count} new"),
+    if count == 0 {
+        line
+    } else {
+        format!("{line}. {count} new")
     }
 }
 
@@ -1186,7 +1192,7 @@ mod tests {
               "members": [{ "seat": 1, "name": "Ada" }], "context": {} },
         ] })));
         h.frame(0.0);
-        wait_for(&mut h, "Pebbles with Bo: Your move, 6 left, 2 new");
+        wait_for(&mut h, "Pebbles with Bo: Your move, 6 left. 2 new");
         let lines = h.app.top_lines();
         assert!(
             lines
