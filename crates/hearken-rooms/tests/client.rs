@@ -484,6 +484,9 @@ fn a_list_refreshes_the_rooms_known() {
         "a list does not add rooms the game has not opened"
     );
     assert_eq!(rooms.room(&room_id()).unwrap().info.members.len(), 2);
+    assert_eq!(rooms.listed(), &list[..], "the game can read the last list");
+    rooms.set_token(Some("another".into()));
+    assert!(rooms.listed().is_empty());
 }
 
 #[test]
