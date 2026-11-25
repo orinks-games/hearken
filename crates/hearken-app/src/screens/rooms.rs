@@ -39,6 +39,19 @@ pub struct RoomKind<G: Game> {
     pub context: Value,
     /// Opens the game's screen for a match in play.
     pub open: OpenMatch<G>,
+    /// What happens to the others when a player leaves a match in play.
+    pub when_left: WhenLeft,
+}
+
+/// What a match does when one player leaves it partway, for the question
+/// Leave the match asks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WhenLeft {
+    /// The match ends and the others win it: a two player game.
+    #[default]
+    OthersWin,
+    /// The match goes on for the others without the player.
+    OthersPlayOn,
 }
 
 impl<G: Game> RoomKind<G> {
@@ -53,7 +66,14 @@ impl<G: Game> RoomKind<G> {
             label: label.to_string(),
             context: serde_json::to_value(context).unwrap_or(Value::Null),
             open: Rc::new(open),
+            when_left: WhenLeft::default(),
         }
+    }
+
+    /// The match goes on for the others when a player leaves it.
+    pub fn others_play_on(mut self) -> Self {
+        self.when_left = WhenLeft::OthersPlayOn;
+        self
     }
 
     /// `kind` as the player hears it: this kind's label, else the name.
@@ -73,6 +93,7 @@ impl<G: Game> Clone for RoomKind<G> {
             label: self.label.clone(),
             context: self.context.clone(),
             open: self.open.clone(),
+            when_left: self.when_left,
         }
     }
 }
@@ -142,11 +163,13 @@ fn players_line(info: &RoomInfo) -> String {
     }
 }
 
-/// The question before leaving a match: who wins it.
-fn leave_question(info: &RoomInfo) -> String {
-    match info.others().as_slice() {
-        [name] => format!("Leave the match? {name} wins it."),
-        _ => "Leave the match? The other players win it.".to_string(),
+/// The question before leaving a match: who wins it, or who plays on.
+fn leave_question(info: &RoomInfo, when_left: WhenLeft) -> String {
+    match (when_left, info.others().as_slice()) {
+        (WhenLeft::OthersWin, [name]) => format!("Leave the match? {name} wins it."),
+        (WhenLeft::OthersWin, _) => "Leave the match? The other players win it.".to_string(),
+        (WhenLeft::OthersPlayOn, [name]) => format!("Leave the match? {name} plays on."),
+        (WhenLeft::OthersPlayOn, _) => "Leave the match? The others play on.".to_string(),
     }
 }
 
@@ -646,7 +669,7 @@ impl<G: Game> Menu for RoomScreen<G> {
                     let question = s
                         .info(ctx)
                         .filter(|i| i.phase == Phase::Playing)
-                        .map(leave_question);
+                        .map(|i| leave_question(i, s.kind.when_left));
                     if let Some(question) = question {
                         let id = s.id.clone();
                         ctx.push(ConfirmScreen::<G>::new(
@@ -1020,12 +1043,24 @@ mod tests {
     #[test]
     fn the_leave_question_names_a_lone_other_player() {
         assert_eq!(
-            leave_question(&playing_with(&["Ann", "Copper Fox 12"])),
+            leave_question(&playing_with(&["Ann", "Copper Fox 12"]), WhenLeft::OthersWin),
             "Leave the match? Copper Fox 12 wins it."
         );
         assert_eq!(
-            leave_question(&playing_with(&["Ann", "Bo", "Cy"])),
+            leave_question(&playing_with(&["Ann", "Bo", "Cy"]), WhenLeft::OthersWin),
             "Leave the match? The other players win it."
+        );
+    }
+
+    #[test]
+    fn the_leave_question_fits_a_match_that_goes_on() {
+        assert_eq!(
+            leave_question(&playing_with(&["Ann", "Bo"]), WhenLeft::OthersPlayOn),
+            "Leave the match? Bo plays on."
+        );
+        assert_eq!(
+            leave_question(&playing_with(&["Ann", "Bo", "Cy"]), WhenLeft::OthersPlayOn),
+            "Leave the match? The others play on."
         );
     }
 
