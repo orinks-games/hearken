@@ -206,7 +206,7 @@ fn builtin_category(id: &str) -> Option<&'static str> {
         _ if id.starts_with("volume.") => SOUND,
         "display" | "display_text" | "display_motion" | "display_contrast" => DISPLAY,
         "keyboard" | "controller_buttons" | "controller" => CONTROLS,
-        "discord" | "online" | "chat" | "online_notices" | "show_me" => ONLINE,
+        "discord" | "online" | "chat" | "online_notices" | "show_me" | "mutes" => ONLINE,
         "updates" | "update_channel" | "update_at_start" => UPDATES,
         _ => return None,
     })
@@ -713,9 +713,9 @@ impl<G: Game> Menu for SettingsScreen<G> {
                     |s: &mut Self, ctx: &mut Ctx<G>| toggle_row(s, ctx, |ctx| step_chat(ctx, 1)),
                 )
                 .help(
-                    "How other players' lines reach you in a game: spoken as they come, a sound for \
-                     each, or nothing. Reading the chat back works either way. Enter, Left or Right \
-                     changes it.",
+                    "How other players' lines reach you in a game: every line as it comes, a sound \
+                     for each, or nothing. Reading the chat back works either way. Enter, Left or \
+                     Right changes it.",
                 )
                 .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_chat(ctx, delta)),
             ));
@@ -759,6 +759,20 @@ impl<G: Game> Menu for SettingsScreen<G> {
                      or nobody. Invites still reach you. Enter, Left or Right changes it.",
                 )
                 .adjustable(|_s: &mut Self, ctx: &mut Ctx<G>, delta| step_show(ctx, delta)),
+            ));
+        }
+
+        #[cfg(feature = "online")]
+        if ctx.rooms.is_offered() && (G::chat().is_some() || G::lobby().is_some()) {
+            rows.push(SettingsRow::new(
+                "mutes",
+                MenuItem::new(
+                    "Blocked and muted players",
+                    |_s: &mut Self, ctx: &mut Ctx<G>| {
+                        ctx.push(crate::screens::MutesScreen::<G>::new())
+                    },
+                )
+                .help("The players you blocked or muted. Choose one to unblock or unmute them."),
             ));
         }
 

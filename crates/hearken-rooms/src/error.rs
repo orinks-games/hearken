@@ -109,7 +109,7 @@ impl RoomsError {
             RoomsError::NotEnoughPlayers => "Not enough players yet.".into(),
             RoomsError::TooManyRooms => "You have too many open games. Finish or leave one.".into(),
             RoomsError::NotAMember => "You are not in that game.".into(),
-            RoomsError::TooFast => "Wait a moment before the next line.".into(),
+            RoomsError::TooFast => "Wait a moment.".into(),
             RoomsError::Blocked => "You cannot reach that player.".into(),
             RoomsError::UnknownPlayer => "No player by that name.".into(),
             RoomsError::Screened(Some(m)) => end_sentence(m),

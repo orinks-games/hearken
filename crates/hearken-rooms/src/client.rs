@@ -8,7 +8,7 @@
 //! state ([`Connection`]): polling, or offline after two polls in a row
 //! got no answer, spoken once by whichever screen is open.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -133,6 +133,8 @@ struct Pulse {
     heard: Vec<String>,
     /// Sent with the pulse on its way, cleared once it is answered.
     heard_sent: Vec<String>,
+    /// Named channels to ask after: (kind, name).
+    channels: Vec<(String, String)>,
 }
 
 /// What the client knows about one room the player is in.
@@ -149,6 +151,9 @@ pub struct Room {
     /// How many past lines to read before polling onward: a channel
     /// first watched starts from its recent history, not its first line.
     history: Option<usize>,
+    /// The last seq of the history read when the room was first watched:
+    /// lines up to here were said before the player came in.
+    history_to: u64,
 }
 
 impl Room {
@@ -161,7 +166,14 @@ impl Room {
             next_poll: None,
             changed_at: now,
             history: None,
+            history_to: 0,
         }
+    }
+
+    /// The last seq of the past lines read on joining a channel: lines up
+    /// to it were said before the player came in, and are not news.
+    pub fn history_to(&self) -> u64 {
+        self.history_to
     }
 
     pub fn id(&self) -> &RoomId {
@@ -268,6 +280,9 @@ pub struct Rooms {
     poll_failures: u32,
     signed_out: bool,
     pulse: Pulse,
+    /// Handles the player has muted, blocked or reported, as far as this
+    /// client knows: their lines already read are hidden too.
+    hidden: BTreeSet<String>,
 }
 
 impl Rooms {
@@ -293,6 +308,7 @@ impl Rooms {
             poll_failures: 0,
             signed_out: false,
             pulse: Pulse::default(),
+            hidden: BTreeSet::new(),
         }
     }
 
@@ -483,6 +499,12 @@ impl Rooms {
         Ok(self.send(Request::Mutes, Method::Get, url))
     }
 
+    /// Whether the player muted, blocked or reported `handle`, as far as
+    /// this client knows: their lines are left out where they were read.
+    pub fn is_hidden(&self, handle: &str) -> bool {
+        self.hidden.contains(handle)
+    }
+
     /// Mutes, blocks or hears again the player with `handle`. Answers
     /// [`Answer::Done`]. The other player is never told.
     pub fn set_mute(&mut self, handle: &str, mode: MuteMode) -> Result<Ticket, RoomsError> {
@@ -491,6 +513,10 @@ impl Rooms {
             return Err(RoomsError::UnknownPlayer);
         }
         let url = config.endpoint("rooms/mutes");
+        match mode {
+            MuteMode::None => self.hidden.remove(handle),
+            _ => self.hidden.insert(handle.to_string()),
+        };
         Ok(self.send(
             Request::SetMute,
             Method::Post(json!({ "handle": handle, "mode": mode })),
@@ -500,19 +526,65 @@ impl Rooms {
 
     /// Reports the player with `handle` for what they said in room `id`:
     /// the server hands their recent lines there to the game's host, with
-    /// `note` when the player gave one. Answers [`Answer::Done`].
+    /// `note` when the player gave one. Answers [`Answer::Done`]. The
+    /// server also mutes them for the player.
     pub fn report(&mut self, id: &RoomId, handle: &str, note: &str) -> Result<Ticket, RoomsError> {
+        self.report_line(id, handle, None, note)
+    }
+
+    /// As [`Rooms::report`], marking the line at `seq` as the one reported:
+    /// the host also gets the lines from anyone around it.
+    pub fn report_line(
+        &mut self,
+        id: &RoomId,
+        handle: &str,
+        seq: Option<u64>,
+        note: &str,
+    ) -> Result<Ticket, RoomsError> {
         let config = self.ready(None)?;
         if !crate::valid_handle(handle) {
             return Err(RoomsError::UnknownPlayer);
         }
         let note = crate::clean_text(note, crate::MAX_CHAT_CHARS);
+        self.hidden.insert(handle.to_string());
         let url = config.endpoint(&format!("rooms/{id}/report"));
+        let body = match seq {
+            Some(seq) => json!({ "handle": handle, "seq": seq, "note": note }),
+            None => json!({ "handle": handle, "note": note }),
+        };
+        Ok(self.send(Request::Report, Method::Post(body), url))
+    }
+
+    /// Reports a player met outside a room (a name in Who's here): the
+    /// host gets the name and `note`, no lines. Answers [`Answer::Done`].
+    pub fn report_player(&mut self, handle: &str, note: &str) -> Result<Ticket, RoomsError> {
+        let config = self.ready(None)?;
+        if !crate::valid_handle(handle) {
+            return Err(RoomsError::UnknownPlayer);
+        }
+        let note = crate::clean_text(note, crate::MAX_CHAT_CHARS);
+        self.hidden.insert(handle.to_string());
+        let url = config.endpoint("rooms/report");
         Ok(self.send(
             Request::Report,
             Method::Post(json!({ "handle": handle, "note": note })),
             url,
         ))
+    }
+
+    /// The named channels each pulse asks after: how many are in each and
+    /// who spoke last, in [`Lobby::channels`], and a
+    /// [`LobbyNotice::ChannelLine`] when someone new speaks. At most four.
+    pub fn set_channels(&mut self, channels: &[(&str, &str)]) {
+        let wanted: Vec<(String, String)> = channels
+            .iter()
+            .take(4)
+            .map(|(k, n)| ((*k).to_string(), (*n).to_string()))
+            .collect();
+        if self.pulse.channels != wanted {
+            self.pulse.channels = wanted;
+            self.pulse_soon();
+        }
     }
 
     // -- The lobby: the pulse, invites and friends (see `lobby`) ---------------
@@ -697,6 +769,12 @@ impl Rooms {
             "place": w.place,
             "show": self.pulse.show.name(),
             "heard": self.pulse.heard_sent,
+            "channels": self
+                .pulse
+                .channels
+                .iter()
+                .map(|(kind, name)| json!({ "kind": kind, "name": name }))
+                .collect::<Vec<_>>(),
         });
         let url = config.endpoint("rooms/pulse");
         let ticket = self.send(Request::Pulse, Method::Post(body), url);
@@ -798,6 +876,22 @@ impl Rooms {
     /// Sends a line of chat. Answers [`Answer::Seq`].
     pub fn say(&mut self, id: &RoomId, text: &str) -> Result<Ticket, RoomsError> {
         self.say_tagged(id, text, "")
+    }
+
+    /// Sends a ready line the room's kind offers, by its id: each player
+    /// hears it in their own words. Answers [`Answer::Seq`].
+    pub fn say_quick(&mut self, id: &RoomId, quick: &str) -> Result<Ticket, RoomsError> {
+        let config = self.ready(None)?;
+        let quick = crate::clean_text(quick, crate::MAX_TAG_CHARS);
+        if quick.is_empty() {
+            return Err(RoomsError::Refused {
+                code: "empty".into(),
+                message: Some("Nothing to send.".into()),
+            });
+        }
+        let body = json!({ "type": "chat", "quick": quick });
+        let url = config.endpoint(&format!("rooms/{id}/events"));
+        Ok(self.send(Request::Post(id.clone()), Method::Post(body), url))
     }
 
     /// Sends a line of chat with a tag: a short line about the sender that
@@ -964,6 +1058,7 @@ impl Rooms {
                             .cloned()
                             .and_then(|v| serde_json::from_value(v).ok())
                             .ok_or(RoomsError::Unavailable)?;
+                        self.hidden = list.iter().map(|m| m.handle.clone()).collect();
                         Ok(Answer::Mutes(list))
                     });
                     self.keep(ticket, result);
@@ -1089,6 +1184,9 @@ impl Rooms {
                     if to > room.read_seq() {
                         room.events.push(Event::marker(to));
                     }
+                }
+                if history {
+                    room.history_to = room.read_seq();
                 }
                 let more = !history && body["more"] == true;
                 if let Ok(info) = read_room(&body) {

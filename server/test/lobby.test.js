@@ -189,8 +189,10 @@ test("a block keeps two players out of each other's lists and invites", async ()
   await call(service, "POST", "rooms/mutes", ada, { handle: boHandle, mode: "block" });
   assert.deepEqual((await pulse(service, ada)).here, []);
   assert.deepEqual((await pulse(service, bo)).here, []);
+  // Across a block an invite is kept as sent and never heard: nobody is told.
   const sent = await call(service, "POST", "rooms/invites", ada, { handle: boHandle, kind: "match" });
-  assert.equal(sent.status, 403);
+  assert.equal(sent.status, 200);
+  assert.deepEqual((await pulse(service, bo)).invites, []);
 });
 
 test("an invite is sent, heard, accepted, and the match starts with both seated", { skip }, async () => {

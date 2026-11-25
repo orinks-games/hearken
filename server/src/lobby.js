@@ -136,7 +136,7 @@ export function publicInvite(invite, viewer) {
 }
 
 /** A player in a pulse's lists. */
-export function publicPresence(entry, friend) {
+export function publicPresence(entry, friend, muted = false) {
   return {
     handle: entry.handle,
     name: entry.name,
@@ -145,5 +145,6 @@ export function publicPresence(entry, friend) {
     game: entry.game ?? null,
     place: entry.place ?? null,
     friend: Boolean(friend),
+    muted: Boolean(muted),
   };
 }

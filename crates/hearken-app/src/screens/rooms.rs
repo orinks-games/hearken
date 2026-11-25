@@ -1282,7 +1282,7 @@ mod tests {
         h.send(InputEvent::key(Key::T));
         h.frame(0.0);
         assert_eq!(h.app.top_name(), "text_entry");
-        wait_for(&mut h, "Say to the other players");
+        wait_for(&mut h, "Say to Bo");
         for c in "good luck".chars() {
             h.send(InputEvent::typed(c));
         }
@@ -1517,11 +1517,11 @@ mod tests {
             h.spoken()
         );
         press(&mut h, Key::Return);
-        wait_for(&mut h, "Report Bo to example.test?");
+        wait_for(&mut h, "Report Bo? Their lines here go to example.test.");
         script.push_for("/report", reply(200, json!({ "ok": true, "lines": 0 })));
         script.push_for("rooms/mutes", reply(200, json!({ "ok": true, "mutes": [{ "handle": "bbbbbbbbbbbbbbbb", "mode": "mute", "name": "Bo" }] })));
         press(&mut h, Key::Return); // Yes
-        wait_for(&mut h, "Reported Bo.");
+        wait_for(&mut h, "Bo reported and muted.");
         assert_eq!(h.app.top_name(), "players");
         let reported = |script: &Scripted| {
             script

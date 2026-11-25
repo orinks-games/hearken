@@ -192,6 +192,10 @@ pub struct OnlineSettings {
     #[cfg(feature = "online")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shown_told: bool,
+    /// The account name that agreed to the game's chat rules, if any.
+    #[cfg(feature = "online")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_rules: Option<String>,
 }
 
 impl OnlineSettings {
@@ -201,6 +205,7 @@ impl OnlineSettings {
             || !self.notices.is_default()
             || !self.show.is_default()
             || self.shown_told
+            || self.chat_rules.is_some()
         {
             return false;
         }

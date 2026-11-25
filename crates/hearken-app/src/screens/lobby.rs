@@ -40,6 +40,8 @@ enum Asking {
     Mute(Ticket, MuteMode, String),
     /// Joining an open table by its code.
     Join(Ticket, String),
+    /// A report of a player by name.
+    Report(Ticket, String),
 }
 
 impl Asking {
@@ -50,8 +52,31 @@ impl Asking {
             | Asking::Answer(t, _, _)
             | Asking::Friend(t, _, _)
             | Asking::Mute(t, _, _)
-            | Asking::Join(t, _) => Some(*t),
+            | Asking::Join(t, _)
+            | Asking::Report(t, _) => Some(*t),
         }
+    }
+}
+
+/// "Parlor, 3 here", with "new lines" first when someone spoke since the
+/// player last looked.
+fn channel_row<G: Game>(ctx: &Ctx<G>, channel: crate::lobby::Channel) -> String {
+    let Some(summary) = ctx
+        .rooms
+        .lobby()
+        .and_then(|l| l.channel(channel.kind, channel.name))
+    else {
+        return channel.label.to_string();
+    };
+    let new = summary
+        .last
+        .as_ref()
+        .is_some_and(|l| l.seq > ctx.lobby.channel_seen);
+    match (new, summary.here) {
+        (true, 0) => format!("{}, new lines", channel.label),
+        (true, n) => format!("{}, new lines, {n} here", channel.label),
+        (false, 0) => channel.label.to_string(),
+        (false, n) => format!("{}, {n} here", channel.label),
     }
 }
 
@@ -125,9 +150,13 @@ fn collect<G: Game>(ctx: &mut Ctx<G>, asking: &mut Asking) -> bool {
         (Asking::Mute(_, mode, name), Ok(_)) => {
             ctx.play_ui(UiSound::Select);
             ctx.say(match mode {
-                MuteMode::None => format!("{name} heard again."),
+                MuteMode::None => format!("{name} unmuted."),
                 mode => format!("{name} {}.", mode.spoken()),
             });
+        }
+        (Asking::Report(_, name), Ok(_)) => {
+            ctx.play_ui(UiSound::Select);
+            ctx.say(format!("{name} reported and muted."));
         }
         (Asking::Join(_, kind), Ok(Answer::Room(id))) => {
             ctx.play_ui(UiSound::Select);
@@ -211,6 +240,17 @@ impl<G: Game> Menu for PlayOnlineScreen<G> {
             return vec![connect_row(ctx)];
         }
         let mut items = Vec::new();
+        if let Some(channel) = G::lobby().and_then(|l| l.channel) {
+            items.push(
+                MenuItem::new(
+                    Label::dynamic(move |_: &Self, ctx: &Ctx<G>| channel_row(ctx, channel)),
+                    move |_: &mut Self, ctx: &mut Ctx<G>| {
+                        ctx.push(crate::screens::chat::ChatListScreen::<G>::channel(channel));
+                    },
+                )
+                .help("Chat with everyone online. Enter opens it."),
+            );
+        }
         items.push(
             MenuItem::new(
                 Label::dynamic(|_: &Self, ctx: &Ctx<G>| {
@@ -440,6 +480,14 @@ impl<G: Game> LobbyPlayerScreen<G> {
         }
         false
     }
+
+    fn set_mute(&mut self, ctx: &mut Ctx<G>, mode: MuteMode) {
+        let name = self.player.name.clone();
+        let sent = ctx.rooms.set_mute(&self.player.handle, mode);
+        if let Some(a) = send(ctx, sent, |t| Asking::Mute(t, mode, name)) {
+            self.asking = a;
+        }
+    }
 }
 
 impl<G: Game> Menu for LobbyPlayerScreen<G> {
@@ -514,7 +562,7 @@ impl<G: Game> Menu for LobbyPlayerScreen<G> {
             },
             match self.mode {
                 MuteMode::Block => ("Unblock", MuteMode::None, "You and they can reach each other again."),
-                _ => ("Block", MuteMode::Block, "Neither of you hears or sees the other, and you are never seated together. They are not told."),
+                _ => ("Block", MuteMode::Block, "You stop seeing each other, and you are never seated together. They are not told. Settings, Online has the list of blocked players."),
             },
         ];
         for (label, mode, help) in rows {
@@ -523,16 +571,54 @@ impl<G: Game> Menu for LobbyPlayerScreen<G> {
                     if s.busy(ctx) {
                         return;
                     }
-                    let name = s.player.name.clone();
-                    let sent = ctx.rooms.set_mute(&s.player.handle, mode);
-                    if let Some(a) = send(ctx, sent, |t| Asking::Mute(t, mode, name)) {
-                        s.asking = a;
+                    if mode == MuteMode::Block {
+                        // A block hides them everywhere: asked first.
+                        let name = hearken_rooms::clean_text(&s.player.name, 64);
+                        ctx.push(crate::screens::confirm::ConfirmScreen::<G>::new(
+                            format!("Block {name}?"),
+                            |ctx| ctx.pop_with("block"),
+                        ));
+                        return;
                     }
+                    s.set_mute(ctx, mode);
                 })
                 .help(help),
             );
         }
+        let site_name = site(ctx);
+        items.push(
+            MenuItem::new("Report", |s: &mut Self, ctx: &mut Ctx<G>| {
+                if s.busy(ctx) {
+                    return;
+                }
+                let name = hearken_rooms::clean_text(&s.player.name, 64);
+                let site = site(ctx);
+                ctx.push(crate::screens::confirm::ConfirmScreen::<G>::new(
+                    format!("Report {name}'s name to {site}?"),
+                    |ctx| ctx.pop_with("report"),
+                ));
+            })
+            .help(format!("Sends this player's name to {site_name}, for a name that should not be here, and mutes them for you.")),
+        );
         items
+    }
+
+    fn resume_with(&mut self, ctx: &mut Ctx<G>, result: &str) {
+        match result {
+            "block" => self.set_mute(ctx, MuteMode::Block),
+            "report" => {
+                let name = self.player.name.clone();
+                let sent = ctx.rooms.report_player(&self.player.handle, "");
+                if let Some(a) = send(ctx, sent, |t| Asking::Report(t, name)) {
+                    self.asking = a;
+                }
+            }
+            "" => self.announce(ctx),
+            other => {
+                ctx.say(other.to_string());
+                self.refresh(ctx, true);
+            }
+        }
     }
 
     fn update(&mut self, ctx: &mut Ctx<G>, _dt: f64) {
@@ -558,7 +644,7 @@ impl<G: Game> Menu for LobbyPlayerScreen<G> {
             }
             MutesRead::Read => {}
         }
-        let muting = matches!(self.asking, Asking::Mute(..));
+        let muting = matches!(self.asking, Asking::Mute(..) | Asking::Report(..));
         let came = collect(ctx, &mut self.asking);
         if came && muting {
             // Read them again: the rows offer the way back.
@@ -824,6 +910,8 @@ enum Destination {
     Player(Player),
     /// Play online.
     Lobby,
+    /// The game's chat channel.
+    Channel,
 }
 
 /// A notice: its line, then Go there, Later or No. Escape is Later.
@@ -880,6 +968,13 @@ impl<G: Game> NoticeScreen<G> {
                 ctx.settle_notice(self.id, false);
                 ctx.pop_quiet();
                 ctx.push(PlayOnlineScreen::new());
+            }
+            Destination::Channel => {
+                ctx.settle_notice(self.id, false);
+                ctx.pop_quiet();
+                if let Some(channel) = G::lobby().and_then(|l| l.channel) {
+                    ctx.push(crate::screens::chat::ChatListScreen::<G>::channel(channel));
+                }
             }
         }
     }
@@ -943,7 +1038,8 @@ impl<G: Game> Menu for NoticeScreen<G> {
                 Destination::Join(table.code.clone(), table.kind.clone())
             }
             LobbyNotice::FriendHere(player) => Destination::Player(player.clone()),
-            LobbyNotice::Arrived { .. } => Destination::Lobby,
+            LobbyNotice::Arrived { .. } | LobbyNotice::Standing(_) => Destination::Lobby,
+            LobbyNotice::ChannelLine { .. } => Destination::Channel,
         });
         let no_help = if matches!(self.to, Some(Destination::Accept(..))) {
             "Declines the invite."

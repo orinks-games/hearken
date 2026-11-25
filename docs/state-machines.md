@@ -158,6 +158,13 @@ logs `[sync] from -> to`, and anything the game must do answered as a
 `Need` rather than done behind its back. A game shows the state in its
 Settings row and to agents from that same `name()`.
 
+Online chat has several, all in `hearken-app` and logged the same way:
+the quiet (`[quiet] open -> held`, while the lobby's `hold` is true), each
+incoming line (`[chat] line 4: waiting -> said`), an outgoing line
+(sending, refused), and a channel's chat list (`[chat] link: joining ->
+in`). Each has its table in the module docs of `chat.rs` and
+`screens/chat.rs`.
+
 ## Testing phases
 
 `Headless` reads the record:

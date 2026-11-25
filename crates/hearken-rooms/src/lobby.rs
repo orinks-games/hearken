@@ -194,6 +194,9 @@ pub struct Player {
     /// Whether the reading player has added them as a friend.
     #[serde(default)]
     pub friend: bool,
+    /// Whether the reading player has muted them.
+    #[serde(default)]
+    pub muted: bool,
 }
 
 impl Player {
@@ -293,9 +296,60 @@ pub struct Lobby {
     /// Tables others opened for anyone, oldest first.
     #[serde(default)]
     pub open: Vec<OpenTable>,
+    /// The named channels the client asked after (`set_channels`).
+    #[serde(default)]
+    pub channels: Vec<ChannelSummary>,
+    /// The player's chat standing, when the host keeps one.
+    #[serde(default)]
+    pub standing: Option<Standing>,
     /// Seconds until the server wants the next pulse.
     #[serde(default)]
     pub every: u64,
+}
+
+/// A named channel as a pulse describes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelSummary {
+    pub kind: String,
+    pub name: String,
+    /// Other players in it lately.
+    #[serde(default)]
+    pub here: u32,
+    /// The last line someone else said there that the player hears.
+    #[serde(default)]
+    pub last: Option<ChannelLine>,
+}
+
+/// Who spoke last in a channel, and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelLine {
+    pub seq: u64,
+    pub name: String,
+    #[serde(default)]
+    pub handle: Option<String>,
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// The player's chat standing on the host: whether they may chat, and a
+/// line for them from the host (a warning, a chat ban) to hear once.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Standing {
+    /// "open" or "off"; anything else reads as open.
+    #[serde(default)]
+    pub chat: Option<String>,
+    /// When a chat ban ends, in milliseconds since 1970.
+    #[serde(default)]
+    pub until: Option<u64>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+impl Standing {
+    /// Whether the host has turned the player's chat off.
+    pub fn chat_off(&self) -> bool {
+        self.chat.as_deref() == Some("off")
+    }
 }
 
 impl Lobby {
@@ -333,6 +387,13 @@ impl Lobby {
     pub fn is_friend(&self, handle: &str) -> bool {
         self.friends.iter().any(|p| p.handle == handle)
     }
+
+    /// The channel of `kind` named `name`, when the pulse asked after it.
+    pub fn channel(&self, kind: &str, name: &str) -> Option<&ChannelSummary> {
+        self.channels
+            .iter()
+            .find(|c| c.kind == kind && c.name == name)
+    }
 }
 
 /// Something that happened between two pulses, for the game to tell the
@@ -362,6 +423,14 @@ pub enum LobbyNotice {
     FriendHere(Player),
     /// Someone opened a table for anyone.
     OpenTable(OpenTable),
+    /// Someone spoke in a channel the pulse asks after.
+    ChannelLine {
+        kind: String,
+        name: String,
+        line: ChannelLine,
+    },
+    /// The host has a line for the player about their chat.
+    Standing(String),
 }
 
 impl LobbyNotice {
@@ -383,9 +452,10 @@ impl LobbyNotice {
             | LobbyNotice::SatDown { .. }
             | LobbyNotice::YourMove { .. }
             | LobbyNotice::Answered(_)
-            | LobbyNotice::FriendHere(_) => true,
+            | LobbyNotice::FriendHere(_)
+            | LobbyNotice::Standing(_) => true,
             LobbyNotice::Invited(invite) => lobby.is_friend(&invite.from.handle),
-            LobbyNotice::OpenTable(_) => false,
+            LobbyNotice::OpenTable(_) | LobbyNotice::ChannelLine { .. } => false,
         }
     }
 
@@ -399,6 +469,8 @@ impl LobbyNotice {
             LobbyNotice::Answered(_) => "answered",
             LobbyNotice::FriendHere(_) => "friend-here",
             LobbyNotice::OpenTable(_) => "open-table",
+            LobbyNotice::ChannelLine { .. } => "channel-line",
+            LobbyNotice::Standing(_) => "standing",
         }
     }
 }
@@ -407,6 +479,18 @@ impl LobbyNotice {
 /// `Arrived` and the invites not heard yet.
 pub fn changes(old: Option<&Lobby>, new: &Lobby) -> Vec<LobbyNotice> {
     let mut out = Vec::new();
+    // The host's line about chat, once: the host clears it once carried,
+    // and the same line twice in a row is not told again.
+    let message = |l: &Lobby| {
+        l.standing
+            .as_ref()
+            .and_then(|s| s.message.as_deref())
+            .map(|m| crate::clean_text(m, 200))
+            .filter(|m| !m.is_empty())
+    };
+    if let Some(line) = message(new).filter(|m| old.and_then(message).as_ref() != Some(m)) {
+        out.push(LobbyNotice::Standing(line));
+    }
     let Some(old) = old else {
         out.push(LobbyNotice::Arrived {
             waiting: new.waiting(),
@@ -486,6 +570,24 @@ pub fn changes(old: Option<&Lobby>, new: &Lobby) -> Vec<LobbyNotice> {
     for table in &new.open {
         if !old.open.iter().any(|t| t.room == table.room) {
             out.push(LobbyNotice::OpenTable(table.clone()));
+        }
+    }
+    for channel in &new.channels {
+        let Some(line) = &channel.last else { continue };
+        let before = old
+            .channel(&channel.kind, &channel.name)
+            .and_then(|c| c.last.as_ref())
+            .map(|l| l.seq);
+        // Only a line after one the player already knew of: the first pulse
+        // to ask after a channel tells nothing old.
+        if old.channel(&channel.kind, &channel.name).is_some()
+            && before.is_none_or(|b| line.seq > b)
+        {
+            out.push(LobbyNotice::ChannelLine {
+                kind: channel.kind.clone(),
+                name: channel.name.clone(),
+                line: line.clone(),
+            });
         }
     }
     out
@@ -593,6 +695,34 @@ mod tests {
             "open": [{ "room": "fedcba9876543210fedcba98", "kind": "pebbles", "host": "Di" }],
         }));
         assert_eq!(changes(Some(&new), &same), Vec::new());
+    }
+
+    #[test]
+    fn a_channel_line_and_the_hosts_chat_line_are_told_once() {
+        let old = lobby(json!({
+            "channels": [{ "kind": "parlor", "name": "parlor", "here": 2,
+                "last": { "seq": 4, "name": "Bo", "handle": "bbbbbbbbbbbbbbbb", "at": 1 } }],
+        }));
+        let new = lobby(json!({
+            "channels": [{ "kind": "parlor", "name": "parlor", "here": 2,
+                "last": { "seq": 5, "name": "Bo", "handle": "bbbbbbbbbbbbbbbb", "at": 2 } }],
+            "standing": { "chat": "off", "until": 99, "message": "Your chat is off for a day." },
+        }));
+        let got = changes(Some(&old), &new);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(
+            got[0],
+            LobbyNotice::Standing("Your chat is off for a day.".into())
+        );
+        assert!(matches!(&got[1], LobbyNotice::ChannelLine { line, .. } if line.seq == 5));
+        assert!(new.standing.as_ref().unwrap().chat_off());
+        // The same pulse again: nothing.
+        assert_eq!(changes(Some(&new), &new), Vec::new());
+        // A first sight of a channel is no news.
+        let first = lobby(json!({ "channels": [] }));
+        assert!(changes(Some(&first), &new)
+            .iter()
+            .all(|n| !matches!(n, LobbyNotice::ChannelLine { .. })));
     }
 
     #[test]

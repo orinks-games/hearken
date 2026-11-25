@@ -324,6 +324,10 @@ pub struct Event {
     /// what they are doing. The game decides what goes here.
     #[serde(default)]
     pub tag: Option<String>,
+    /// A ready line's id, when the line was one the kind offers: each
+    /// client says it in its own words, with `text` as the fallback.
+    #[serde(default)]
+    pub quick: Option<String>,
     #[serde(default)]
     pub inputs: Option<Vec<(u16, i32)>>,
     #[serde(default)]
@@ -361,6 +365,7 @@ impl Event {
             handle: None,
             text: None,
             tag: None,
+            quick: None,
             inputs: None,
             reason: None,
         }
