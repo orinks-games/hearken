@@ -226,6 +226,9 @@ pub struct Rooms {
     rooms: BTreeMap<RoomId, Room>,
     /// The room the player is looking at: the one chat keys send to.
     focus: Option<RoomId>,
+    /// The rooms the last list answer named, for a game that reads them
+    /// (a match that ended while the player was elsewhere).
+    listed: Vec<RoomInfo>,
     connection: Connection,
     poll_failures: u32,
     signed_out: bool,
@@ -250,6 +253,7 @@ impl Rooms {
             done: VecDeque::new(),
             rooms: BTreeMap::new(),
             focus: None,
+            listed: Vec::new(),
             connection: Connection::Polling,
             poll_failures: 0,
             signed_out: false,
@@ -272,6 +276,7 @@ impl Rooms {
         self.signed_out = false;
         self.rooms.clear();
         self.focus = None;
+        self.listed.clear();
         self.in_flight.clear();
     }
 
@@ -303,6 +308,12 @@ impl Rooms {
     /// The rooms this client knows, in id order.
     pub fn rooms(&self) -> impl Iterator<Item = &Room> {
         self.rooms.values()
+    }
+
+    /// The player's rooms as the last list answer named them, newest first;
+    /// empty until one arrives, and again after the token changes.
+    pub fn listed(&self) -> &[RoomInfo] {
+        &self.listed
     }
 
     pub fn room(&self, id: &RoomId) -> Option<&Room> {
@@ -658,6 +669,7 @@ impl Rooms {
                                 self.take_info(info.clone(), now, &mut notices);
                             }
                         }
+                        self.listed = list.clone();
                         Ok(Answer::List(list))
                     });
                     self.keep(ticket, result);
