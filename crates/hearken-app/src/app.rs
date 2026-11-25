@@ -368,6 +368,18 @@ impl<G: Game> App<G> {
                         self.enter_top(next);
                         reveal = None;
                     }
+                    StackOp::PushQuiet(next) => {
+                        let over = self.top_name();
+                        self.ctx
+                            .note_screen(format!("push {} quietly over {over}", next.name()));
+                        if let Some(top) = self.states.last_mut() {
+                            top.cover(&mut self.ctx);
+                        }
+                        self.ctx.hush = true;
+                        self.enter_top(next);
+                        self.ctx.hush = false;
+                        reveal = None;
+                    }
                     StackOp::Pop => {
                         self.ctx.note_screen(format!("pop {}", self.top_name()));
                         self.pop_one();

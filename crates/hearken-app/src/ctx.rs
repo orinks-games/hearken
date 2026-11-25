@@ -120,6 +120,9 @@ pub struct Ctx<G: Game> {
     pub(crate) commentary: Option<Box<dyn crate::commentary::Commentary<G>>>,
     /// Set while `queued_speech` runs: `say` queues instead of interrupting.
     hold_interrupt: bool,
+    /// Set while a screen passed through enters (`push_quiet`): nothing
+    /// it says is spoken or kept.
+    pub(crate) hush: bool,
     /// Whether this run has said `language::ENGLISH_ONLY_VOICE`.
     pub(crate) told_english_only: bool,
     /// What the voice could speak when the language was last loaded: when
@@ -203,6 +206,7 @@ impl<G: Game> Ctx<G> {
             pending: Vec::new(),
             commentary: None,
             hold_interrupt: false,
+            hush: false,
             told_english_only: false,
             language_fit: None,
         };
@@ -420,7 +424,7 @@ impl<G: Game> Ctx<G> {
     }
 
     fn speak(&mut self, text: String, interrupt: bool) {
-        if text.trim().is_empty() {
+        if self.hush || text.trim().is_empty() {
             return;
         }
         let text = self.tr(&text);
@@ -632,6 +636,23 @@ impl<G: Game> Ctx<G> {
 
     pub fn push(&mut self, screen: impl State<G> + 'static) {
         self.pending.push(StackOp::Push(Box::new(screen)));
+    }
+
+    /// Runs `f`, and every screen it pushes is one the player only passes
+    /// through, such as a game's title on the way to one of its tables
+    /// pushed straight after: it enters without saying anything, and
+    /// speaks again once revealed.
+    pub fn passing_through(&mut self, f: impl FnOnce(&mut Self)) {
+        let from = self.pending.len();
+        f(self);
+        for op in self.pending.iter_mut().skip(from) {
+            if matches!(op, StackOp::Push(_)) {
+                let StackOp::Push(screen) = std::mem::replace(op, StackOp::Pop) else {
+                    unreachable!()
+                };
+                *op = StackOp::PushQuiet(screen);
+            }
+        }
     }
 
     /// Close the top screen. The screen revealed announces itself afresh.
