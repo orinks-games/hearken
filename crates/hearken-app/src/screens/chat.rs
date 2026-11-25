@@ -657,6 +657,38 @@ mod tests {
         press(&mut h, Key::Return);
         h.frame(0.0);
         assert_eq!(h.app.top_name(), "player");
+
+        // Blocking Bo takes his lines already read out of the list.
+        script.push_for(
+            "rooms/mutes",
+            reply(200, json!({ "ok": true, "mutes": [] })),
+        );
+        script.push_for(
+            "rooms/mutes",
+            reply(
+                200,
+                json!({ "ok": true, "handle": "bbbbbbbbbbbbbbbb", "mode": "block", "name": "Bo" }),
+            ),
+        );
+        for _ in 0..20 {
+            h.frame(0.016);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        press(&mut h, Key::Down);
+        press(&mut h, Key::Return);
+        h.frame(0.0);
+        assert_eq!(h.app.top_name(), "confirm");
+        press(&mut h, Key::Return);
+        wait_for(&mut h, "Bo blocked.");
+        assert_eq!(h.app.top_name(), "chat");
+        let lines = h.app.top_lines();
+        assert!(lines.iter().any(|l| l.contains("hello")), "{lines:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("good luck") || l.contains("hi there")),
+            "{lines:?}"
+        );
     }
 
     /// A game whose chat waits during play, with ready lines and rules.

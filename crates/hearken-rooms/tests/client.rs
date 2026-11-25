@@ -688,9 +688,12 @@ fn a_channel_starts_from_its_recent_lines_and_hidden_lines_do_not_leave_it_behin
         ),
     );
     script.push_for("?after=41", ok_events(channel(41), vec![], false));
+    assert!(!rooms.is_hidden("0123456789abcdef"));
     let ticket = rooms
         .set_mute("0123456789abcdef", hearken_rooms::MuteMode::Mute)
         .unwrap();
+    // Their lines already read are hidden at once.
+    assert!(rooms.is_hidden("0123456789abcdef"));
     settle(&mut rooms, now + POLL_ACTIVE);
     assert_eq!(rooms.result(ticket), Some(Ok(Answer::Done)));
     script.push_for("rooms/mutes", reply(200, json!({ "ok": true, "mutes": [{ "handle": "0123456789abcdef", "mode": "mute", "name": "Bo" }] })));
@@ -704,6 +707,15 @@ fn a_channel_starts_from_its_recent_lines_and_hidden_lines_do_not_leave_it_behin
         }
         other => panic!("{other:?}"),
     }
+    // The server's list is what stays hidden.
+    script.push_for(
+        "rooms/mutes",
+        reply(200, json!({ "ok": true, "mutes": [] })),
+    );
+    let ticket = rooms.mutes().unwrap();
+    settle(&mut rooms, now + POLL_ACTIVE);
+    assert!(matches!(rooms.result(ticket), Some(Ok(Answer::Mutes(_)))));
+    assert!(!rooms.is_hidden("0123456789abcdef"));
 
     // A tagged line, a report, and a direct room refused by a block.
     script.push_for("/events", reply(200, json!({ "ok": true, "seq": 42 })));

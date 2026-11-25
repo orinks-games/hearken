@@ -442,6 +442,22 @@ impl<G: Game> Ctx<G> {
             }
         }
 
+        // A channel's lines read in its chat list are no longer news.
+        let seen = self.lobby.channel_seen;
+        let read: Vec<u64> = self
+            .lobby
+            .notices
+            .iter()
+            .filter(|n| !matches!(n.state, NoticeState::Done))
+            .filter(
+                |n| matches!(&n.notice, LobbyNotice::ChannelLine { line, .. } if line.seq <= seen),
+            )
+            .map(|n| n.id)
+            .collect();
+        for id in read {
+            self.set_notice_state(id, NoticeState::Done);
+        }
+
         let held = self.quiet() == crate::chat::Quiet::Held;
         let ready: Vec<(u64, NoticeState, bool)> = self
             .lobby

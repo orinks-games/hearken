@@ -8,7 +8,7 @@
 //! state ([`Connection`]): polling, or offline after two polls in a row
 //! got no answer, spoken once by whichever screen is open.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -151,6 +151,9 @@ pub struct Room {
     /// How many past lines to read before polling onward: a channel
     /// first watched starts from its recent history, not its first line.
     history: Option<usize>,
+    /// The last seq of the history read when the room was first watched:
+    /// lines up to here were said before the player came in.
+    history_to: u64,
 }
 
 impl Room {
@@ -163,7 +166,14 @@ impl Room {
             next_poll: None,
             changed_at: now,
             history: None,
+            history_to: 0,
         }
+    }
+
+    /// The last seq of the past lines read on joining a channel: lines up
+    /// to it were said before the player came in, and are not news.
+    pub fn history_to(&self) -> u64 {
+        self.history_to
     }
 
     pub fn id(&self) -> &RoomId {
@@ -270,6 +280,9 @@ pub struct Rooms {
     poll_failures: u32,
     signed_out: bool,
     pulse: Pulse,
+    /// Handles the player has muted, blocked or reported, as far as this
+    /// client knows: their lines already read are hidden too.
+    hidden: BTreeSet<String>,
 }
 
 impl Rooms {
@@ -295,6 +308,7 @@ impl Rooms {
             poll_failures: 0,
             signed_out: false,
             pulse: Pulse::default(),
+            hidden: BTreeSet::new(),
         }
     }
 
@@ -485,6 +499,12 @@ impl Rooms {
         Ok(self.send(Request::Mutes, Method::Get, url))
     }
 
+    /// Whether the player muted, blocked or reported `handle`, as far as
+    /// this client knows: their lines are left out where they were read.
+    pub fn is_hidden(&self, handle: &str) -> bool {
+        self.hidden.contains(handle)
+    }
+
     /// Mutes, blocks or hears again the player with `handle`. Answers
     /// [`Answer::Done`]. The other player is never told.
     pub fn set_mute(&mut self, handle: &str, mode: MuteMode) -> Result<Ticket, RoomsError> {
@@ -493,6 +513,10 @@ impl Rooms {
             return Err(RoomsError::UnknownPlayer);
         }
         let url = config.endpoint("rooms/mutes");
+        match mode {
+            MuteMode::None => self.hidden.remove(handle),
+            _ => self.hidden.insert(handle.to_string()),
+        };
         Ok(self.send(
             Request::SetMute,
             Method::Post(json!({ "handle": handle, "mode": mode })),
@@ -522,6 +546,7 @@ impl Rooms {
             return Err(RoomsError::UnknownPlayer);
         }
         let note = crate::clean_text(note, crate::MAX_CHAT_CHARS);
+        self.hidden.insert(handle.to_string());
         let url = config.endpoint(&format!("rooms/{id}/report"));
         let body = match seq {
             Some(seq) => json!({ "handle": handle, "seq": seq, "note": note }),
@@ -538,6 +563,7 @@ impl Rooms {
             return Err(RoomsError::UnknownPlayer);
         }
         let note = crate::clean_text(note, crate::MAX_CHAT_CHARS);
+        self.hidden.insert(handle.to_string());
         let url = config.endpoint("rooms/report");
         Ok(self.send(
             Request::Report,
@@ -1032,6 +1058,7 @@ impl Rooms {
                             .cloned()
                             .and_then(|v| serde_json::from_value(v).ok())
                             .ok_or(RoomsError::Unavailable)?;
+                        self.hidden = list.iter().map(|m| m.handle.clone()).collect();
                         Ok(Answer::Mutes(list))
                     });
                     self.keep(ticket, result);
@@ -1157,6 +1184,9 @@ impl Rooms {
                     if to > room.read_seq() {
                         room.events.push(Event::marker(to));
                     }
+                }
+                if history {
+                    room.history_to = room.read_seq();
                 }
                 let more = !history && body["more"] == true;
                 if let Ok(info) = read_room(&body) {

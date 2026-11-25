@@ -571,6 +571,7 @@ impl<G: Game> Ctx<G> {
         };
         let config = self.chat_config().or_else(G::chat).unwrap_or_default();
         room.chat_events()
+            .filter(|e| !e.handle.as_deref().is_some_and(|h| self.rooms.is_hidden(h)))
             .filter_map(|e| config.line(&room.info.kind, e).map(|l| (e.clone(), l)))
             .collect()
     }
@@ -752,7 +753,16 @@ impl<G: Game> Ctx<G> {
                 continue;
             }
             for event in room.events_after(first.saturating_sub(1)) {
-                if event.kind != EventKind::Chat || event.seat == room.info.you {
+                // Lines said before the player came in are in the chat
+                // list, not news.
+                if event.kind != EventKind::Chat
+                    || event.seat == room.info.you
+                    || event.seq <= room.history_to()
+                    || event
+                        .handle
+                        .as_deref()
+                        .is_some_and(|h| self.rooms.is_hidden(h))
+                {
                     continue;
                 }
                 if let Some(line) = config.line(&room.info.kind, event) {
